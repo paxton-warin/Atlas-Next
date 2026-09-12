@@ -915,6 +915,9 @@ test("AI Gemini opt-in is explicit and answer attribution survives reload", asyn
   page,
 }) => {
   const submitted: any[] = [];
+  await page.route("**/api/ai/title", (route) =>
+    route.fulfill({ json: { title: "Consent Fixture Chat" } }),
+  );
   await page.route("**/api/ai/config", (route) =>
     route.fulfill({
       json: {
@@ -955,6 +958,9 @@ test("AI Gemini opt-in is explicit and answer attribution survives reload", asyn
     "Synthetic consent fixture reply",
   );
   expect(submitted[0].allowGeminiDataUse).toBe(true);
+  await expect(page.locator(".chat-item")).toContainText(
+    "Consent Fixture Chat",
+  );
   await expect(page.locator(".chat-author-source")).toHaveText(
     "Google Gemini · fixture-fallback-model",
   );
@@ -963,7 +969,7 @@ test("AI Gemini opt-in is explicit and answer attribution survives reload", asyn
   await expect(consent).toBeChecked();
   await page
     .locator(".chat-item")
-    .getByRole("button", { name: "Consent fixture question", exact: true })
+    .getByRole("button", { name: "Consent Fixture Chat", exact: true })
     .click();
   await expect(page.locator(".chat-author-source")).toHaveText(
     "Google Gemini · fixture-fallback-model",

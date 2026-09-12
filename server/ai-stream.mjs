@@ -2,9 +2,14 @@ export const instructions =
   "You are Atlas AI. Answer clearly and directly. Use Markdown for code or structure when useful. Do not claim to browse the web or run tools: no tools are connected.";
 export const providerError = (message, retryable = false) =>
   Object.assign(new Error(message), { statusCode: 502, retryable });
-export function providerPayload(provider, messages, maxOutputTokens) {
+export function providerPayload(
+  provider,
+  messages,
+  maxOutputTokens,
+  system = instructions,
+) {
   const chat = [
-    { role: "system", content: instructions },
+    { role: "system", content: system },
     ...messages.map(({ role, content }) => ({ role, content })),
   ];
   if (provider.protocol === "responses")

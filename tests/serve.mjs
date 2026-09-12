@@ -132,7 +132,11 @@ const fixture = createServer(
       }
       res.setHeader("Content-Type", "text/event-stream");
       res.flushHeaders();
-      const parts = ["Test reply: ", last, "\n\n**Streaming complete.**"];
+      const parts = (body.input || body.messages)[0].content.startsWith(
+        "Create a concise conversation title",
+      )
+        ? ["Fixture Conversation"]
+        : ["Test reply: ", last, "\n\n**Streaming complete.**"];
       for (const text of parts) {
         if (res.destroyed) return;
         res.write(

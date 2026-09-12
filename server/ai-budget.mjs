@@ -39,6 +39,21 @@ export function createAiBudget(db) {
         reason,
       );
     },
+    blocked(provider, tokens) {
+      const l = provider.limits,
+        minute = read(provider.id, "minute"),
+        day = read(provider.id, "day");
+      if (tokens > l.tpm || tokens > l.tpd)
+        return { kind: "context", retryAt: null };
+      const waits = [];
+      const c = cooldown(provider.id);
+      if (c) waits.push({ kind: "cooldown", retryAt: c.until });
+      if (minute.requests + 1 > l.rpm || minute.tokens + tokens > l.tpm)
+        waits.push({ kind: "minute", retryAt: minute.reset });
+      if (day.requests + 1 > l.rpd || day.tokens + tokens > l.tpd)
+        waits.push({ kind: "day", retryAt: day.reset });
+      return waits.sort((a, b) => b.retryAt - a.retryAt)[0] || null;
+    },
     reserve(provider, tokens) {
       if (cooldown(provider.id)) return null;
       let minute, day;
