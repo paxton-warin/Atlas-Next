@@ -22,10 +22,8 @@
   },
   "dependencies": {
     "@fastify/static": "9.0.0",
-    "@mercuryworkshop/bare-mux": "2.1.9",
     "@mercuryworkshop/libcurl-transport": "2.0.5",
     "@mercuryworkshop/wisp-js": "0.4.1",
-    "@titaniumnetwork-dev/ultraviolet": "3.2.10",
     "argon2": "0.45.1",
     "fastify": "5.12.3",
     "ipaddr.js": "2.2.0",
@@ -35,8 +33,7 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1",
-    "uv-epoxy": "npm:@mercuryworkshop/epoxy-transport@2.1.28"
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

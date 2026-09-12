@@ -31,6 +31,8 @@ export default function Admin() {
     [body, setBody] = useState(""),
     [overview, setOverview] = useState<any>(null),
     [games, setGames] = useState<Game[]>([]),
+    [catalogQuery, setCatalogQuery] = useState(""),
+    [catalogKind, setCatalogKind] = useState("all"),
     [edit, setEdit] = useState<any>(null),
     [name, setName] = useState("Atlas");
   const adminApi = (path: string, options: RequestInit = {}) =>
@@ -430,6 +432,7 @@ export default function Admin() {
                       url: "",
                       category: "Arcade",
                       artwork: "hex",
+                      kind: "game",
                       enabled: true,
                     })
                   }
@@ -452,6 +455,19 @@ export default function Admin() {
                     }}
                   >
                     <h2>{edit.name || "New game"}</h2>
+                    <label className="form-field">
+                      Type
+                      <select
+                        aria-label="Catalog type"
+                        value={edit.kind || "game"}
+                        onChange={(e) =>
+                          setEdit({ ...edit, kind: e.target.value })
+                        }
+                      >
+                        <option value="game">Game</option>
+                        <option value="app">App</option>
+                      </select>
+                    </label>
                     {["name", "description", "url", "category"].map((k) => (
                       <label className="form-field" key={k}>
                         {k}
@@ -500,22 +516,48 @@ export default function Admin() {
                   </form>
                 )}
                 <section className="setting-card">
-                  {games.map((g) => (
-                    <button
-                      className="ticket-row"
-                      key={g.id}
-                      onClick={() => setEdit({ ...g, enabled: !!g.enabled })}
+                  <div className="catalog-toolbar">
+                    <input
+                      aria-label="Search owner catalog"
+                      placeholder="Search apps and games"
+                      value={catalogQuery}
+                      onChange={(e) => setCatalogQuery(e.target.value)}
+                    />
+                    <select
+                      aria-label="Filter owner catalog"
+                      value={catalogKind}
+                      onChange={(e) => setCatalogKind(e.target.value)}
                     >
-                      <Grid2X2 size={19} />
-                      <span>
-                        <strong>{g.name}</strong>
-                        <small>
-                          {g.category} · {g.enabled ? "Visible" : "Hidden"}
-                        </small>
-                      </span>
-                      <ArrowUpRight size={16} />
-                    </button>
-                  ))}
+                      <option value="all">Apps & games</option>
+                      <option value="app">Apps</option>
+                      <option value="game">Games</option>
+                    </select>
+                  </div>
+                  {games
+                    .filter(
+                      (g) =>
+                        g.name
+                          .toLowerCase()
+                          .includes(catalogQuery.toLowerCase()) &&
+                        (catalogKind === "all" ||
+                          (g.kind || "game") === catalogKind),
+                    )
+                    .map((g) => (
+                      <button
+                        className="ticket-row"
+                        key={g.id}
+                        onClick={() => setEdit({ ...g, enabled: !!g.enabled })}
+                      >
+                        <Grid2X2 size={19} />
+                        <span>
+                          <strong>{g.name}</strong>
+                          <small>
+                            {g.category} · {g.enabled ? "Visible" : "Hidden"}
+                          </small>
+                        </span>
+                        <ArrowUpRight size={16} />
+                      </button>
+                    ))}
                 </section>
               </>
             )}
@@ -558,20 +600,18 @@ export default function Admin() {
                 <section className="setting-card">
                   <h2>Pinned browsing runtime</h2>
                   <p>
-                    Built from Scramjet's official demo source. Site
-                    compatibility needs workflow testing.
+                    Uses the pinned browsing runtime. Site compatibility needs
+                    workflow testing.
                   </p>
                   <dl>
                     <dt>Source revision</dt>
                     <dd>
                       <code>{overview?.runtime.commit}</code>
                     </dd>
-                    <dt>Scramjet / controller</dt>
+                    <dt>Atlas / controller</dt>
                     <dd>
                       {overview?.runtime.core} / {overview?.runtime.controller}
                     </dd>
-                    <dt>Ultraviolet</dt>
-                    <dd>{overview?.runtime.ultraviolet}</dd>
                   </dl>
                   <p className="small muted">
                     Chromebook, Google authentication, ChatGPT authentication

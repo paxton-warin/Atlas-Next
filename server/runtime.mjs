@@ -247,7 +247,7 @@ export async function createRuntime({
   await app.register(fastifyStatic, { root: staticDir });
   app.setNotFoundHandler((req, reply) => {
     if (
-      ["/~/app/", "/~/sj/", "/uv/service/"].some((prefix) =>
+      ["/~/app/", "/~/sj/"].some((prefix) =>
         req.url.startsWith(prefix),
       )
     )

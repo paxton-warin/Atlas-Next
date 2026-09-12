@@ -54,7 +54,7 @@ async function owner(app) {
 test("public catalog and origin isolation", async () => {
   const f = await fixture();
   try {
-    assert.equal((await f.app.inject("/api/catalog")).json().length, 6);
+    assert.ok((await f.app.inject("/api/catalog")).json().length > 100);
     assert.equal((await f.app.inject("/api/admin/tickets")).statusCode, 401);
     assert.equal(
       (
@@ -220,6 +220,38 @@ test("catalog mutations require admin and validate URLs", async () => {
     assert.equal(
       (await request({ ...entry, url: "https://example.com" })).statusCode,
       200,
+    );
+    assert.equal(
+      (await request({ ...entry, url: "https://example.com", kind: "app" }))
+        .statusCode,
+      200,
+    );
+    assert.equal(
+      (await f.app.inject("/api/catalog")).json().find((r) => r.id === "test")
+        .kind,
+      "app",
+    );
+    assert.equal(
+      (await request({ ...entry, url: "https://example.com", kind: "invalid" }))
+        .statusCode,
+      400,
+    );
+    const spotify = (await f.app.inject("/api/catalog"))
+      .json()
+      .find((r) => r.name === "Spotify" && r.kind === "app");
+    assert.ok(spotify.thumbnail);
+    const saved = await f.app.inject({
+      method: "PUT",
+      url: "/api/admin/catalog/" + spotify.id,
+      payload: { ...spotify, description: "Owner updated description" },
+      headers: { origin, cookie: a.cookie, "x-atlas-csrf": a.csrf },
+    });
+    assert.equal(saved.statusCode, 200);
+    assert.equal(
+      (await f.app.inject("/api/catalog"))
+        .json()
+        .find((r) => r.id === spotify.id).thumbnail,
+      spotify.thumbnail,
     );
   } finally {
     await f.done();

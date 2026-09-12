@@ -1,16 +1,12 @@
 // Pinned fork bootstrap/transport; Atlas adds its frame bridge and upgrade handling.
 import { migrateCookies, activateWorker } from "./runtime-migration";
+import { loadRuntimeConfig, watchRuntimeSession } from "./connection";
 import { watchFavicon } from "./favicon";
+import { matchesShortcut, normalizeShortcut } from "./panic-shortcut";
+import { installPageBridge } from "./page-bridge";
 const globals = window as any;
 const ticket = new URLSearchParams(location.hash.slice(1)).get("ticket") || "";
-const response = await fetch("/runtime-config", {
-  headers: ticket ? { authorization: "Bearer " + ticket } : {},
-});
-const config = await response.json();
-if (!response.ok)
-  throw Error(
-    config.message || config.error || "Browsing node is unavailable.",
-  );
+const config = await loadRuntimeConfig(ticket);
 const relayQuery = ticket ? encodeURIComponent(ticket) + "/" : "";
 const standalone = parent === window;
 const notify = (type: string, data: Record<string, unknown> = {}) => {
@@ -25,6 +21,7 @@ const notify = (type: string, data: Record<string, unknown> = {}) => {
   }
   parent.postMessage({ atlas: 1, type, ...data }, config.appOrigin);
 };
+watchRuntimeSession(ticket, notify);
 const records = new Map<
   string,
   {
@@ -35,32 +32,11 @@ const records = new Map<
     disposeFavicon?: () => void;
   }
 >();
+let panicKey = "";
+const panicDocuments = new WeakSet<Document>();
 let controller: any;
 let initialization: Promise<void> | undefined;
-let uvInitialization: Promise<void> | undefined;
-let uvIconFetcher: Promise<typeof fetch>;
 const container = document.getElementById("frames")!;
-async function activated(reg: ServiceWorkerRegistration) {
-  if (reg.active) return reg.active;
-  const sw = reg.installing || reg.waiting;
-  if (!sw) throw Error("No worker is available.");
-  await new Promise<void>((resolve, reject) => {
-    const t = setTimeout(
-      () => reject(Error("Worker activation timed out.")),
-      15000,
-    );
-    const changed = () => {
-      if (sw.state === "activated") {
-        clearTimeout(t);
-        sw.removeEventListener("statechange", changed);
-        resolve();
-      }
-    };
-    sw.addEventListener("statechange", changed);
-    changed();
-  });
-  return reg.active!;
-}
 async function init() {
   await migrateCookies();
   const sw = await activateWorker("/worker.js");
@@ -84,61 +60,11 @@ async function init() {
     controller.wait(),
     new Promise((_, reject) =>
       setTimeout(
-        () => reject(Error("Scramjet initialization timed out.")),
+        () => reject(Error("Atlas connection initialization timed out.")),
         25000,
       ),
     ),
   ]);
-}
-function load(src: string) {
-  return new Promise<void>((ok, bad) => {
-    const s = document.createElement("script");
-    s.src = src;
-    s.onload = () => ok();
-    s.onerror = () => bad(Error("Runtime asset failed to load."));
-    document.head.append(s);
-  });
-}
-async function initUv() {
-  await load("/vendor/uv/uv.bundle.js");
-  await load("/uv/uv.config.js");
-  await load("/vendor/baremux/index.js");
-  const reg = await navigator.serviceWorker.register("/uv/sw.js", {
-    scope: "/uv/",
-    updateViaCache: "none",
-  });
-  await activated(reg);
-  const mux = new globals.BareMux.BareMuxConnection(
-    "/vendor/baremux/worker.js",
-  );
-  await mux.setTransport("/vendor/epoxy/index.mjs", [
-    {
-      wisp: config.runtimeOrigin.replace(/^http/, "ws") + "/wisp/" + relayQuery,
-      wisp_v2: true,
-    },
-  ]);
-  // The host at / is outside UV's /uv/ worker scope. Fetch UV icons from a
-  // same-origin, worker-controlled document rather than issuing an unproxied
-  // request or changing either engine's service-worker scope.
-  uvIconFetcher = new Promise<typeof fetch>((resolve) => {
-    const relay = document.createElement("iframe");
-    relay.hidden = true;
-    relay.title = "Ultraviolet icon loader";
-    relay.setAttribute("aria-hidden", "true");
-    const timeout = setTimeout(() => {
-      relay.remove();
-      resolve(async () => {
-        throw Error("Icon loader timed out.");
-      });
-    }, 8000);
-    relay.onload = () => {
-      clearTimeout(timeout);
-      const realm = relay.contentWindow as Window & typeof globalThis;
-      resolve(realm.fetch.bind(realm));
-    };
-    relay.src = "/uv/favicon.html";
-    document.body.append(relay);
-  });
 }
 function publicUrl(value: unknown) {
   if (typeof value !== "string" || value.length > 8192)
@@ -171,98 +97,303 @@ function destroy(id: string) {
     if (i >= 0) controller.frames.splice(i, 1);
   }
   records.delete(id);
+  popups.delete(id);
 }
+const popups = new Map<
+  string,
+  { opener: Window | null; openerId: string; name: string; baseUrl: string }
+>();
+function attachPageBridge(
+  id: string,
+  win: Window & typeof globalThis,
+  client?: any,
+) {
+  const record = records.get(id)!;
+  const popup = popups.get(id);
+  if (popup && win === record.element.contentWindow) {
+    // A website frame is sandboxed from navigating a sibling iframe directly.
+    // Delegate the returned popup Window's location setter to its owning host.
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(client),
+      "url",
+    )!;
+    Object.defineProperty(client, "url", {
+      configurable: true,
+      get: () => descriptor.get!.call(client),
+      set: (value) => {
+        const current = descriptor.get!.call(client).href;
+        const next = new URL(
+          String(value),
+          current === "about:blank" ? popup.baseUrl : current,
+        );
+        record.frame.go(publicUrl(next.href));
+      },
+    });
+    client.locationProxy.assign = (value: string) => {
+      client.url = value;
+    };
+    client.locationProxy.replace = (value: string) => {
+      const current = descriptor.get!.call(client).href;
+      const next = publicUrl(
+        new URL(
+          String(value),
+          current === "about:blank" ? popup.baseUrl : current,
+        ).href,
+      );
+      const encoded = globals.$runtimekit.transformUrl(
+        next,
+        record.frame.context,
+        {
+          origin: new URL(next),
+          base: new URL(next),
+        },
+      );
+      // Call from the owning runtime, retaining replace's history semantics.
+      record.element.contentWindow!.location.replace(encoded);
+    };
+    Object.defineProperty(win, "opener", {
+      configurable: true,
+      get: () => popup.opener,
+    });
+    Object.defineProperty(win, "closed", {
+      configurable: true,
+      get: () => !records.has(id),
+    });
+    win.close = () => {
+      destroy(id);
+      notify("popup-closed", { id, openerId: popup.openerId });
+    };
+    win.focus = () => {
+      for (const [key, r] of records) r.element.hidden = key !== id;
+      notify("popup-focus", { id });
+    };
+  }
+  installPageBridge(win, {
+    topName: record.element.name,
+    pageUrl: () => client.url.href,
+    focusSearch: () => notify("focus-search", { id }),
+    open: (url, name, opener, noOpener) => {
+      const existing =
+        !noOpener &&
+        name !== "_blank" &&
+        [...popups].find(
+          ([key, info]) =>
+            records.has(key) && info.openerId === id && info.name === name,
+        );
+      const popupId = existing ? existing[0] : crypto.randomUUID();
+      popups.set(popupId, {
+        opener: noOpener ? null : opener,
+        openerId: id,
+        name,
+        baseUrl: client.url.href,
+      });
+      const child =
+        records.get(popupId) || createRecord(popupId, record.engine);
+      const childWindow = child.element.contentWindow!;
+      // A synchronous Window return is needed by OAuth callers that open a blank
+      // window and navigate it later. The controller supplies the actual realm.
+      if (client && !existing) {
+        client.init.hookSubcontext(childWindow);
+      }
+      for (const [key, r] of records) r.element.hidden = key !== popupId;
+      notify("popup-created", {
+        id: popupId,
+        openerId: id,
+        url,
+        engine: record.engine,
+      });
+      const encode = (value: string) =>
+        globals.$runtimekit.transformUrl(value, child.frame.context, {
+          origin: new URL(
+            url === "about:blank" ? client?.url.href || location.href : url,
+          ),
+          base: new URL(
+            url === "about:blank" ? client?.url.href || location.href : url,
+          ),
+        });
+      if (url !== "about:blank") child.element.src = encode(url);
+      return {
+        window: childWindow,
+        name: child.element.name,
+        submit(form: HTMLFormElement, submitter?: HTMLElement | null) {
+          const button = submitter as
+            | HTMLButtonElement
+            | HTMLInputElement
+            | null;
+          const effective = (
+            attr: string,
+            buttonValue: string | undefined,
+            formValue: string,
+          ) => (button?.hasAttribute(attr) ? buttonValue! : formValue);
+          // The fork restores URL attributes, but not the camel-case formAction getter.
+          const action = button?.hasAttribute("formaction")
+            ? button.getAttribute("formaction")!
+            : form.getAttribute("action") || client.url.href;
+          const submitted = document.createElement("form");
+          submitted.action = encode(
+            publicUrl(
+              new URL(
+                action || client.url.href,
+                form.baseURI || client.url.href,
+              ).href,
+            ),
+          );
+          submitted.target = child.element.name;
+          submitted.method = effective(
+            "formmethod",
+            button?.formMethod,
+            form.method,
+          );
+          submitted.enctype = effective(
+            "formenctype",
+            button?.formEnctype,
+            form.enctype,
+          );
+          submitted.acceptCharset = form.acceptCharset || "UTF-8";
+          submitted.hidden = true;
+          for (const [name, value] of new FormData(form, button)) {
+            const input = document.createElement("input");
+            input.name = name;
+            if (typeof value === "string") {
+              input.type = "hidden";
+              input.value = value;
+            } else {
+              input.type = "file";
+              const transfer = new DataTransfer();
+              transfer.items.add(value);
+              input.files = transfer.files;
+            }
+            submitted.append(input);
+          }
+          document.body.append(submitted);
+          try {
+            HTMLFormElement.prototype.submit.call(submitted);
+          } finally {
+            setTimeout(() => submitted.remove(), 0);
+          }
+        },
+      };
+    },
+  });
+}
+function pageBridgePlugin(id: string) {
+  const { ManagedPlugin } = globals.$runtimekitController;
+  return new (class extends ManagedPlugin {
+    constructor() {
+      super("atlas-page-bridge", []);
+    }
+    install(frame: any) {
+      super.install(frame);
+      this.tap(frame.hooks.init.post, ({ window, client }: any) =>
+        attachPageBridge(id, window, client),
+      );
+    }
+  })();
+}
+function createRecord(id: string, engine: string) {
+  const element = document.createElement("iframe");
+  element.title = "Proxied website";
+  element.allow =
+    "autoplay; encrypted-media; fullscreen; clipboard-write; camera; microphone";
+  const record = { element, engine, frame: null } as NonNullable<
+    ReturnType<typeof records.get>
+  >;
+  element.name = "atlas-frame-" + id;
+  records.set(id, record);
+  container.append(element);
+  {
+    const { HttpCachePlugin, UrlWatcherPlugin, CatchEscapedLinksPlugin } =
+      globals.$runtimekitUtils;
+    record.frame = controller.createFrame(element, {
+      plugins: [
+        pageBridgePlugin(id),
+        new HttpCachePlugin(),
+        new UrlWatcherPlugin((value: URL) =>
+          notify("navigation", { id, url: String(value) }),
+        ),
+        new CatchEscapedLinksPlugin(
+          (value: URL) =>
+            new URL(
+              "/?goto=" +
+                encodeURIComponent(String(value)) +
+                (ticket ? "#ticket=" + encodeURIComponent(ticket) : ""),
+              location.origin,
+            ),
+        ),
+      ],
+    });
+  }
+  element.addEventListener("load", () => {
+    const r = records.get(id);
+    if (!r) return;
+    clearTimeout(r.timer);
+    r.disposeFavicon?.();
+    notify("loaded", { id });
+    try {
+      const doc = element.contentDocument;
+      notify("title", { id, title: doc?.title?.slice(0, 160) || "" });
+      if (doc && doc.URL !== "about:blank") {
+        if (!panicDocuments.has(doc)) {
+          panicDocuments.add(doc);
+          doc.addEventListener(
+            "keydown",
+            (event) => {
+              const editable = (event.target as Element | null)?.closest?.(
+                "input,textarea,select,[contenteditable]",
+              );
+              if (matchesShortcut(event, panicKey) && !editable) {
+                event.preventDefault();
+                notify("panic", { key: panicKey });
+              }
+            },
+            true,
+          );
+        }
+        const nativeUrl = Object.getOwnPropertyDescriptor(
+          Document.prototype,
+          "URL",
+        )!.get!.call(doc) as string;
+        const prefix = r.frame.context.prefix.href;
+        const pageUrl = globals.$runtimekit.restoreurl(
+          nativeUrl,
+          r.frame.context,
+        );
+        r.disposeFavicon = watchFavicon(
+          doc,
+          (value) => {
+            if (value.length > 350000) throw Error("Icon URL too long");
+            if (/^data:image\//i.test(value)) return value;
+            // Native link getters return rewritten URLs; retain the frame's
+            // proxy prefix so fetching uses the same engine/session as the page.
+            const parsed = new URL(value, pageUrl);
+            if (parsed.href.startsWith(prefix)) return parsed.href;
+            const target = publicUrl(parsed.href);
+            return globals.$runtimekit.transformUrl(target, r.frame.context, {
+              origin: new URL(pageUrl),
+              base: new URL(pageUrl),
+            });
+          },
+          (favicon) => notify("favicon", { id, favicon }),
+          fetch,
+        );
+      }
+    } catch {}
+  });
+  return record;
+}
+
 async function navigate(id: string, url: string, engine: string) {
-  if (engine === "ultraviolet")
-    await (uvInitialization ??= initUv().catch((error) => {
-      uvInitialization = undefined;
-      throw error;
-    }));
-  else
-    await (initialization ??= init().catch((error) => {
-      initialization = undefined;
-      throw error;
-    }));
+  engine = "scramjet";
+  await (initialization ??= init().catch((error) => {
+    initialization = undefined;
+    throw error;
+  }));
   let record = records.get(id);
   if (record && record.engine !== engine) {
     destroy(id);
     record = undefined;
   }
-  if (!record) {
-    const element = document.createElement("iframe");
-    element.title = "Proxied website";
-    element.allow =
-      "autoplay; encrypted-media; fullscreen; clipboard-write; camera; microphone";
-    record = { element, engine, frame: null };
-    records.set(id, record);
-    container.append(element);
-    if (engine === "scramjet") {
-      const { HttpCachePlugin, UrlWatcherPlugin, CatchEscapedLinksPlugin } =
-        globals.$runtimekitUtils;
-      record.frame = controller.createFrame(element, {
-        plugins: [
-          new HttpCachePlugin(),
-          new UrlWatcherPlugin((value: URL) =>
-            notify("navigation", { id, url: String(value) }),
-          ),
-          new CatchEscapedLinksPlugin(
-            (value: URL) =>
-              new URL(
-                "/?goto=" +
-                  encodeURIComponent(String(value)) +
-                  (ticket ? "#ticket=" + encodeURIComponent(ticket) : ""),
-                location.origin,
-              ),
-          ),
-        ],
-      });
-    }
-    element.addEventListener("load", () => {
-      const r = records.get(id);
-      if (!r) return;
-      clearTimeout(r.timer);
-      r.disposeFavicon?.();
-      notify("loaded", { id });
-      try {
-        const doc = element.contentDocument;
-        notify("title", { id, title: doc?.title?.slice(0, 160) || "" });
-        if (doc && doc.URL !== "about:blank") {
-          const nativeUrl = Object.getOwnPropertyDescriptor(
-            Document.prototype,
-            "URL",
-          )!.get!.call(doc) as string;
-          const prefix = r.frame
-            ? r.frame.context.prefix.href
-            : new URL(globals.__uv$config.prefix, location.origin).href;
-          const pageUrl = r.frame
-            ? globals.$runtimekit.restoreurl(nativeUrl, r.frame.context)
-            : globals.__uv$config.decodeUrl(nativeUrl.slice(prefix.length));
-          r.disposeFavicon = watchFavicon(
-            doc,
-            (value) => {
-              if (value.length > 350000) throw Error("Icon URL too long");
-              if (/^data:image\//i.test(value)) return value;
-              // Native link getters return rewritten URLs; retain the frame's
-              // proxy prefix so fetching uses the same engine/session as the page.
-              const parsed = new URL(value, pageUrl);
-              if (parsed.href.startsWith(prefix)) return parsed.href;
-              const target = publicUrl(parsed.href);
-              return r.frame
-                ? globals.$runtimekit.transformUrl(target, r.frame.context, {
-                    origin: new URL(pageUrl),
-                    base: new URL(pageUrl),
-                  })
-                : prefix + globals.__uv$config.encodeUrl(target);
-            },
-            (favicon) => notify("favicon", { id, favicon }),
-            r.engine === "ultraviolet"
-              ? async (...args) => (await uvIconFetcher)(...args)
-              : fetch,
-          );
-        }
-      } catch {}
-    });
-  }
+  if (!record) record = createRecord(id, engine);
   for (const [key, item] of records) item.element.hidden = key !== id;
   clearTimeout(record.timer);
   record.disposeFavicon?.();
@@ -272,15 +403,12 @@ async function navigate(id: string, url: string, engine: string) {
       notify("slow", {
         id,
         message:
-          "This page is taking longer than expected. You can wait, reload, or try another engine.",
+          "This page is taking longer than expected. You can wait, reload, or reconnect the node.",
       }),
     30000,
   );
   notify("loading", { id });
-  if (record.frame) await record.frame.go(url);
-  else
-    record.element.src =
-      globals.__uv$config.prefix + globals.__uv$config.encodeUrl(url);
+  await record.frame.go(url);
 }
 window.addEventListener("message", async (event) => {
   if (
@@ -296,12 +424,11 @@ window.addEventListener("message", async (event) => {
   }
   try {
     if (typeof id !== "string" || id.length > 100) return;
-    if (type === "navigate")
-      await navigate(
-        id,
-        publicUrl(url),
-        engine === "ultraviolet" ? "ultraviolet" : "scramjet",
-      );
+    if (type === "panic-key") {
+      panicKey = normalizeShortcut(event.data.key);
+      return;
+    }
+    if (type === "navigate") await navigate(id, publicUrl(url), "scramjet");
     else if (type === "activate")
       for (const [key, r] of records) r.element.hidden = key !== id;
     else if (type === "close") destroy(id);

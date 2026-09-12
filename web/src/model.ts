@@ -1,4 +1,6 @@
-export type Engine = "scramjet" | "ultraviolet";
+import { tabPresets, validCustomIcon, type TabPreset } from "./tab-presets";
+import { normalizeShortcut } from "../../runtime/panic-shortcut";
+export type Engine = "scramjet";
 export type Settings = {
   theme: string;
   mode: "dark" | "light" | "system";
@@ -14,7 +16,10 @@ export type Settings = {
   engine: Engine;
   restore: boolean;
   history: boolean;
+  autocomplete: boolean;
   title: string;
+  tabPreset: TabPreset;
+  tabIcon: string;
   exitKey: string;
   exitUrl: string;
 };
@@ -31,9 +36,12 @@ export const defaults: Settings = {
   motion: true,
   search: "https://www.google.com/search?q=%s",
   engine: "scramjet",
-  restore: false,
+  restore: true,
   history: true,
+  autocomplete: true,
   title: "",
+  tabPreset: "atlas",
+  tabIcon: "",
   exitKey: "",
   exitUrl: "https://www.google.com",
 };
@@ -84,7 +92,13 @@ export const themes = [
 export function sanitizeSettings(value: any): Settings {
   const s = { ...defaults };
   if (!value || typeof value !== "object") return s;
-  for (const k of ["compact", "motion", "restore", "history"] as const)
+  for (const k of [
+    "compact",
+    "motion",
+    "restore",
+    "history",
+    "autocomplete",
+  ] as const)
     if (typeof value[k] === "boolean") s[k] = value[k];
   if (themes.some((t) => t.id === value.theme)) s.theme = value.theme;
   if (["dark", "light", "system"].includes(value.mode)) s.mode = value.mode;
@@ -101,8 +115,7 @@ export function sanitizeSettings(value: any): Settings {
     if (Number.isFinite(value[k]))
       s[k] = Math.max(0, Math.min(k === "blur" ? 30 : 85, value[k]));
   if (["sidebar", "top"].includes(value.tabs)) s.tabs = value.tabs;
-  if (["scramjet", "ultraviolet"].includes(value.engine))
-    s.engine = value.engine;
+  s.engine = "scramjet"; // Normalize saved preferences and imports.
   if (
     typeof value.search === "string" &&
     value.search.startsWith("https://") &&
@@ -110,8 +123,16 @@ export function sanitizeSettings(value: any): Settings {
     value.search.length < 512
   )
     s.search = value.search;
-  if (typeof value.title === "string") s.title = value.title.slice(0, 60);
-  if (typeof value.exitKey === "string") s.exitKey = value.exitKey.slice(0, 20);
+  if (typeof value.title === "string")
+    s.title = value.title.replace(/[\x00-\x1f]/g, "").slice(0, 60);
+  if (
+    value.tabPreset === "custom" ||
+    tabPresets.some((p) => p.id === value.tabPreset)
+  )
+    s.tabPreset = value.tabPreset;
+  else if (value.tabPreset === undefined && s.title) s.tabPreset = "custom";
+  if (validCustomIcon(value.tabIcon)) s.tabIcon = value.tabIcon;
+  s.exitKey = normalizeShortcut(value.exitKey);
   if (typeof value.exitUrl === "string" && /^https:\/\//.test(value.exitUrl))
     s.exitUrl = value.exitUrl.slice(0, 2048);
   return s;
@@ -160,7 +181,10 @@ export async function api<T = any>(
     },
   });
   const data = await response.json();
-  if (!response.ok) throw Error(data.error || "Request failed.");
+  if (!response.ok)
+    throw Object.assign(Error(data.error || "Request failed."), {
+      status: response.status,
+    });
   return data;
 }
 export type Tab = {
@@ -175,6 +199,8 @@ export type Tab = {
   local?: boolean;
 };
 export type Game = {
+  kind?: "game" | "app";
+  thumbnail?: string;
   id: string;
   name: string;
   description: string;

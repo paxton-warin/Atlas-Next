@@ -23,7 +23,7 @@ for (const [file, asset] of Object.entries(fork.assets)) {
   if (hash(bytes) !== asset.sha256)
     throw Error(`Fork artifact hash mismatch: ${file}`);
 }
-for (const old of ["scramjet", "controller", "utils"])
+for (const old of ["scramjet", "controller", "utils", "uv", "baremux", "epoxy"])
   await rm(join(root, "vendor", old), { recursive: true, force: true });
 const hashes = {};
 for (const [file, asset] of Object.entries(fork.assets)) {
@@ -32,12 +32,6 @@ for (const [file, asset] of Object.entries(fork.assets)) {
   await cp(join(fork.directory, "app/vendor", file), target);
   hashes[asset.path] = hash(await readFile(target));
 }
-for (const [source, name] of [
-  ["node_modules/@titaniumnetwork-dev/ultraviolet/dist", "uv"],
-  ["node_modules/@mercuryworkshop/bare-mux/dist", "baremux"],
-  ["node_modules/uv-epoxy/dist", "epoxy"],
-])
-  await cp(source, join(root, "vendor", name), { recursive: true });
 async function walk(dir) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
@@ -46,7 +40,9 @@ async function walk(dir) {
       hashes[path.slice(root.length + 1)] = hash(await readFile(path));
   }
 }
-await walk(join(root, "vendor"));
+// Fresh clones have no legacy vendor directory; the pinned fork writes its
+// artifacts to the paths above instead.
+if (existsSync(join(root, "vendor"))) await walk(join(root, "vendor"));
 await writeFile(
   join(root, "manifest.json"),
   JSON.stringify(
@@ -56,7 +52,6 @@ await writeFile(
       packaging: "unchanged committed app/vendor artifacts",
       core: "2.0.67-alpha.2",
       controller: "0.0.14",
-      ultraviolet: "3.2.10",
       hashes,
     },
     null,

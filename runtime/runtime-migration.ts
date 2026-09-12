@@ -1,6 +1,11 @@
 // The fork renames only the cookie DB; hostname-prefixed Web Storage is unchanged.
 // Preserve the old database for rollback. Never overwrite an existing fork jar.
 export async function migrateCookies() {
+  // Retire the removed engine's worker without touching Scramjet cookies.
+  for (const registration of await navigator.serviceWorker.getRegistrations()) {
+    if (new URL(registration.scope).pathname === "/uv/")
+      await registration.unregister();
+  }
   if (
     !(await indexedDB.databases()).some(
       (db) => db.name === "__scramjet_controller",

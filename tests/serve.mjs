@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { digest, openStore } from "../server/store.mjs";
 import { createNodeService } from "../server/node-service.mjs";
 import { createRuntime } from "../server/runtime.mjs";
+import { navigationFixture } from "./navigation-fixture.mjs";
 const dir = mkdtempSync(join(tmpdir(), "atlas-browser-"));
 const seed = openStore(dir);
 seed.set("bootstrap", {
@@ -50,7 +51,22 @@ const fixture = createServer(
   },
   async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1:4199");
+    if (await navigationFixture(req, res, url)) return;
     res.setHeader("Cache-Control", "no-store");
+    // Test-only fixture server: independent browser cases share one loopback IP.
+    // Keep the production limits intact, but reset their fixture counters between cases.
+    if (
+      req.method === "POST" &&
+      url.pathname === "/__test/reset-browser-limits"
+    ) {
+      const store = openStore(dir);
+      store.db.exec(
+        "DELETE FROM limits WHERE key LIKE 'browse:%' OR key LIKE 'api:%'",
+      );
+      store.db.close();
+      res.end("FIXTURE_BROWSER_LIMITS_RESET");
+      return;
+    }
     if (url.pathname.startsWith("/icons/") || url.pathname === "/favicon.ico") {
       const missing =
         url.pathname === "/icons/missing.svg" ||

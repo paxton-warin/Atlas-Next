@@ -232,7 +232,11 @@ export function createNodePool(store) {
           503,
         );
     }
+    const serverTime = Date.now(),
+      expiresAt = serverTime + TTL;
     return {
+      serverTime,
+      expiresAt,
       session: raw,
       runtimeOrigin: selectedOrigin,
       node: {
@@ -247,7 +251,7 @@ export function createNodePool(store) {
           runtimeOrigin: selectedOrigin,
           node: n.id,
           name: n.name,
-          expires: Date.now() + TTL,
+          expires: expiresAt,
         },
         n.id === "local" ? localSecret : unseal(n.credential),
       ),

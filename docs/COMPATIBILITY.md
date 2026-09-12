@@ -4,7 +4,7 @@ Target: Chrome on an actual Chromebook. Desktop Chrome is the development harnes
 
 ## Current selected runtime — 2026-09-12
 
-Atlas now uses https://github.com/paxton-warin/Scramjet-LS-Bypass at `4f452feec4d6804730b903294d0f9bec8002a635`. Eight shipped assets are hash-verified and copied unchanged; Atlas calls the shipped `loadRest` bootstrap with its HTTP transport. The routed prefix is `/~/app/`, globals use `$runtimekit`, and the worker is `/worker.js`. The old `/sw.js` becomes a transition wrapper. UV retains its own `/uv/` scope and transport.
+Atlas now uses https://github.com/paxton-warin/Scramjet-LS-Bypass at `4f452feec4d6804730b903294d0f9bec8002a635`. Eight shipped assets are hash-verified and copied unchanged; Atlas calls the shipped `loadRest` bootstrap with its HTTP transport. The routed prefix is `/~/app/`, globals use `$runtimekit`, and the worker is `/worker.js`. The old `/sw.js` becomes a transition wrapper. Atlas is Scramjet-only.
 
 A real Chrome same-origin upgrade from the previous build preserved cookies and localStorage, activated the new worker, retained the legacy cookie database for rollback, and confirmed logout remained effective after another reload. The adapter copies legacy cookies only when the new cookie record is absent; it does not overwrite an existing fork jar.
 
@@ -26,7 +26,7 @@ Chrome 152.0.7977.83 on macOS; **not a physical Chromebook**.
 
 - Backend: 8 passing tests.
 - Browser: 22 actually passing journeys, 2 expected failures (the same download journey in Atlas and the stock demo), 0 unexpected failures. Playwright counts expected failures in its overall “passed” total; `evidence/browser-summary.txt` separates them explicitly.
-- Passing fixture journeys: Scramjet HTTP, persistent/HttpOnly cookies, logout, storage, POST fetch, WebSocket, form POST, popup shell, multi-tab session sharing, app reload, stable frames during theme/layout changes, whole-runtime data clearing; Ultraviolet HTTP/cookies; wizard/settings/mobile layout; support conversations; admin enrollment/TOTP/recovery/catalog/reply/logout.
+- Passing fixture journeys: Scramjet HTTP, persistent/HttpOnly cookies, logout, storage, POST fetch, WebSocket, form POST, popup shell, multi-tab session sharing, app reload, stable frames during theme/layout changes, whole-runtime data clearing; wizard/settings/mobile layout; support conversations; admin enrollment/TOTP/recovery/catalog/reply/logout.
 - The fixture initially mishandled libcurl's h2c upgrade offer. Fixing its Node HTTP upgrade selection restored ordinary POST body parsing for both engines; the Scramjet source was not patched.
 - Google: logged-out page rendered in both.
 - Spotify: logged-out interface rendered in both; no audio or account journey tested.
@@ -34,7 +34,7 @@ Chrome 152.0.7977.83 on macOS; **not a physical Chromebook**.
 - Download link with an empty `download` attribute: both returned the unexpected filename `http___127.0.0.txt`; a separate stock-demo byte-stream check reported `download.createReadStream: canceled`. This is an open workflow failure, not evidence of working downloads. Expected-failure tests will flag an unexpected pass if the upstream behavior changes.
 - Docker and public HTTPS deployment were not exercised: the local Docker daemon was not running. Configuration files are supplied but are not deployment certification.
 
-Favicon coverage: both engines load relative icons with a base URL, reflect dynamic icon changes, use website-session cookies for protected icons, retain icons across tab-layout changes, reload icons on restored tabs, and use a globe or `/favicon.ico` when an explicit icon is missing. Icon requests remain inside the proxy runtime; no external favicon lookup service is used. Ultraviolet uses a hidden `/uv/`-scoped loader so its existing service worker handles icon requests without expanding its scope.
+Favicon coverage: Scramjet load relative icons with a base URL, reflect dynamic icon changes, use website-session cookies for protected icons, retain icons across tab-layout changes, reload icons on restored tabs, and use a globe or `/favicon.ico` when an explicit icon is missing. Icon requests remain inside the proxy runtime; no external favicon lookup service is used.
 
 Evidence: `evidence/favicons/check.log`, `evidence/favicons/VERIFICATION.txt`, `evidence/check.log`, `evidence/browser-results.json`, `evidence/browser-summary.txt`, `evidence/public-smoke.json`, and `VERIFICATION.txt`.
 
@@ -60,10 +60,9 @@ Google documents embedded-user-agent conditions at https://developers.google.com
 - The React interface contains no proxy rewriter modifications.
 - One runtime controller lives on a distinct hostname; multiple website frames are maintained within it.
 - The runtime accepts narrowly typed, source-and-origin-checked navigation messages from the shell. It sends URL/title/load/error events and bounded, rasterized PNG favicons back.
-- The parent iframe is sandboxed without top-navigation permission. Popups are allowed to leave that sandbox into a standalone runtime shell using the demo-style `?goto=` redirect. The local popup fixture passes; OAuth popup return/opener workflows still require qualification.
-- Worker/vendor paths use `/vendor/`. No global string rewriting or renaming of upstream code.
+- The parent iframe remains sandboxed without top-navigation permission. An Atlas controller plugin routes JavaScript, link and form popups into internal tabs; local fixtures cover opener messaging, close/focus, named reuse, blank-window navigation, POST redirects and multipart uploads. Native context-menu windows still use the standalone runtime shell. Real provider OAuth flows remain unverified.
+- The current fork uses its shipped bootstrap/controller/runtime paths, with unchanged hash-verified upstream assets. Atlas integration hooks live in `runtime/host.ts` and `runtime/page-bridge.ts`; no global string rewriting of upstream code.
 - Production egress rejects internal IP ranges, metadata, local/private/IPv6-mapped addresses, app hostnames and ports other than 80/443. Test allowance is limited to 127.0.0.1:4199 and exists only in the test runner.
-- Ultraviolet 3.2.10 uses BareMux 2.1.9 and separately pinned Epoxy 2.1.28. It has a nested `/uv/` worker scope. Switching engines does not transfer login sessions.
 - Stable frames survive theme/layout changes and navigation to settings. No automatic tab suspension is implemented.
 
 ## Known outstanding work
@@ -92,3 +91,11 @@ Latest automated suite: 8 backend passes, 22 browser passes, 2 tracked upstream 
 ### Thin-border follow-up
 
 The current new tab uses 1px theme-aware outlines on the main panel, tab rail, navigation and shortcuts; the main panel/search/shortcut corners are 12px. The 44px default rail, 80px desktop greeting, 52px shortcuts, transparent background and absence of a duplicate home toolbar are retained. The new-tab test now checks these thin borders and unchanged control dimensions. Evidence: `evidence/newtab-borders/check.log` and `evidence/newtab-borders/VERIFICATION.txt`.
+
+## Scramjet-only navigation follow-up — 2026-09-12
+
+The interface, setup wizard, settings, owner configuration and saved-tab migration now select Scramjet only. The connection dropdown reports the engine and pinned node, with an explicit reconnect action. Removed-engine packages, workers, routes and vendor assets are no longer shipped; migration retires the old worker without deleting website cookies.
+
+The top navigation is centered at desktop and mobile widths. The address bar exposes existing autocomplete and selects its current URL on Cmd+K (Apple) or Ctrl+K (Windows/ChromeOS/Linux), including focus from nested website frames. Popup tabs share the existing runtime and pinned node; opening a popup does not reconnect or change the browsing IP.
+
+Controlled tests cover native Enter GET submission, Google-shaped textarea Enter handling (including Shift/IME/default-prevented cases), nested callback POST/303 plus HttpOnly cookie retention, popup POST and multipart/submitter overrides. The textarea fixture is mocked, not a real Google search or solved CAPTCHA. A live logged-out Google probe separately reached Google's challenge page after Enter. No challenge was solved; real post-CAPTCHA return and authenticated Google/ChatGPT/Spotify success remain unverified. Evidence and test totals are recorded in `evidence/google-navigation/VERIFICATION.txt`.

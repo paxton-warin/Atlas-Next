@@ -58,6 +58,7 @@ execFileSync("tar", [
   "Dockerfile",
   ".dockerignore",
   "compose.yaml",
+  "compose.cloudfront.yaml",
   "Caddyfile",
   "Caddyfile.cloudfront",
   "Caddyfile.node",

@@ -1,0 +1,44 @@
+[
+  {
+    "file": "google.ico",
+    "url": "https://www.google.com/favicon.ico",
+    "contentType": "image/x-icon",
+    "bytes": 5430,
+    "sha256": "6da5620880159634213e197fafca1dde0272153be3e4590818533fab8d040770"
+  },
+  {
+    "file": "gmail.ico",
+    "url": "https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico",
+    "contentType": "image/x-icon",
+    "bytes": 26068,
+    "sha256": "2a5c83dd7f4634810218ba70e3fe9550fb5d887e349cb46d77419eb1c74bc299"
+  },
+  {
+    "file": "drive.png",
+    "url": "https://ssl.gstatic.com/docs/doclist/images/drive_2022q3_32dp.png",
+    "contentType": "image/png",
+    "bytes": 1594,
+    "sha256": "2ab9cd0ffdddf7bf060620ae328fe626bfa2c004739adedb74ec894faf9bee31"
+  },
+  {
+    "file": "docs.ico",
+    "url": "https://ssl.gstatic.com/docs/documents/images/kix-favicon7.ico",
+    "contentType": "image/x-icon",
+    "bytes": 24838,
+    "sha256": "d40e9376b2f8c8fa5e0372c3ddacb5f6044539cf1d264bbcbee8057daf71ed96"
+  },
+  {
+    "file": "sheets.ico",
+    "url": "https://ssl.gstatic.com/docs/spreadsheets/favicon3.ico",
+    "contentType": "image/x-icon",
+    "bytes": 24838,
+    "sha256": "b4407478dcd25903b7e3719cbd1a3ff42e1f51ae74d690be7a7af11e1964ef57"
+  },
+  {
+    "file": "classroom.png",
+    "url": "https://ssl.gstatic.com/classroom/favicon.png",
+    "contentType": "image/png",
+    "bytes": 491,
+    "sha256": "8c085c6006c1325906966db99a5db8ac5d312c224a2e2c9a0e3d56bfebf5f23a"
+  }
+]

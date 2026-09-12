@@ -33,6 +33,16 @@ export function openStore(dir) {
     CREATE TABLE IF NOT EXISTS limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS catalog (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, url TEXT NOT NULL, artwork TEXT NOT NULL, category TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
   `);
+  const catalogColumns = db
+    .prepare("PRAGMA table_info(catalog)")
+    .all()
+    .map((c) => c.name);
+  if (!catalogColumns.includes("kind"))
+    db.exec("ALTER TABLE catalog ADD COLUMN kind TEXT NOT NULL DEFAULT 'game'");
+  if (!catalogColumns.includes("thumbnail"))
+    db.exec(
+      "ALTER TABLE catalog ADD COLUMN thumbnail TEXT NOT NULL DEFAULT ''",
+    );
   const get = (name) => {
     const row = db.prepare("SELECT value FROM settings WHERE key=?").get(name);
     return row ? JSON.parse(row.value) : null;
@@ -68,7 +78,7 @@ export function openStore(dir) {
   };
   if (!get("catalogSeeded")) {
     const insert = db.prepare(
-      "INSERT OR IGNORE INTO catalog VALUES (?,?,?,?,?,?,1)",
+      "INSERT OR IGNORE INTO catalog (id,name,description,url,artwork,category,enabled) VALUES (?,?,?,?,?,?,1)",
     );
     for (const row of [
       [
@@ -122,6 +132,33 @@ export function openStore(dir) {
     ])
       insert.run(...row);
     set("catalogSeeded", true);
+  }
+  if (!get("catalogLibrary20260912")) {
+    const library = JSON.parse(
+      readFileSync(new URL("./catalog.json", import.meta.url), "utf8"),
+    );
+    db.exec("BEGIN");
+    try {
+      const insert = db.prepare(
+        "INSERT OR IGNORE INTO catalog (id,name,description,url,artwork,category,enabled,kind,thumbnail) VALUES (?,?,?,?,?,?,1,?,?)",
+      );
+      for (const row of library)
+        insert.run(
+          row.id,
+          row.name,
+          row.description,
+          row.url,
+          row.artwork,
+          row.category,
+          row.kind,
+          row.thumbnail,
+        );
+      set("catalogLibrary20260912", true);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   }
   return { db, get, set, audit, seal, unseal };
 }

@@ -1,0 +1,39 @@
+# Main/frontend deployment behind CloudFront. Use from the main application worktree.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      NODE_ENV: production
+      DATA_DIR: /data
+      TRUST_PROXY: 172.30.80.3
+    volumes:
+      - atlas-data:/data
+    networks:
+      atlas:
+        ipv4_address: 172.30.80.2
+  edge:
+    image: caddy:2
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.cloudfront:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      atlas:
+        ipv4_address: 172.30.80.3
+networks:
+  atlas:
+    ipam:
+      config:
+        - subnet: 172.30.80.0/24
+volumes:
+  atlas-data:
+  caddy-data:
+  caddy-config:

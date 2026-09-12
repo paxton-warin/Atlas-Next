@@ -1,5 +1,7 @@
 # Direct browsing nodes
 
+For the complete three-server procedure, see [Three VPS setup](THREE-VPS-SETUP.md).
+
 ## Traffic
 
 ```text

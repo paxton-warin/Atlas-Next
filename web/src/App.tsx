@@ -1,12 +1,14 @@
+import Catalog from "./Catalog";
 import {
   useEffect,
   useRef,
   useState,
   lazy,
   Suspense,
-  type FormEvent,
   type CSSProperties,
 } from "react";
+import { matchesShortcut } from "../../runtime/panic-shortcut";
+import { isSearchShortcut } from "../../runtime/browser-shortcuts";
 import {
   ArrowLeft,
   ArrowRight,
@@ -17,6 +19,7 @@ import {
   Compass,
   ExternalLink,
   Gamepad2,
+  Grid2X2,
   Globe2,
   Heart,
   HelpCircle,
@@ -51,6 +54,10 @@ import {
   type Game,
   type Engine,
 } from "./model";
+import SearchBox from "./SearchBox";
+import BrowsingOptions, { ReconnectDialog } from "./BrowsingOptions";
+import SetupWizard from "./SetupWizard";
+import { tabAppearance } from "./tab-presets";
 import { Settings } from "./Settings";
 import Support from "./Support";
 const AiChat = lazy(() => import("./AiChat"));
@@ -90,8 +97,13 @@ const seedShortcuts = [
 function NewTabGreeting() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 60000);
-    return () => clearInterval(timer);
+    const update = () => setNow(new Date());
+    const timer = setInterval(update, 1000);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", update);
+    };
   }, []);
   const period =
     now.getHours() < 12
@@ -101,13 +113,27 @@ function NewTabGreeting() {
         : "evening";
   return (
     <>
-      <time className="newtab-date" dateTime={now.toISOString()}>
-        {now.toLocaleDateString(undefined, {
-          weekday: "long",
-          month: "long",
-          day: "numeric",
-        })}
-      </time>
+      <div className="newtab-datetime">
+        <time className="newtab-date" dateTime={now.toISOString()}>
+          {now.toLocaleDateString(undefined, {
+            weekday: "long",
+            month: "long",
+            day: "numeric",
+          })}
+        </time>
+        <time
+          className="newtab-clock"
+          aria-label="Current time"
+          aria-live="off"
+          dateTime={now.toISOString()}
+        >
+          {now.toLocaleTimeString(undefined, {
+            hour: "numeric",
+            minute: "2-digit",
+            second: "2-digit",
+          })}
+        </time>
+      </div>
       <h1>
         Good <em>{period}.</em>
       </h1>
@@ -124,9 +150,14 @@ export default function App() {
   const [wizard, setWizard] = useState(
     () => !readLocal("atlas.onboarded", false),
   );
-  const [step, setStep] = useState(0);
   const [notice, setNotice] = useState("");
   const [config, setConfig] = useState<any>(null);
+  const [connectionExpired, setConnectionExpired] = useState(false);
+  const [reconnectReason, setReconnectReason] = useState<
+    "expired" | "manual" | null
+  >(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectError, setReconnectError] = useState("");
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>(() => {
     const s = sanitizeSettings(readLocal("atlas.settings", defaults));
@@ -140,7 +171,12 @@ export default function App() {
               /^https?:\/\//.test(t.url),
           )
           .slice(0, 20)
-          .map((t) => ({ ...t, favicon: undefined, status: "ready" }))
+          .map((t) => ({
+            ...t,
+            engine: "scramjet" as const,
+            favicon: undefined,
+            status: "ready",
+          }))
       : [];
   });
   const [active, setActive] = useState(""),
@@ -154,16 +190,26 @@ export default function App() {
   const [shortcuts, setShortcuts] = useState(() =>
       readLocal("atlas.shortcuts", seedShortcuts),
     ),
-    [games, setGames] = useState<Game[]>([]),
-    [gameFilter, setGameFilter] = useState("All games"),
-    [sort, setSort] = useState("Featured");
-  const [favorites, setFavorites] = useState<string[]>(() =>
-    readLocal("atlas.favorites", []),
-  );
+    [games, setGames] = useState<Game[]>([]);
   const [aiOpened, setAiOpened] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [runtimeError, setRuntimeError] = useState("");
   const [runtimeAttempt, setRuntimeAttempt] = useState(0);
+  const [searchFocusRequest, requestSearchFocus] = useState(0);
+  function focusSearch() {
+    if (wizard) return;
+    setFocusMode(false);
+    if (page !== "browse" && page !== "home") setPage("home");
+    requestSearchFocus((n) => n + 1);
+  }
+  useEffect(() => {
+    if (!searchFocusRequest) return;
+    const input = document.querySelector<HTMLInputElement>(
+      "#omnibox, .hero-search input",
+    );
+    input?.focus();
+    input?.select();
+  }, [searchFocusRequest]);
   const lastBrowserTab = useRef("");
   const lastAiTab = useRef("");
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -204,9 +250,17 @@ export default function App() {
             }),
           });
           writeLocal("atlas.nodeSession", lease.session);
-          setConfig({ ...config, ...lease });
+          setConfig({
+            ...config,
+            ...lease,
+            expiresLocally: lease.expiresAt
+              ? Date.now() + lease.expiresAt - lease.serverTime
+              : undefined,
+          });
         } catch (error) {
           setConfig({ ...config, connectionError: (error as Error).message });
+          if ((error as Error & { status?: number }).status === 409)
+            expireConnection();
         }
       })
       .catch((e) => toast(e.message));
@@ -218,12 +272,14 @@ export default function App() {
     writeLocal("atlas.sidebarCollapsed", collapsed);
   }, [collapsed]);
   useEffect(() => {
+    writeLocal("atlas.settings", settings);
+  }, [settings]);
+  useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(""), 5000);
     return () => clearTimeout(t);
   }, [notice]);
   useEffect(() => {
-    document.title = settings.title || "Atlas";
     const q = matchMedia("(prefers-color-scheme: light)");
     const apply = () => {
       document.documentElement.dataset.mode =
@@ -236,7 +292,23 @@ export default function App() {
     apply();
     q.addEventListener("change", apply);
     return () => q.removeEventListener("change", apply);
-  }, [settings.mode, settings.title]);
+  }, [settings.mode]);
+  useEffect(() => {
+    const appearance = tabAppearance(settings);
+    document.title = appearance.title;
+    const icon =
+      document.querySelector<HTMLLinkElement>('link[rel="icon"]') ||
+      document.createElement("link");
+    icon.rel = "icon";
+    icon.href = appearance.icon;
+    icon.type = appearance.icon.endsWith(".svg")
+      ? "image/svg+xml"
+      : appearance.icon.endsWith(".ico")
+        ? "image/x-icon"
+        : "image/png";
+    icon.dataset.atlasTabIcon = "true";
+    if (!icon.isConnected) document.head.append(icon);
+  }, [settings.tabPreset, settings.title, settings.tabIcon]);
   useEffect(() => {
     writeLocal(
       "atlas.tabs",
@@ -259,13 +331,20 @@ export default function App() {
         config.runtimeOrigin,
       );
   }
+  function expireConnection() {
+    setConnectionExpired(true);
+    setRuntimeReady(false);
+    setReconnectError("");
+    setReconnectReason("expired");
+  }
+  function requestReconnect() {
+    setReconnectError("");
+    setReconnectReason(connectionExpired ? "expired" : "manual");
+  }
   async function reconnectNode() {
-    if (
-      !confirm(
-        "Reconnect browsing? Open website connections will close and your outbound IP may change.",
-      )
-    )
-      return;
+    if (reconnecting) return;
+    setReconnecting(true);
+    setReconnectError("");
     try {
       const old = readLocal("atlas.nodeSession", "");
       if (old)
@@ -274,11 +353,47 @@ export default function App() {
           body: JSON.stringify({ session: old }),
         });
       writeLocal("atlas.nodeSession", "");
-      location.reload();
+      setConnectionExpired(true);
+      setRuntimeReady(false);
+      const lease = await api("/browse/session", {
+        method: "POST",
+        body: JSON.stringify({ session: "" }),
+      });
+      writeLocal("atlas.nodeSession", lease.session);
+      setConfig({
+        ...config,
+        ...lease,
+        connectionError: "",
+        expiresLocally: lease.expiresAt
+          ? Date.now() + lease.expiresAt - lease.serverTime
+          : undefined,
+      });
+      setConnectionExpired(false);
+      setReconnectReason(null);
+      restartRuntime();
     } catch (error) {
-      toast((error as Error).message);
+      setReconnectError((error as Error).message);
+    } finally {
+      setReconnecting(false);
     }
   }
+  useEffect(() => {
+    if (!config?.expiresLocally || connectionExpired) return;
+    const check = () => {
+      if (Date.now() >= config.expiresLocally) expireConnection();
+    };
+    const timer = setTimeout(
+      check,
+      Math.max(0, config.expiresLocally - Date.now()),
+    );
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("pageshow", check);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("pageshow", check);
+    };
+  }, [config?.expiresLocally, connectionExpired]);
   function navigate(
     value: string,
     newTab = false,
@@ -287,7 +402,7 @@ export default function App() {
   ) {
     try {
       const url = destination(value, settings.search),
-        chosen = engine || settings.engine;
+        chosen: Engine = "scramjet";
       let id = activeRef.current;
       if (newTab || !id || !tabsRef.current.some((t) => t.id === id))
         id = crypto.randomUUID();
@@ -343,6 +458,68 @@ export default function App() {
       )
         return;
       const d = e.data;
+      if (d.type === "focus-search") {
+        focusSearch();
+        return;
+      }
+      if (
+        d.type === "popup-created" &&
+        typeof d.id === "string" &&
+        typeof d.url === "string" &&
+        /^(?:https?:\/\/|about:blank$)/.test(d.url)
+      ) {
+        live.current.add(d.id);
+        const tab: Tab = {
+          id: d.id,
+          url: d.url,
+          title: d.url === "about:blank" ? "New tab" : new URL(d.url).hostname,
+          engine: "scramjet",
+          status: "loading",
+          workspace: "browser",
+        };
+        setTabs((old) =>
+          old.some((t) => t.id === d.id) ? old : [...old, tab],
+        );
+        setActive(d.id);
+        setAddress(d.url === "about:blank" ? "" : d.url);
+        lastBrowserTab.current = d.id;
+        setPage("browse");
+        return;
+      }
+      if (d.type === "popup-focus") {
+        const tab = tabsRef.current.find((t) => t.id === d.id);
+        if (tab) activate(tab);
+        return;
+      }
+      if (d.type === "popup-closed") {
+        live.current.delete(d.id);
+        setTabs((old) => old.filter((t) => t.id !== d.id));
+        if (activeRef.current === d.id) {
+          const tab =
+            tabsRef.current.find((t) => t.id === d.openerId) ||
+            tabsRef.current.find((t) => t.id !== d.id);
+          if (tab) activate(tab);
+          else {
+            setActive("");
+            setPage("home");
+            setAddress("");
+          }
+        }
+        return;
+      }
+      if (d.type === "session-expired") {
+        expireConnection();
+        return;
+      }
+      if (
+        d.type === "panic" &&
+        !wizard &&
+        settings.exitKey &&
+        d.key === settings.exitKey
+      ) {
+        location.replace(settings.exitUrl);
+        return;
+      }
       if (d.type === "ready") {
         setRuntimeReady(true);
         setRuntimeError("");
@@ -419,9 +596,18 @@ export default function App() {
     settings.engine,
     settings.search,
     settings.history,
+    settings.exitKey,
+    settings.exitUrl,
+    wizard,
+    page,
   ]);
   useEffect(() => {
-    if (!config || runtimeReady) return;
+    if (runtimeReady)
+      send("panic-key", { key: wizard ? "" : settings.exitKey });
+  }, [runtimeReady, settings.exitKey, wizard]);
+  useEffect(() => {
+    if (!config || config.connectionError || connectionExpired || runtimeReady)
+      return;
     const ping = () => send("ping", { id: "system" });
     ping();
     const retry = setInterval(ping, 500);
@@ -436,21 +622,26 @@ export default function App() {
       clearInterval(retry);
       clearTimeout(timeout);
     };
-  }, [config, runtimeReady, runtimeAttempt]);
+  }, [config, runtimeReady, runtimeAttempt, connectionExpired]);
   useEffect(() => {
     function key(e: KeyboardEvent) {
+      if (e.defaultPrevented) return;
       const editable = (e.target as HTMLElement).closest(
-        "input,textarea,select,[contenteditable]",
+        "input,textarea,select,[contenteditable],[data-panic-editor],dialog[open]",
       );
-      if (settings.exitKey && e.key === settings.exitKey && !editable) {
+      if (
+        !wizard &&
+        settings.exitKey &&
+        matchesShortcut(e, settings.exitKey) &&
+        !editable
+      ) {
+        e.preventDefault();
         location.replace(settings.exitUrl);
         return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+      if (isSearchShortcut(e)) {
         e.preventDefault();
-        document
-          .querySelector<HTMLInputElement>("#omnibox, .hero-search input")
-          ?.focus();
+        focusSearch();
       }
       if (e.key === "Escape") {
         setFocusMode(false);
@@ -460,7 +651,7 @@ export default function App() {
     }
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [settings.exitKey, settings.exitUrl]);
+  }, [settings.exitKey, settings.exitUrl, wizard, page]);
   function activate(tab: Tab) {
     setActive(tab.id);
     setAddress(tab.url);
@@ -576,7 +767,6 @@ export default function App() {
       >
         <Plus size={17} />
         <span>{page === "ai" ? "New AI tab" : "New tab"}</span>
-        <kbd>⌘ K</kbd>
       </button>
       {visibleTabs.map((t) => (
         <div
@@ -652,6 +842,7 @@ export default function App() {
             ["home", "Browser", Globe2],
             ["ai", "AI", Sparkles],
             ["games", "Games", Gamepad2],
+            ["apps", "Apps", Grid2X2],
             ["support", "Support", HelpCircle],
             ["settings", "Settings", Settings2],
           ].map(([key, label, Icon]: any) => (
@@ -763,25 +954,13 @@ export default function App() {
                   <RefreshCw size={15} />
                 </button>
               </div>
-              <form
-                className="address-bar"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  navigate(address, false, current?.engine);
-                }}
-              >
-                <Globe2 size={14} />
-                <input
-                  id="omnibox"
-                  aria-label="Address bar"
-                  value={address}
-                  onChange={(e) => {
-                    setAddress(e.target.value);
-                  }}
-                  placeholder="Search or enter a URL"
-                />
-                <kbd>⌘ K</kbd>
-              </form>
+              <SearchBox
+                toolbar
+                value={address}
+                change={setAddress}
+                enabled={settings.autocomplete}
+                submit={(value) => navigate(value, false, current?.engine)}
+              />
               <button
                 className="icon-button"
                 aria-label="Go to homepage"
@@ -789,20 +968,12 @@ export default function App() {
               >
                 <Home size={16} />
               </button>
-              <select
-                className="engine-select"
-                aria-label="Browsing engine"
-                value={showingSite ? current?.engine : settings.engine}
-                onChange={(e) => {
-                  const engine = e.target.value as Engine;
-                  update({ engine });
-                  if (showingSite && current)
-                    navigate(current.url, false, engine);
-                }}
-              >
-                <option value="scramjet">Scramjet</option>
-                <option value="ultraviolet">Ultraviolet</option>
-              </select>
+              <BrowsingOptions
+                routing={!!config?.nodeRouting}
+                node={config?.node}
+                problem={connectionExpired || !!config?.connectionError}
+                reconnect={requestReconnect}
+              />
               <button
                 className="icon-button"
                 aria-label={focusMode ? "Exit focus mode" : "Enter focus mode"}
@@ -817,27 +988,25 @@ export default function App() {
           <div className="page-scroll" hidden={showingSite}>
             {page === "home" && (
               <div className="home-page">
+                <div className="home-browsing-options">
+                  <BrowsingOptions
+                    routing={!!config?.nodeRouting}
+                    node={config?.node}
+                    problem={connectionExpired || !!config?.connectionError}
+                    reconnect={requestReconnect}
+                  />
+                </div>
                 <section className="home-hero">
                   <NewTabGreeting />
-                  <form
-                    className="hero-search"
-                    onSubmit={(e: FormEvent) => {
-                      e.preventDefault();
-                      navigate(search, true);
+                  <SearchBox
+                    value={search}
+                    change={setSearch}
+                    enabled={settings.autocomplete}
+                    submit={(value) => {
+                      navigate(value, true);
                       setSearch("");
                     }}
-                  >
-                    <Search size={21} />
-                    <input
-                      aria-label="Search the web"
-                      placeholder="Search or enter a URL"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                    />
-                    <button aria-label="Search" type="submit">
-                      <ArrowUpRight size={20} />
-                    </button>
-                  </form>
+                  />
                   <div className="shortcuts">
                     {shortcuts.map((s: any, i: number) => (
                       <div className="shortcut" key={s.name + i}>
@@ -881,6 +1050,7 @@ export default function App() {
                   </div>
                 </section>
                 <div className="newtab-footer">
+                  <span className="newtab-credit">Made by Paxton Warin</span>
                   <button
                     className="newtab-customize"
                     onClick={() => setPage("settings")}
@@ -906,143 +1076,19 @@ export default function App() {
                 update={update}
                 toast={toast}
                 wizard={() => {
-                  setStep(0);
                   setWizard(true);
                 }}
                 clear={clearWeb}
               />
             )}
             {page === "support" && <Support toast={toast} />}
-            {page === "games" && (
-              <div className="page games-page">
-                <div className="page-heading">
-                  <div>
-                    <span className="eyebrow">Games</span>
-                    <h1>Games</h1>
-                    <p>Search the catalog or choose a game.</p>
-                  </div>
-                  <Gamepad2 size={32} />
-                </div>
-                <div className="catalog-toolbar">
-                  <div className="segmented">
-                    {["All games", "Favorites"].map((f) => (
-                      <button
-                        key={f}
-                        className={gameFilter === f ? "selected" : ""}
-                        onClick={() => setGameFilter(f)}
-                      >
-                        {f === "Favorites" && <Heart size={14} />} {f}
-                      </button>
-                    ))}
-                  </div>
-                  <label className="catalog-search">
-                    <Search size={16} />
-                    <input
-                      aria-label="Search games"
-                      placeholder="Find your next favorite…"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                    />
-                  </label>
-                  <select
-                    aria-label="Sort games"
-                    value={sort}
-                    onChange={(e) => setSort(e.target.value)}
-                  >
-                    <option>Featured</option>
-                    <option>A–Z</option>
-                  </select>
-                </div>
-                <div className="game-grid">
-                  {games
-                    .filter(
-                      (g) =>
-                        (gameFilter !== "Favorites" ||
-                          favorites.includes(g.id)) &&
-                        g.name.toLowerCase().includes(search.toLowerCase()),
-                    )
-                    .sort((a, b) =>
-                      sort === "A–Z" ? a.name.localeCompare(b.name) : 0,
-                    )
-                    .map((g) => (
-                      <article className="game-card" key={g.id}>
-                        <button
-                          aria-label={"Play " + g.name}
-                          className={"game-art " + g.artwork}
-                          onClick={() => launchGame(g)}
-                        >
-                          {g.artwork === "numbers" ? (
-                            <>
-                              <i>2</i>
-                              <i>4</i>
-                              <i>8</i>
-                              <i>2048</i>
-                            </>
-                          ) : g.artwork === "snake" ? (
-                            <span className="snake-art">
-                              ▰<br />▰ ▰ ▰<br />
-                              　　▰
-                            </span>
-                          ) : g.artwork === "tic" ? (
-                            <span>
-                              ✕<i>○</i>✕
-                            </span>
-                          ) : g.artwork === "chess" ? (
-                            <span>♞</span>
-                          ) : g.artwork === "alchemy" ? (
-                            <span>✦</span>
-                          ) : (
-                            <span>⬡</span>
-                          )}
-                          <span className="play-overlay">
-                            Play <ArrowUpRight size={18} />
-                          </span>
-                        </button>
-                        <button
-                          className={
-                            "favorite " +
-                            (favorites.includes(g.id) ? "saved" : "")
-                          }
-                          aria-label={"Favorite " + g.name}
-                          aria-pressed={favorites.includes(g.id)}
-                          onClick={() => {
-                            const next = favorites.includes(g.id)
-                              ? favorites.filter((id) => id !== g.id)
-                              : [...favorites, g.id];
-                            setFavorites(next);
-                            writeLocal("atlas.favorites", next);
-                          }}
-                        >
-                          <Heart size={16} />
-                        </button>
-                        <div className="game-info">
-                          <span className="eyebrow">{g.category}</span>
-                          <h3>{g.name}</h3>
-                          <p>{g.description}</p>
-                        </div>
-                      </article>
-                    ))}
-                </div>
-                {!games.filter(
-                  (g) =>
-                    (gameFilter !== "Favorites" || favorites.includes(g.id)) &&
-                    g.name.toLowerCase().includes(search.toLowerCase()),
-                ).length && (
-                  <div className="empty-state">
-                    <Heart size={30} />
-                    <h2>
-                      {gameFilter === "Favorites"
-                        ? "No favorites yet"
-                        : "No games found."}
-                    </h2>
-                    <p>
-                      {gameFilter === "Favorites"
-                        ? "Tap the heart on a game to save it here."
-                        : "Try a different search."}
-                    </p>
-                  </div>
-                )}
-              </div>
+            {(page === "games" || page === "apps") && (
+              <Catalog
+                key={page}
+                items={games}
+                kind={page === "apps" ? "app" : "game"}
+                launch={launchGame}
+              />
             )}
             {page === "browse" && !current && (
               <div className="empty-state">
@@ -1052,19 +1098,8 @@ export default function App() {
               </div>
             )}
           </div>
-          {config?.nodeRouting && browsingSection && (
-            <div className="node-status" aria-label="Browsing connection">
-              <span>
-                {config.connectionError ||
-                  `Node: ${config.node?.name || "Connecting"}${config.node?.online === false ? " · Offline" : ""}`}
-              </span>
-              <button className="text-button" onClick={reconnectNode}>
-                Reconnect
-              </button>
-            </div>
-          )}
           <div className="runtime-area" hidden={!showingSite}>
-            {config && !config.connectionError && (
+            {config && !config.connectionError && !connectionExpired && (
               <iframe
                 title="Atlas isolated browsing runtime"
                 ref={runtimeRef}
@@ -1095,44 +1130,41 @@ export default function App() {
               ))}
             {current &&
               !current.local &&
-              (runtimeError ||
+              (connectionExpired ||
+                config?.connectionError ||
+                runtimeError ||
                 current.status === "error" ||
                 current.status === "slow") && (
                 <div className="runtime-error">
                   <Globe2 size={26} />
                   <h2>
-                    {current.status === "slow"
-                      ? "Page is taking longer than expected"
-                      : "Page could not load"}
+                    {connectionExpired
+                      ? "Browsing session expired"
+                      : current.status === "slow"
+                        ? "Page is taking longer than expected"
+                        : "Page could not load"}
                   </h2>
-                  <p>{runtimeError || current.message}</p>
+                  <p>
+                    {connectionExpired
+                      ? "Reconnect to continue browsing."
+                      : config?.connectionError ||
+                        runtimeError ||
+                        current.message}
+                  </p>
                   <div className="button-row">
                     <button
                       className="button primary"
                       onClick={() =>
-                        runtimeError
-                          ? restartRuntime()
-                          : navigate(current.url, false, current.engine)
+                        connectionExpired || config?.connectionError
+                          ? requestReconnect()
+                          : runtimeError
+                            ? restartRuntime()
+                            : navigate(current.url, false, current.engine)
                       }
                     >
-                      Try again
-                    </button>
-                    <button
-                      className="button"
-                      onClick={() =>
-                        navigate(
-                          current.url,
-                          false,
-                          current.engine === "scramjet"
-                            ? "ultraviolet"
-                            : "scramjet",
-                        )
-                      }
-                    >
-                      Try{" "}
-                      {current.engine === "scramjet"
-                        ? "Ultraviolet"
-                        : "Scramjet"}
+                      {connectionExpired || config?.connectionError
+                        ? "Reconnect node"
+                        : "Try again"}
                     </button>
                     <button
                       className="button"
@@ -1141,15 +1173,12 @@ export default function App() {
                       Get help
                     </button>
                   </div>
-                  <p className="small">
-                    Switching engines starts a separate website session.
-                  </p>
                 </div>
               )}
           </div>
         </main>
       </div>
-      {notice && (
+      {notice && !wizard && (
         <div className="toast" role="status">
           <Check size={16} />
           {notice}
@@ -1159,132 +1188,25 @@ export default function App() {
         </div>
       )}
       {wizard && (
-        <div className="modal-backdrop">
-          <section
-            className="wizard"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="wizard-title"
-          >
-            <div className="wizard-top">
-              <span className="brand-mark">A</span>
-              <span className="eyebrow">ATLAS SETUP</span>
-              <span className="step-count">0{step + 1} / 04</span>
-            </div>
-            <div className="wizard-art">
-              <div className="wizard-orbit" />
-              <Leaf size={44} />
-            </div>
-            <h1 id="wizard-title">
-              {
-                [
-                  "Welcome to Atlas",
-                  "Choose a theme",
-                  "Browser preferences",
-                  "Setup complete",
-                ][step]
-              }
-            </h1>
-            <p>
-              {
-                [
-                  "Set your appearance and browser preferences.",
-                  "You can change your theme later in Settings.",
-                  "Choose your tabs and your search engine. Keep the rest simple.",
-                  "Scramjet is your default browsing engine, with Ultraviolet available when you want to try another route.",
-                ][step]
-              }
-            </p>
-            {step === 1 && (
-              <div className="wizard-themes">
-                {themes.map((t) => (
-                  <button
-                    key={t.id}
-                    aria-label={"Choose " + t.name}
-                    className={settings.theme === t.id ? "chosen" : ""}
-                    onClick={() => update({ theme: t.id, accent: t.accent })}
-                  >
-                    <span style={{ background: t.accent }} />
-                    {t.name}
-                  </button>
-                ))}
-              </div>
-            )}
-            {step === 2 && (
-              <div className="wizard-controls">
-                <label className="form-field">
-                  Tabs
-                  <select
-                    value={settings.tabs}
-                    onChange={(e) => update({ tabs: e.target.value as any })}
-                  >
-                    <option value="sidebar">Sidebar · Vertical tabs</option>
-                    <option value="top">Top · Horizontal tabs</option>
-                  </select>
-                </label>
-                <label className="form-field">
-                  Search
-                  <select
-                    value={settings.search}
-                    onChange={(e) => update({ search: e.target.value })}
-                  >
-                    <option value="https://www.google.com/search?q=%s">
-                      Google
-                    </option>
-                    <option value="https://duckduckgo.com/?q=%s">
-                      DuckDuckGo
-                    </option>
-                    <option value="https://www.bing.com/search?q=%s">
-                      Bing
-                    </option>
-                  </select>
-                </label>
-              </div>
-            )}
-            {step === 3 && (
-              <div className="wizard-summary">
-                <ShieldCheck size={22} />
-                <span>
-                  Your preferences stay on this device.
-                  <small>Website sign-ins work independently of Atlas.</small>
-                </span>
-              </div>
-            )}
-            <div className="wizard-actions">
-              <button
-                className="text-button"
-                onClick={() => {
-                  if (step) setStep(step - 1);
-                  else {
-                    writeLocal("atlas.onboarded", true);
-                    setWizard(false);
-                  }
-                }}
-              >
-                {step ? "Back" : "Use defaults"}
-              </button>
-              <div className="step-dots">
-                {[0, 1, 2, 3].map((n) => (
-                  <span key={n} className={step === n ? "active" : ""} />
-                ))}
-              </div>
-              <button
-                className="button primary"
-                onClick={() => {
-                  if (step < 3) setStep(step + 1);
-                  else {
-                    writeLocal("atlas.onboarded", true);
-                    setWizard(false);
-                  }
-                }}
-              >
-                {step === 3 ? "Open Atlas" : "Continue"}
-                <ArrowRight size={17} />
-              </button>
-            </div>
-          </section>
-        </div>
+        <SetupWizard
+          notice={notice}
+          settings={settings}
+          update={update}
+          toast={toast}
+          clear={clearWeb}
+          finish={() => {
+            writeLocal("atlas.onboarded", true);
+            setWizard(false);
+          }}
+        />
       )}
+      <ReconnectDialog
+        reason={reconnectReason}
+        busy={reconnecting}
+        error={reconnectError}
+        cancel={() => setReconnectReason(null)}
+        reconnect={reconnectNode}
+      />
       {shortcutForm && (
         <div className="modal-backdrop">
           <form

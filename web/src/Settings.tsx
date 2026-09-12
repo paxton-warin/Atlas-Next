@@ -1,3 +1,5 @@
+import TabAppearance from "./TabAppearance";
+import PanicShortcut from "./PanicShortcut";
 import { useState } from "react";
 import {
   Palette,
@@ -7,7 +9,6 @@ import {
   Download,
   Upload,
   RotateCcw,
-  ArrowUpRight,
   Check,
   Monitor,
   Sun,
@@ -25,6 +26,7 @@ type Props = {
   update: (s: Partial<Preferences>) => void;
   toast: (s: string) => void;
   wizard: () => void;
+  embeddedSection?: "Appearance" | "Browser" | "Tab & icon" | "Privacy & data";
   clear: () => void;
 };
 export function Toggle({
@@ -49,15 +51,23 @@ export function Toggle({
     </button>
   );
 }
-export function Settings({ settings: s, update, toast, wizard, clear }: Props) {
+export function Settings({
+  settings: s,
+  update,
+  toast,
+  wizard,
+  clear,
+  embeddedSection,
+}: Props) {
   const [section, setSection] = useState("Appearance");
   const [query, setQuery] = useState("");
   const sections = [
     ["Appearance", Palette],
     ["Browser", PanelTop],
+    ["Tab & icon", Monitor],
     ["Privacy & data", Database],
   ] as const;
-  const show = (v: string) => section === v || !!query;
+  const show = (v: string) => (embeddedSection || section) === v || !!query;
   const exportSettings = () => {
     const blob = new Blob(
       [JSON.stringify({ version: 1, settings: s }, null, 2)],
@@ -71,40 +81,46 @@ export function Settings({ settings: s, update, toast, wizard, clear }: Props) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   return (
-    <div className="page settings-page">
-      <div className="page-heading">
-        <div>
-          <h1>Settings</h1>
-          <p>Appearance, browsing, and stored data.</p>
+    <div
+      className={embeddedSection ? "settings-embedded" : "page settings-page"}
+    >
+      {!embeddedSection && (
+        <div className="page-heading">
+          <div>
+            <h1>Settings</h1>
+            <p>Appearance, browsing, and stored data.</p>
+          </div>
+          <SlidersHorizontal size={30} />
         </div>
-        <SlidersHorizontal size={30} />
-      </div>
+      )}
       <div className="settings-layout">
-        <aside className="settings-nav">
-          <input
-            aria-label="Search settings"
-            placeholder="Find a setting…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          {sections.map(([label, Icon]) => (
-            <button
-              key={label}
-              className={section === label ? "selected" : ""}
-              onClick={() => {
-                setSection(label);
-                setQuery("");
-              }}
-            >
-              <Icon size={17} />
-              {label}
+        {!embeddedSection && (
+          <aside className="settings-nav">
+            <input
+              aria-label="Search settings"
+              placeholder="Find a setting…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {sections.map(([label, Icon]) => (
+              <button
+                key={label}
+                className={section === label ? "selected" : ""}
+                onClick={() => {
+                  setSection(label);
+                  setQuery("");
+                }}
+              >
+                <Icon size={17} />
+                {label}
+              </button>
+            ))}
+            <button onClick={wizard}>
+              <RotateCcw size={16} />
+              Reopen welcome wizard
             </button>
-          ))}
-          <button onClick={wizard}>
-            <RotateCcw size={16} />
-            Reopen welcome wizard
-          </button>
-        </aside>
+          </aside>
+        )}
         <div className="settings-sections">
           {show("Appearance") &&
             (!query ||
@@ -175,6 +191,7 @@ export function Settings({ settings: s, update, toast, wizard, clear }: Props) {
                     </div>
                     <label className="color-control">
                       <input
+                        aria-label="Custom accent"
                         type="color"
                         value={s.accent}
                         onChange={(e) => update({ accent: e.target.value })}
@@ -269,7 +286,7 @@ export function Settings({ settings: s, update, toast, wizard, clear }: Props) {
             )}
           {show("Browser") &&
             (!query ||
-              /tab|browser|engine|search|restore|compact/.test(
+              /tab|browser|engine|search|restore|compact|autocomplete|suggestions/.test(
                 query.toLowerCase(),
               )) && (
               <>
@@ -329,9 +346,24 @@ export function Settings({ settings: s, update, toast, wizard, clear }: Props) {
                     <Globe2 size={18} />
                     <h2>Search & browsing</h2>
                   </div>
+                  <div className="setting-row">
+                    <div>
+                      <h3>Search autocomplete</h3>
+                      <p>
+                        Send typed search text to Google through Atlas for
+                        suggestions.
+                      </p>
+                    </div>
+                    <Toggle
+                      label="Search autocomplete"
+                      on={s.autocomplete}
+                      change={() => update({ autocomplete: !s.autocomplete })}
+                    />
+                  </div>
                   <label className="form-field">
                     Search engine
                     <select
+                      aria-label="Search engine"
                       value={
                         [
                           "https://www.google.com/search?q=%s",
@@ -375,29 +407,26 @@ export function Settings({ settings: s, update, toast, wizard, clear }: Props) {
                   </label>
                   <div className="setting-row">
                     <div>
-                      <h3>Default browsing engine</h3>
+                      <h3>Browsing engine</h3>
                       <p>
-                        Applies to new tabs. Existing sessions stay in their
-                        engine.
+                        Websites open through your assigned browsing connection.
                       </p>
                     </div>
-                    <select
-                      aria-label="Default browsing engine"
-                      value={s.engine}
-                      onChange={(e) =>
-                        update({ engine: e.target.value as any })
-                      }
-                    >
-                      <option value="scramjet">Scramjet · Recommended</option>
-                      <option value="ultraviolet">Ultraviolet</option>
-                    </select>
+                    <strong>Atlas</strong>
                   </div>
                 </section>
               </>
             )}
+          {show("Tab & icon") &&
+            (!query ||
+              /tab|title|icon|preset|custom|google|gmail|drive|docs|sheets|classroom/.test(
+                query.toLowerCase(),
+              )) && (
+              <TabAppearance settings={s} update={update} toast={toast} />
+            )}
           {show("Privacy & data") &&
             (!query ||
-              /privacy|data|history|title|export|import|clear|exit/.test(
+              /privacy|data|history|export|import|clear|exit|panic/.test(
                 query.toLowerCase(),
               )) && (
               <>
@@ -421,32 +450,33 @@ export function Settings({ settings: s, update, toast, wizard, clear }: Props) {
                       change={() => update({ history: !s.history })}
                     />
                   </div>
+                  <PanicShortcut
+                    value={s.exitKey}
+                    change={(exitKey) => update({ exitKey })}
+                  />
                   <label className="form-field">
-                    Browser tab title
+                    Panic destination
                     <input
-                      maxLength={60}
-                      value={s.title}
-                      placeholder="Atlas"
-                      onChange={(e) => update({ title: e.target.value })}
-                    />
-                  </label>
-                  <label className="form-field">
-                    Quick-exit key
-                    <input
-                      value={s.exitKey}
-                      placeholder="Click and press a key"
-                      onKeyDown={(e) => {
-                        e.preventDefault();
-                        update({ exitKey: e.key === "Backspace" ? "" : e.key });
+                      defaultValue={s.exitUrl}
+                      key={s.exitUrl}
+                      type="url"
+                      onBlur={(e) => {
+                        try {
+                          const url = new URL(e.target.value);
+                          if (
+                            url.protocol !== "https:" ||
+                            url.username ||
+                            url.password
+                          )
+                            throw Error();
+                          update({ exitUrl: url.href });
+                        } catch {
+                          e.target.value = s.exitUrl;
+                          toast(
+                            "Use an HTTPS panic destination without credentials.",
+                          );
+                        }
                       }}
-                      readOnly
-                    />
-                  </label>
-                  <label className="form-field">
-                    Quick-exit destination
-                    <input
-                      value={s.exitUrl}
-                      onChange={(e) => update({ exitUrl: e.target.value })}
                     />
                   </label>
                   <div className="button-row">
@@ -532,7 +562,7 @@ export function Settings({ settings: s, update, toast, wizard, clear }: Props) {
               </>
             )}
           {query &&
-            !/theme|appearance|color|background|wallpaper|motion|blur|dark|light|tab|browser|engine|search|restore|compact|privacy|data|history|title|export|import|clear|exit/.test(
+            !/theme|appearance|color|background|wallpaper|motion|blur|dark|light|tab|browser|engine|search|restore|compact|autocomplete|suggestions|privacy|data|history|title|icon|preset|custom|google|gmail|drive|docs|sheets|classroom|export|import|clear|exit|panic/.test(
               query.toLowerCase(),
             ) && (
               <div className="empty-state">
@@ -542,14 +572,11 @@ export function Settings({ settings: s, update, toast, wizard, clear }: Props) {
             )}
         </div>
       </div>
-      <footer className="page-footer">
-        Preferences are saved on this device.
-        <span>
-          <a href="/source/atlas-source.tar.gz" download>
-            Source code <ArrowUpRight size={12} />
-          </a>
-        </span>
-      </footer>
+      {!embeddedSection && (
+        <footer className="page-footer">
+          Preferences are saved on this device.
+        </footer>
+      )}
     </div>
   );
 }

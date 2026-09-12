@@ -21,3 +21,4 @@ upstream/scramjet-ls-bypass/node_modules
 upstream/scramjet-ls-bypass/packages/**/node_modules
 upstream/scramjet-ls-bypass/packages/core/rewriter/target
 node-data
+.origin-key

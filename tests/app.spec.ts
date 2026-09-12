@@ -11,7 +11,7 @@ const website = (page: Page) =>
   page
     .frameLocator('iframe[title="Atlas isolated browsing runtime"]')
     .frameLocator('iframe[title="Proxied website"]');
-for (const engine of ["scramjet", "ultraviolet"]) {
+for (const engine of ["scramjet"]) {
   test(`${engine} tab favicon loads through the proxy, updates and falls back`, async ({
     page,
   }) => {
@@ -88,9 +88,13 @@ test("welcome wizard, polished home, themes and saved preferences", async ({
     page.getByRole("heading", { name: "Welcome to Atlas" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await page.getByRole("button", { name: "Choose Iris" }).click();
+  await page.getByRole("button", { name: "Theme Iris" }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "Setup steps" })
+    .getByRole("button", { name: /Finish/ })
+    .click();
   await page.getByRole("button", { name: "Open Atlas", exact: true }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Theme Moss" }).click();
@@ -337,30 +341,6 @@ test("Scramjet actual HTTP, cookies, storage, fetch, WebSocket and stable frame"
     .click();
   await expect(site.locator("#cookie")).toHaveText("no-cookie");
 });
-test("Ultraviolet actual HTTP and cookie round trip", async ({ page }) => {
-  await home(page);
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page
-    .locator(".settings-nav")
-    .getByRole("button", { name: "Browser", exact: true })
-    .click();
-  await page.getByLabel("Default browsing engine").selectOption("ultraviolet");
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "Browser", exact: true })
-    .click();
-  await launch(page);
-  const site = website(page);
-  await expect(
-    site.getByRole("heading", { name: "Proxy fixture ready" }),
-  ).toBeVisible();
-  await site
-    .getByRole("link", { name: "Sign in fixture", exact: true })
-    .click();
-  await expect(site.locator("#cookie")).toContainText(
-    "atlas_fixture=persistent",
-  );
-});
 test("stock demo baseline HTTP/cookies/fetch/WebSocket", async ({ page }) => {
   await page.goto(
     "http://127.0.0.1:4182/?goto=" +
@@ -416,7 +396,9 @@ test("Scramjet session survives app reload, layout changes, and a second tab", a
     .locator(".settings-nav")
     .getByRole("button", { name: "Browser", exact: true })
     .click();
-  await page.getByRole("switch", { name: "Restore tabs", exact: true }).click();
+  await expect(
+    page.getByRole("switch", { name: "Restore tabs", exact: true }),
+  ).toHaveAttribute("aria-checked", "true");
   await page.getByRole("button", { name: "Top tabs", exact: false }).click();
   await page.reload();
   await page.locator(".tab-main").first().click();
@@ -480,18 +462,31 @@ for (const target of ["Atlas", "demo"])
     await expect(
       site.getByRole("heading", { name: "Proxy fixture ready" }),
     ).toBeVisible();
-    const popupPromise = context.waitForEvent("page");
-    await site.getByRole("link", { name: "Open popup", exact: true }).click();
-    const popup = await popupPromise;
-    const popupSite = popup.frameLocator(
-      target === "Atlas"
-        ? 'iframe[title="Proxied website"]'
-        : ".browser-view iframe",
-    );
-    await expect(
-      popupSite.getByRole("heading", { name: "Proxy fixture ready" }),
-    ).toBeVisible();
-    await popup.close();
+    if (target === "Atlas") {
+      await site.getByRole("link", { name: "Open popup", exact: true }).click();
+      await expect(page.locator(".tab")).toHaveCount(2);
+      const popupSite = page
+        .frameLocator('iframe[title="Atlas isolated browsing runtime"]')
+        .frameLocator('iframe[title="Proxied website"]:not([hidden])');
+      await expect(
+        popupSite.getByRole("heading", { name: "Proxy fixture ready" }),
+      ).toBeVisible();
+      expect(context.pages()).toHaveLength(1);
+      await page
+        .getByRole("button", { name: "Expand tabs", exact: true })
+        .click();
+      await page.locator(".tab.active .close-tab").click();
+    } else {
+      const popupPromise = context.waitForEvent("page");
+      await site.getByRole("link", { name: "Open popup", exact: true }).click();
+      const popup = await popupPromise;
+      await expect(
+        popup
+          .frameLocator(".browser-view iframe")
+          .getByRole("heading", { name: "Proxy fixture ready" }),
+      ).toBeVisible();
+      await popup.close();
+    }
     await site
       .getByRole("button", { name: "Submit form", exact: true })
       .click();
@@ -558,12 +553,23 @@ test("single admin enrollment, verified ticket reply, catalog, logout and recove
     path: "evidence/admin-desktop.png",
   });
   await page.getByRole("button", { name: "Catalog", exact: true }).click();
-  await page.getByRole("button", { name: /2048/ }).click();
+  await page
+    .locator(".ticket-row")
+    .filter({ has: page.locator("strong").getByText("2048", { exact: true }) })
+    .click();
   await page.getByLabel("Visible in catalog").uncheck();
   await page.getByRole("button", { name: "Save game", exact: true }).click();
   await expect(
     page.getByText("Puzzle · Hidden", { exact: true }),
   ).toBeVisible();
+  await page.getByLabel("Filter owner catalog").selectOption("app");
+  await page.getByLabel("Search owner catalog").fill("Spotify");
+  await page
+    .locator(".ticket-row")
+    .filter({ has: page.getByText("Spotify", { exact: true }) })
+    .click();
+  await expect(page.getByLabel("Catalog type")).toHaveValue("app");
+  await page.getByRole("button", { name: "Save game", exact: true }).click();
   await page.getByRole("button", { name: "Lock panel", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Welcome back." }),
@@ -621,7 +627,9 @@ test("single admin enrollment, verified ticket reply, catalog, logout and recove
       apiOrigins.push(new URL(req.url()).origin);
   });
   await home(page);
-  await expect(page.locator(".node-status")).toContainText("Fixture node");
+  await page.getByRole("button", { name: "Connection options" }).click();
+  await expect(page.getByRole("menu")).toContainText("Fixture node");
+  await page.keyboard.press("Escape");
   await launch(page);
   const nodeSite = website(page);
   await expect(
@@ -644,7 +652,9 @@ test("single admin enrollment, verified ticket reply, catalog, logout and recove
   ).toBeTruthy();
   await page.reload();
   await launch(page);
-  await expect(page.locator(".node-status")).toContainText("Fixture node");
+  await page.getByRole("button", { name: "Connection options" }).click();
+  await expect(page.getByRole("menu")).toContainText("Fixture node");
+  await page.keyboard.press("Escape");
   await expect(website(page).locator("#cookie")).toContainText(
     "atlas_fixture=persistent",
   );

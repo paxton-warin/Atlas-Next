@@ -9,7 +9,7 @@ An account-free browser portal. This project does not modify or depend on either
 - Website favicons in both tab layouts, loaded through the selected proxy engine with dynamic updates and a globe fallback.
 - Built-in AI chat with streaming, Markdown, local history and server-side provider configuration. See [AI setup](docs/AI.md).
 - Four-step visitor wizard; six coordinated themes, light/dark/system, custom accents, backgrounds, wallpaper, density, motion, search preferences, shortcuts, favorites, history and settings import/export.
-- Scramjet-LS-Bypass bootstrap/controller/helpers/WASM/HTTP transport copied unchanged from pinned commit `4f452fee`, plus a separate Ultraviolet integration.
+- Scramjet-LS-Bypass bootstrap/controller/helpers/WASM/HTTP transport copied unchanged from pinned commit `4f452fee`. Scramjet is the only browsing engine.
 - Direct browsing nodes with point-and-attach pairing, weighted sticky assignments, owner controls and arbitrary frontend CloudFront aliases. See [node setup](docs/NODES.md).
 - Searchable game catalog with built-in 2048, Snake and Tic Tac Toe, plus editable external entries.
 - Anonymous, token-access support tickets, replies and status; no public user accounts.
@@ -18,10 +18,11 @@ An account-free browser portal. This project does not modify or depend on either
 
 ## Run locally
 
-Node 24.12+ and pnpm 11 are required. The prepared upstream assets are already present in this working directory.
+Node 24.12+ and pnpm 11 are required. Fetch the pinned upstream runtime after cloning; dependencies, runtime downloads, builds, and local data are not committed.
 
 ```sh
-cd /Users/paxton/Repositories/Atlas-Next
+git clone https://github.com/paxton-warin/Atlas-Next.git
+cd Atlas-Next
 pnpm install --frozen-lockfile
 pnpm runtime:fetch # needed on a fresh checkout
 pnpm build
@@ -100,11 +101,11 @@ Proxy assets are bundled during build; there are no production startup downloads
 
 ## Source and licenses
 
-Scramjet, Ultraviolet and the included Mercury Workshop components have their respective upstream license/source requirements. `THIRD_PARTY.md` links the exact source trees and licenses. Retain those notices and provide the corresponding source when distributing this application. Builds include `/source/atlas-source.tar.gz` and `/source/scramjet-source.tar.gz`, plus license and third-party notices. The archive script uses a fixed source allowlist and excludes databases, environment secrets, sessions and dependency folders.
+Scramjet and the included Mercury Workshop components have their respective upstream license/source requirements. `THIRD_PARTY.md` links the exact source trees and licenses. Retain those notices and provide the corresponding source when distributing this application. Builds include `/source/atlas-source.tar.gz` and `/source/scramjet-source.tar.gz`, plus license and third-party notices. The archive script uses a fixed source allowlist and excludes databases, environment secrets, sessions and dependency folders.
 
 ## Development handoff
 
-The new repository is `/Users/paxton/Repositories/Atlas-Next`. Existing Atlas and Atlas-Link-Dispenser files were left unchanged. No commit was created.
+The repository is [paxton-warin/Atlas-Next](https://github.com/paxton-warin/Atlas-Next). Existing Atlas and Atlas-Link-Dispenser applications are separate projects. Commit source and example configuration only; keep live environment files, database volumes, origin keys, and local test artifacts out of Git.
 
 `ROLLBACK.sh` is a narrowly scoped rehearsal tool for the startup entrypoint, not a whole-application downgrade. The previous worker-wrapper evidence is retained under `evidence/ui-refinement/`. `VERIFICATION.txt` records the original and modified SHA-256, exact probe commands, and a successful rollback on another copy. The active entrypoint remains fixed.
 

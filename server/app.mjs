@@ -1,3 +1,4 @@
+import { fetchSearchSuggestions } from "./search-suggestions.mjs";
 import { createNodePool } from "./node-pool.mjs";
 import { requestOrigin } from "./request-origin.mjs";
 import Fastify from "fastify";
@@ -184,12 +185,34 @@ export async function createApp(options = {}) {
   app.get("/api/config", () => ({
     name: get("siteName") || "Atlas",
     runtimeOrigin: config.runtimeOrigin,
-    engines: ["scramjet", "ultraviolet"],
+    engines: ["scramjet"],
     nodeRouting: config.nodesEnabled,
   }));
   app.get("/health", () => {
     db.prepare("SELECT 1").get();
     return { status: "ok", database: "ready" };
+  });
+  app.post("/api/search/suggestions", async (req, reply) => {
+    reply.header("Cache-Control", "no-store");
+    rate("suggestions:" + ip(req), 120, 60000);
+    const q = req.body?.q;
+    // Search terms only: don't forward addresses, URL tokens or credentials.
+    if (
+      typeof q !== "string" ||
+      q.trim().length < 2 ||
+      q.length > 120 ||
+      /[\/\\@?#=]|^[a-z][a-z0-9+.-]*:|^\S+\.\S+$|[\x00-\x1f]/i.test(q.trim())
+    )
+      return { suggestions: [] };
+    try {
+      return {
+        suggestions: await (
+          config.suggestionProvider || fetchSearchSuggestions
+        )(q),
+      };
+    } catch {
+      return { suggestions: [] };
+    }
   });
   app.get("/api/catalog", () =>
     db.prepare("SELECT * FROM catalog WHERE enabled=1 ORDER BY rowid").all(),
@@ -425,8 +448,14 @@ export async function createApp(options = {}) {
     ].includes(b.artwork)
       ? b.artwork
       : "hex";
+    const existing = db
+      .prepare("SELECT kind,thumbnail FROM catalog WHERE id=?")
+      .get(id);
+    const kind = b.kind === undefined ? existing?.kind || "game" : b.kind;
+    if (!["app", "game"].includes(kind)) throw fail("Choose App or Game.");
+    const thumbnail = existing?.thumbnail || "";
     db.prepare(
-      "INSERT INTO catalog VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,url=excluded.url,artwork=excluded.artwork,category=excluded.category,enabled=excluded.enabled",
+      "INSERT INTO catalog (id,name,description,url,artwork,category,enabled,kind,thumbnail) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,url=excluded.url,artwork=excluded.artwork,category=excluded.category,enabled=excluded.enabled,kind=excluded.kind",
     ).run(
       id,
       name,
@@ -435,6 +464,8 @@ export async function createApp(options = {}) {
       artwork,
       category,
       b.enabled === false ? 0 : 1,
+      kind,
+      thumbnail,
     );
     audit("catalog.saved", id);
     return { ok: true };
