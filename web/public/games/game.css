@@ -1,0 +1,108 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: #131b16;
+  color: #e7eddf;
+  font:
+    15px -apple-system,
+    BlinkMacSystemFont,
+    Segoe UI,
+    sans-serif;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 25px;
+}
+.game {
+  text-align: center;
+  max-width: 460px;
+  width: 100%;
+}
+h1 {
+  font:
+    52px Georgia,
+    serif;
+  margin: 0 0 14px;
+  color: #bce39b;
+}
+p {
+  color: #9ca991;
+  line-height: 1.6;
+  font-size: 13px;
+}
+button {
+  font: inherit;
+  padding: 12px 20px;
+  border: 1px solid #ffffff20;
+  border-radius: 10px;
+  color: #152219;
+  background: #bce39b;
+  cursor: pointer;
+}
+button:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 3px;
+}
+.board {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 9px;
+  background: #233127;
+  padding: 12px;
+  border-radius: 16px;
+  aspect-ratio: 1;
+  touch-action: none;
+  margin: 25px auto;
+}
+.cell {
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #ffffff06;
+  font-size: 31px;
+  color: #17251b;
+  font-weight: 600;
+}
+.cell.filled {
+  background: #c5d9ae;
+}
+.tic-board {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 9px;
+  margin: 25px auto;
+}
+.tic-board button {
+  height: 104px;
+  background: #25332a;
+  font-size: 46px;
+  color: #bce39b;
+  border: 0;
+}
+.controls {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+canvas {
+  display: block;
+  border-radius: 16px;
+  background: #1d2b22;
+  width: 100%;
+  margin: 24px auto;
+}
+.status {
+  min-height: 24px;
+}
+a {
+  color: #bce39b;
+}
+.footer {
+  margin-top: 23px;
+  font-size: 11px;
+  color: #788774;
+}

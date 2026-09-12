@@ -1,0 +1,40 @@
+{
+  "source": "https://github.com/paxton-warin/Scramjet-LS-Bypass",
+  "commit": "4f452feec4d6804730b903294d0f9bec8002a635",
+  "directory": "upstream/scramjet-ls-bypass",
+  "assets": {
+    "bootstrap-client.js": {
+      "path": "bootstrap/bootstrap-client.js",
+      "sha256": "70dbf41d73602eb3e14e7583d024874f8c0435b492d4a84a3f32e6c9c841ff4d"
+    },
+    "runtimekit.js": {
+      "path": "runtime/runtimekit.js",
+      "sha256": "021ec22ab7970b605cfb4771eb3177498846b61591c24d8abe0ee19095db7510"
+    },
+    "runtimekit.wasm": {
+      "path": "runtime/runtimekit.wasm",
+      "sha256": "ab66f90ecb60b6923655d47c2a4b95c5066819a2e5caf0d6798a00f55a148ef7"
+    },
+    "runtimekit-utils.js": {
+      "path": "runtime/runtimekit-utils.js",
+      "sha256": "8a4e9e1f6a9605ea8356e32e41abe24ea037d70e1b4ce3520ce96b58801d398f"
+    },
+    "controller.api.js": {
+      "path": "controller/controller.api.js",
+      "sha256": "0f9284e538ed2ecd595e00f5c083e77c679a46efd4f67c9cbc5190c2f03e8944"
+    },
+    "controller.inject.js": {
+      "path": "controller/controller.inject.js",
+      "sha256": "984fb3413d7db21ede4f6d7340713caf46e39ba53f369e1c15ad1360fba9171c"
+    },
+    "controller.worker.js": {
+      "path": "controller/controller.worker.js",
+      "sha256": "881907449549d2f4bda9e59d05e447ef01da9a1c790b7792800fb32074fac1dd"
+    },
+    "httpengine-client.js": {
+      "path": "clients/httpengine-client.js",
+      "sha256": "f2a17fa85d71f8a82990650dcf16ba952a86cb90dec1acb1c07413f11d0a94e4"
+    }
+  },
+  "archiveSha256": "0c9a7e27d34891c6d9e6adb7421772367457a1e827985bc146bb6f8f39f6e57f"
+}

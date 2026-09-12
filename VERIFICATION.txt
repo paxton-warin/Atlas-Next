@@ -1,0 +1,146 @@
+Atlas UI and browsing refinement
+Recorded: 2026-09-10T18:05:33.402Z
+CWD: /Users/paxton/Repositories/Atlas-Next
+
+Changed field: createRuntime staticDir selection in server/index.mjs.
+BASELINE: spreading frontend config passed staticDir=dist/web into the browsing runtime.
+MODIFIED: pass appOrigin/runtimeOrigin explicitly; createRuntime uses its own dist/runtime default.
+
+MODIFIED_FILE=/Users/paxton/Repositories/Atlas-Next/server/index.mjs
+DIFF_FILE=/Users/paxton/Repositories/Atlas-Next/evidence/DIFF.patch
+VERIFICATION=/Users/paxton/Repositories/Atlas-Next/VERIFICATION.txt
+ROLLBACK=/Users/paxton/Repositories/Atlas-Next/ROLLBACK.sh
+
+Original SHA256: 215727d7ee8e42fd6079fb4646f91cbcaff67e148747cfde37156949aa2fdddc
+Modified SHA256: a9c46b48b2bfab305450f45262f339bd40c52cedd9c357c47b772c10e88d141d
+
+Each probe boots the selected startup file with real server modules, temporary data and symlinked built assets on ports 4280/4281. Input: GET / and GET /vendor/controller/controller.api.js on the runtime origin. STDIN: none.
+
+BASELINE
+COMMAND: node scripts/entrypoint-probe.mjs evidence/ui-refinement/original/server/index.mjs
+LITERAL STDOUT:
+RUNTIME_DOCUMENT=FRONTEND; CONTROLLER_HTTP=404
+LITERAL STDERR: (empty)
+EXIT: 0
+
+MODIFIED
+COMMAND: node scripts/entrypoint-probe.mjs server/index.mjs
+LITERAL STDOUT:
+RUNTIME_DOCUMENT=RUNTIME; CONTROLLER_HTTP=200
+LITERAL STDERR: (empty)
+EXIT: 0
+
+ROLLBACK
+COMMAND: cp server/index.mjs evidence/ui-refinement/rollback-index.mjs && ./ROLLBACK.sh evidence/ui-refinement/rollback-index.mjs && node scripts/entrypoint-probe.mjs evidence/ui-refinement/rollback-index.mjs
+LITERAL STDOUT:
+ROLLBACK_HASH_MATCH=YES
+RUNTIME_DOCUMENT=FRONTEND; CONTROLLER_HTTP=404
+LITERAL STDERR: (empty)
+EXIT: 0
+
+RESTORED STATUS: the rehearsal copy restored the original hash and reproduced the old FRONTEND/404 behavior. The active MODIFIED_FILE remains fixed and serves RUNTIME/200. The rollback script restores only the startup entrypoint, not the whole UI or database. All four artifacts were reopened and the rollback script is executable.
+
+APPLICATION TESTS
+COMMAND: pnpm check
+INPUT: current source, real server/index.mjs startup, temporary SQLite data, local HTTP/WebSocket/provider fixtures and desktop Chrome.
+EXIT: 0
+RESULT: 8 backend passes. BROWSER_PASS=18; KNOWN_UPSTREAM_FAILURE=2; UNEXPECTED_FAILURE=0
+
+Native AI supports Responses and Chat Completions streaming, local history, stop, provider errors and verified admin configuration. Provider fixtures are deterministic test responses, not model output. No live provider/key is configured and no paid model requests were made.
+Known upstream download failures remain tracked, not counted as working workflows. Physical Chromebook, Google/ChatGPT authentication and Spotify audio remain unverified.
+
+LITERAL PNPM CHECK OUTPUT:
+$ pnpm typecheck && pnpm test && pnpm build && pnpm test:browser
+$ tsc --noEmit
+$ node --test tests/server.test.mjs
+(node:42690) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ public catalog and origin isolation (45.216375ms)
+✔ ticket capability, conversation, persistence, cross-ticket rejection (52.566208ms)
+✔ single admin, Argon2/TOTP, CSRF, recovery single-use and session revocation (107.951541ms)
+✔ rate limiting and input bounds (6.498334ms)
+✔ catalog mutations require admin and validate URLs (43.148709ms)
+✔ egress rejects private, mapped, loopback, link-local, metadata, IPv6 ULA (1.459167ms)
+✔ application and runtime require different hostnames (0.214292ms)
+✔ AI disabled state, admin configuration, encrypted key, and role validation (45.015417ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 428.591
+$ node scripts/prepare-runtime.mjs && node scripts/source-archive.mjs && vite build --config vite.config.ts && vite build --config vite.runtime.config.ts
+Runtime assets copied; 24 hashes recorded.
+SOURCE_ARCHIVES_READY
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 2122 modules transformed.
+rendering chunks...
+computing gzip size...
+../dist/web/index.html                   0.48 kB │ gzip:  0.30 kB
+../dist/web/assets/index-XeVRPGU0.css   47.60 kB │ gzip: 10.10 kB
+../dist/web/assets/Admin-_EVUt6c_.js    14.03 kB │ gzip:  4.47 kB
+../dist/web/assets/AiChat-BciQsORc.js  164.70 kB │ gzip: 50.61 kB
+../dist/web/assets/index-BdI8vCpg.js   276.69 kB │ gzip: 86.04 kB
+✓ built in 888ms
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 5 modules transformed.
+rendering chunks...
+computing gzip size...
+../dist/runtime/index.html                    1.60 kB │ gzip:   0.65 kB
+../dist/runtime/assets/index-BvThIPs2.js  1,998.88 kB │ gzip: 856.94 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 262ms
+$ playwright test && node scripts/summarize-browser.mjs
+[WebServer] (node:42799) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:42799) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+[WebServer] (node:42802) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:42802) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+
+Running 20 tests using 1 worker
+
+(node:42809) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓   1 tests/app.spec.ts:14:1 › welcome wizard, polished home, themes and saved preferences (768ms)
+  ✓   2 tests/app.spec.ts:50:1 › games, favorites and built-in playable game (527ms)
+  ✓   3 tests/app.spec.ts:68:1 › anonymous support ticket and reply (544ms)
+  ✓   4 tests/app.spec.ts:99:1 › Scramjet actual HTTP, cookies, storage, fetch, WebSocket and stable frame (987ms)
+  ✓   5 tests/app.spec.ts:144:1 › Ultraviolet actual HTTP and cookie round trip (656ms)
+  ✓   6 tests/app.spec.ts:168:1 › stock demo baseline HTTP/cookies/fetch/WebSocket (790ms)
+  ✓   7 tests/app.spec.ts:188:1 › mobile layout has no horizontal overflow (320ms)
+  ✓   8 tests/app.spec.ts:208:1 › Scramjet session survives app reload, layout changes, and a second tab (936ms)
+  ✓   9 tests/app.spec.ts:242:1 › clear website data removes Scramjet cookies and storage but keeps Atlas preferences (846ms)
+  ✓  10 tests/app.spec.ts:271:3 › Atlas form POST and popup shell (729ms)
+  ✓  11 tests/app.spec.ts:271:3 › demo form POST and popup shell (1.2s)
+  ✓  12 tests/app.spec.ts:305:1 › single admin enrollment, verified ticket reply, catalog, logout and recovery (949ms)
+  ✘  13 tests/app.spec.ts:397:3 › Atlas download attribute filename and bytes — known upstream failure (445ms)
+  ✘  14 tests/app.spec.ts:397:3 › demo download attribute filename and bytes — known upstream failure (622ms)
+  ✓  15 tests/app.spec.ts:431:1 › production entrypoint serves separate runtime assets (36ms)
+  ✓  16 tests/app.spec.ts:445:1 › compact browser, plain labels and focus mode preserve the loaded website (537ms)
+  ✓  17 tests/app.spec.ts:478:1 › runtime handshake recovers when the initial ready message is missed (390ms)
+  ✓  18 tests/app.spec.ts:502:1 › native AI chat streams, retains history, switches pages and handles provider errors (2.4s)
+  ✓  19 tests/app.spec.ts:534:1 › native AI stop button cancels a streaming reply (1.2s)
+  ✓  20 tests/app.spec.ts:549:1 › native AI setup is explicit when no provider is connected (1.1s)
+
+  20 passed (16.9s)
+BROWSER_PASS=18; KNOWN_UPSTREAM_FAILURE=2; UNEXPECTED_FAILURE=0
+
+LIVE PREVIEW BROWSING
+COMMAND: node scripts/preview-browse-check.mjs
+EXIT: 0
+LITERAL OUTPUT:
+DuckDuckGo: PUBLIC_PAGE_RENDERED
+Google: PUBLIC_PAGE_RENDERED
+Spotify: PUBLIC_PAGE_RENDERED
+
+UI: smaller browser toolbar/sidebar, focus mode, browser controls removed from Settings/Support/Games, normal titles and labels, removed promotional headers, dedicated native AI workspace. Existing theme and website-session preferences remain intact.
+Original Atlas and Atlas-Link-Dispenser trees were not modified.

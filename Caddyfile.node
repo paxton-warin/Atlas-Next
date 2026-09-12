@@ -1,0 +1,9 @@
+{$ORIGIN_HOST} {
+  @unauthorized not header X-Atlas-Origin-Key {$ORIGIN_KEY}
+  respond @unauthorized 403
+  reverse_proxy node:4183 {
+    header_up X-Forwarded-Host {http.request.header.X-Atlas-Viewer-Host}
+    header_up X-Forwarded-Proto https
+    header_up X-Forwarded-For {http.request.header.X-Atlas-Viewer-Ip}
+  }
+}

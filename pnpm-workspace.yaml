@@ -1,0 +1,10 @@
+packages: []
+allowBuilds:
+  argon2: true
+  esbuild: true
+  bufferutil: false
+minimumReleaseAgeExclude:
+  - lucide-react@1.44.0
+  - react-dom@19.3.0
+  - react@19.3.0
+  - scheduler@0.28.0

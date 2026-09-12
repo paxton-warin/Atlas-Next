@@ -1,0 +1,8 @@
+{$APP_HOST} {
+  encode zstd gzip
+  reverse_proxy app:4180
+}
+{$RUNTIME_HOST} {
+  encode zstd gzip
+  reverse_proxy app:4181
+}

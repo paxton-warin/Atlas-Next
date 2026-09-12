@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Atlas browsing runtime</title>
+    <style>
+      html,
+      body,
+      #frames {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #fff;
+      }
+      iframe {
+        border: 0;
+        width: 100%;
+        height: 100%;
+        position: absolute;
+        inset: 0;
+      }
+      iframe[hidden] {
+        display: none !important;
+      }
+      #popup-toolbar {
+        height: 52px;
+        box-sizing: border-box;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        padding: 8px 16px;
+        background: #132016;
+        color: #e5eddc;
+        font: 14px system-ui;
+      }
+      #popup-toolbar input {
+        flex: 1;
+        min-width: 80px;
+        background: #1b2c1e;
+        color: inherit;
+        border: 1px solid #3c4d3a;
+        padding: 7px;
+        border-radius: 7px;
+      }
+      #popup-toolbar button {
+        border: 0;
+        border-radius: 6px;
+        background: #bce39b;
+        padding: 7px 12px;
+        cursor: pointer;
+      }
+      #popup-status {
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="frames"></div>
+    <script type="module" src="/host.ts"></script>
+  </body>
+</html>
