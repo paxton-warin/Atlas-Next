@@ -1,3 +1,4 @@
+import { defaultAiConfig } from "../server/ai-config.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
@@ -308,31 +309,40 @@ test("AI disabled state, admin configuration, encrypted key, and role validation
         payload: body,
         headers: { origin, cookie: a.cookie, "x-atlas-csrf": a.csrf },
       });
-    const c = {
-      enabled: true,
-      baseUrl: "https://api.openai.com/v1",
-      model: "configured-test-model",
-      protocol: "responses",
-      apiKey: "synthetic-test-key",
-      dailyLimit: 100,
-    };
+    const c = defaultAiConfig();
+    c.enabled = true;
+    c.providers[0].apiKey = "synthetic-test-key";
+    c.providers[0].freeTierConfirmed = true;
     assert.equal(
-      (await save({ ...c, baseUrl: "http://example.com/v1" })).statusCode,
+      (
+        await save({
+          ...c,
+          providers: c.providers.map((p, i) =>
+            i ? p : { ...p, baseUrl: "http://example.com/v1" },
+          ),
+        })
+      ).statusCode,
       400,
     );
     assert.equal((await save(c)).statusCode, 200);
     const publicConfig = (await f.app.inject("/api/ai/config")).json();
     assert.equal(publicConfig.configured, true);
-    assert.equal(JSON.stringify(publicConfig).includes(c.apiKey), false);
-    assert.notEqual(f.app.store.get("aiConfig").key, c.apiKey);
+    assert.equal(
+      JSON.stringify(publicConfig).includes(c.providers[0].apiKey),
+      false,
+    );
+    assert.notEqual(
+      f.app.store.get("aiRouting").providers[0].key,
+      c.providers[0].apiKey,
+    );
     const privateConfig = (
       await f.app.inject({
         url: "/api/admin/ai",
         headers: { cookie: a.cookie },
       })
     ).json();
-    assert.equal(privateConfig.hasKey, true);
-    assert.equal("key" in privateConfig, false);
+    assert.equal(privateConfig.providers[0].hasKey, true);
+    assert.equal("key" in privateConfig.providers[0], false);
     assert.equal(
       (
         await post(f.app, "/api/ai/chat", {

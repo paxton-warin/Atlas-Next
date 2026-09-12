@@ -1,3 +1,9 @@
+import {
+  createRequestLimits,
+  defaultRequestLimits,
+  requestLimitRules,
+  normalizeClientIp,
+} from "./request-limits.mjs";
 import { fetchSearchSuggestions } from "./search-suggestions.mjs";
 import { createNodePool } from "./node-pool.mjs";
 import { requestOrigin } from "./request-origin.mjs";
@@ -86,7 +92,9 @@ export async function createApp(options = {}) {
     if (db.prepare("SELECT count FROM limits WHERE key=?").get(key).count > max)
       throw fail("Please wait before trying again.", 429);
   };
-  const ip = (req) => digest(req.ip);
+  const requestLimits = createRequestLimits(store, rate);
+  const limitIp = (req, key) => requestLimits.limit(req.ip, key);
+  const ip = (req) => digest(normalizeClientIp(req.ip));
   const name = secure ? "__Host-atlas-admin" : "atlas-admin";
   const cookie = (value, age) =>
     `${name}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${secure ? "; Secure" : ""}`;
@@ -172,7 +180,14 @@ export async function createApp(options = {}) {
         req.headers.origin !== originFor(req)
       )
         throw fail("Origin required.", 403);
-      rate("api:" + ip(req), 600, 60000);
+      // A verified owner can always repair an overly restrictive IP policy.
+      // Origin, session verification and mutation CSRF checks still apply.
+      const path = req.url.split("?")[0];
+      if (["/api/admin/state", "/api/admin/request-limits"].includes(path)) {
+        session(req, !["GET", "HEAD", "OPTIONS"].includes(req.method));
+        return;
+      }
+      limitIp(req, "api");
     }
   });
   app.setErrorHandler((err, req, reply) =>
@@ -194,7 +209,7 @@ export async function createApp(options = {}) {
   });
   app.post("/api/search/suggestions", async (req, reply) => {
     reply.header("Cache-Control", "no-store");
-    rate("suggestions:" + ip(req), 120, 60000);
+    limitIp(req, "suggestions");
     const q = req.body?.q;
     // Search terms only: don't forward addresses, URL tokens or credentials.
     if (
@@ -221,12 +236,25 @@ export async function createApp(options = {}) {
     session(req);
     return { initialized: !!get("admin"), csrf: session(req).csrf };
   });
+  app.get("/api/admin/request-limits", (req) => {
+    session(req);
+    return {
+      config: requestLimits.current(),
+      defaults: defaultRequestLimits(),
+      rules: requestLimitRules.map(({ key, label }) => ({ key, label })),
+      clientIp: normalizeClientIp(req.ip),
+    };
+  });
+  app.put("/api/admin/request-limits", (req) => {
+    session(req, true);
+    return { config: requestLimits.save(req.body) };
+  });
   app.post("/api/admin/access", (req) => {
     if (req.body?.path !== config.adminPath) throw fail("Not found.", 404);
     return { initialized: !!get("admin") };
   });
   app.post("/api/admin/enroll", async (req) => {
-    rate("login:" + ip(req), 8, 900000);
+    limitIp(req, "login");
     if (get("admin"))
       throw fail("Administrator setup is already complete.", 409);
     const setup = get("bootstrap");
@@ -253,7 +281,7 @@ export async function createApp(options = {}) {
     };
   });
   app.post("/api/admin/complete", (req, reply) => {
-    rate("login:" + ip(req), 8, 900000);
+    limitIp(req, "login");
     const pending = get("enrollment");
     if (
       get("admin") ||
@@ -278,7 +306,7 @@ export async function createApp(options = {}) {
     return { ...startSession(reply), recovery };
   });
   app.post("/api/admin/login", async (req, reply) => {
-    rate("login:" + ip(req), 8, 900000);
+    limitIp(req, "login");
     const admin = get("admin");
     if (
       !admin ||
@@ -305,7 +333,7 @@ export async function createApp(options = {}) {
     return { ok: true };
   });
   app.post("/api/tickets", (req) => {
-    rate("ticket:" + ip(req), 5, 3600000);
+    limitIp(req, "ticket");
     if (req.body?.website) throw fail("Submission rejected.");
     const subject = text(req.body?.subject, 3, 120),
       body = text(req.body?.body, 10, 5000),
@@ -494,7 +522,7 @@ export async function createApp(options = {}) {
     return { ok: true };
   });
   app.post("/api/browse/session", async (req) => {
-    rate("browse:" + ip(req), 60, 60000);
+    limitIp(req, "browse");
     return pool.allocate(
       req.body?.session,
       originFor(req),
@@ -506,7 +534,7 @@ export async function createApp(options = {}) {
     return { ok: true };
   });
   app.post("/api/nodes/heartbeat", async (req) => {
-    rate("node-heartbeat:" + ip(req), 120, 60000);
+    limitIp(req, "node-heartbeat");
     await pool.heartbeat(
       req.body?.id,
       req.headers.authorization?.replace(/^Bearer /, ""),
@@ -532,7 +560,7 @@ export async function createApp(options = {}) {
     pool.remove(req.params.id);
     return { ok: true };
   });
-  installAi(app, { store, session, rate, ip, fail });
+  installAi(app, { store, session, rate, ip, fail, limitIp, requestLimits });
   if (existsSync(config.staticDir)) {
     await app.register(fastifyStatic, { root: config.staticDir });
     app.setNotFoundHandler((req, reply) => {

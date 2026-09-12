@@ -67,6 +67,16 @@ const fixture = createServer(
       res.end("FIXTURE_BROWSER_LIMITS_RESET");
       return;
     }
+    // Isolate independent AI browser cases; production cooldowns remain enabled.
+    if (req.method === "POST" && url.pathname === "/__test/reset-ai-limits") {
+      const store = openStore(dir);
+      store.db.exec(
+        "DELETE FROM ai_cooldowns; DELETE FROM ai_usage; DELETE FROM limits WHERE key LIKE 'ai:%'",
+      );
+      store.db.close();
+      res.end("FIXTURE_AI_LIMITS_RESET");
+      return;
+    }
     if (url.pathname.startsWith("/icons/") || url.pathname === "/favicon.ico") {
       const missing =
         url.pathname === "/icons/missing.svg" ||

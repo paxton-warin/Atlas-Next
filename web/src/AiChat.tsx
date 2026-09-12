@@ -14,7 +14,13 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, readLocal, writeLocal } from "./model";
-type Message = { id: string; role: "user" | "assistant"; content: string };
+type Message = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  provider?: string;
+  model?: string;
+};
 type Chat = { id: string; title: string; updated: number; messages: Message[] };
 function restored(): Chat[] {
   const values = readLocal<any>("atlas.chats", []);
@@ -48,10 +54,15 @@ export default function AiChat() {
     [query, setQuery] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
-    [copied, setCopied] = useState("");
+    [copied, setCopied] = useState(""),
+    [allowGeminiDataUse, setAllowGeminiDataUse] = useState(
+      () => readLocal<boolean>("atlas.ai.geminiConsent", false) === true,
+    );
   const [config, setConfig] = useState<{
     configured: boolean;
     model: string | null;
+    provider?: string | null;
+    geminiDataUse?: boolean;
   } | null>(null);
   const control = useRef<AbortController | null>(null),
     bottom = useRef<HTMLDivElement>(null),
@@ -155,6 +166,7 @@ export default function AiChat() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          allowGeminiDataUse,
           messages: messages
             .slice(-29)
             .map(({ role, content }) => ({ role, content })),
@@ -181,6 +193,29 @@ export default function AiChat() {
           const event = JSON.parse(line);
           if (event.type === "error") throw Error(event.message);
           if (event.type === "done") done = true;
+          if (
+            event.type === "source" &&
+            typeof event.provider === "string" &&
+            typeof event.model === "string"
+          )
+            setChats((old) =>
+              old.map((c) =>
+                c.id === id
+                  ? {
+                      ...c,
+                      messages: c.messages.map((m) =>
+                        m.id === assistant.id
+                          ? {
+                              ...m,
+                              provider: event.provider,
+                              model: event.model,
+                            }
+                          : m,
+                      ),
+                    }
+                  : c,
+              ),
+            );
           if (event.type === "delta" && typeof event.text === "string")
             setChats((old) =>
               old.map((c) =>
@@ -290,7 +325,9 @@ export default function AiChat() {
           <Sparkles size={17} />
           <strong>Atlas AI</strong>
           <span className="chat-model">
-            {config?.model || "No model connected"}
+            {config?.provider
+              ? `Auto · ${config.provider}`
+              : config?.model || "No model connected"}
           </span>
           <button
             className="icon-button"
@@ -337,6 +374,11 @@ export default function AiChat() {
               >
                 <div className="chat-author">
                   {message.role === "user" ? "You" : "Atlas AI"}
+                  {message.role === "assistant" && message.provider && (
+                    <span className="chat-author-source">
+                      {message.provider} · {message.model}
+                    </span>
+                  )}
                 </div>
                 <div className="chat-message-content">
                   {message.content ? (
@@ -386,7 +428,7 @@ export default function AiChat() {
             <div className="ai-setup" role="status">
               <strong>Connect an AI provider</strong>
               <span>
-                Set the endpoint, model, and API key under Admin → AI provider.
+                Enable a provider and add its API key under Admin → AI provider.
               </span>
             </div>
           )}
@@ -394,6 +436,22 @@ export default function AiChat() {
             <p className="error-text" role="alert">
               {error}
             </p>
+          )}
+          {config?.geminiDataUse && (
+            <div className="ai-gemini-consent">
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={allowGeminiDataUse}
+                  onChange={(event) => {
+                    setAllowGeminiDataUse(event.target.checked);
+                    writeLocal("atlas.ai.geminiConsent", event.target.checked);
+                  }}
+                />
+                Allow Google Gemini as a backup. Google may use messages and
+                replies sent to its free tier to improve its products.
+              </label>
+            </div>
           )}
           <form className="chat-composer" onSubmit={submit}>
             <textarea

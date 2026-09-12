@@ -4545,3 +4545,124 @@ pre {
     min-width: 26px;
   }
 }
+
+/* Owner-only IP policy controls use compact, responsive rows. */
+.request-limit-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.request-limit-rules {
+  margin: 18px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.request-limit-rule {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 130px 150px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 16px;
+}
+.request-limit-rule + .request-limit-rule {
+  border-top: 1px solid var(--line);
+}
+.request-limit-rule > strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.request-limit-rule .form-field {
+  margin: 0;
+  min-width: 0;
+}
+.request-limit-settings .button-row {
+  flex-wrap: wrap;
+}
+.request-limit-settings code {
+  overflow-wrap: anywhere;
+}
+.request-limit-settings textarea {
+  font-family: ui-monospace, monospace;
+}
+.request-limit-fields > .form-field {
+  margin-top: 20px;
+}
+@media (max-width: 650px) {
+  .request-limit-rule {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 12px;
+  }
+  .request-limit-rule > strong {
+    grid-column: 1 / -1;
+  }
+}
+.ai-routing-toggles,
+.ai-provider-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.ai-provider-heading h3 {
+  margin: 0;
+  flex: 1;
+  font-size: 15px;
+}
+.ai-provider-heading {
+  margin-bottom: 14px;
+}
+.ai-provider-list {
+  display: grid;
+  gap: 14px;
+  margin: 20px 0;
+}
+.ai-provider-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px;
+  min-width: 0;
+}
+.ai-budget-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+  margin-top: 16px;
+}
+.ai-budget-grid .form-field {
+  min-width: 0;
+}
+.ai-provider-usage {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.ai-routing-settings .button-row {
+  flex-wrap: wrap;
+}
+.ai-gemini-consent {
+  margin: 8px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ai-gemini-consent label {
+  align-items: flex-start;
+}
+.chat-author-source {
+  margin-left: 8px;
+  font-weight: 400;
+  font-size: 10px;
+  color: var(--muted);
+}
+@media (max-width: 650px) {
+  .ai-budget-grid {
+    grid-template-columns: 1fr;
+  }
+  .ai-provider-card {
+    padding: 12px;
+  }
+}

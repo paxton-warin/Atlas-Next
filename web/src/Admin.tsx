@@ -13,6 +13,7 @@ import {
   Plus,
 } from "lucide-react";
 import NodeSettings from "./NodeSettings";
+import RequestLimitSettings from "./RequestLimitSettings";
 import AiProviderSettings from "./AiProviderSettings";
 import { api, type Game } from "./model";
 export default function Admin() {
@@ -252,6 +253,7 @@ export default function Admin() {
               ["Tickets", Inbox],
               ["Catalog", Grid2X2],
               ["Site settings", Settings2],
+              ["Request limits", ShieldCheck],
               ["AI provider", Settings2],
               ["Browsing nodes", Activity],
               ["Health & audit", Activity],
@@ -592,6 +594,9 @@ export default function Admin() {
                   Save changes
                 </button>
               </form>
+            )}
+            {section === "Request limits" && (
+              <RequestLimitSettings csrf={csrf} />
             )}
             {section === "AI provider" && <AiProviderSettings csrf={csrf} />}
             {section === "Browsing nodes" && <NodeSettings csrf={csrf} />}

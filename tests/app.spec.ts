@@ -11,6 +11,15 @@ const website = (page: Page) =>
   page
     .frameLocator('iframe[title="Atlas isolated browsing runtime"]')
     .frameLocator('iframe[title="Proxied website"]');
+test.beforeEach(async ({ request }, testInfo) => {
+  if (testInfo.title.startsWith("native AI")) {
+    const result = await request.post(
+      "http://127.0.0.1:4199/__test/reset-ai-limits",
+    );
+    expect(result.ok()).toBeTruthy();
+  }
+});
+
 for (const engine of ["scramjet"]) {
   test(`${engine} tab favicon loads through the proxy, updates and falls back`, async ({
     page,
@@ -586,7 +595,64 @@ test("single admin enrollment, verified ticket reply, catalog, logout and recove
   await expect(
     page.getByRole("button", { name: "Lock panel", exact: true }),
   ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Request limits", exact: true })
+    .click();
+  await page.getByLabel("Enable IP request limits").uncheck();
+  await page
+    .getByLabel("IP whitelist", { exact: true })
+    .fill("192.0.2.0/24\n2001:db8::/48");
+  await page
+    .getByRole("button", { name: "Save request limits", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Request limits saved");
+  await page
+    .getByRole("button", { name: "Add current IP", exact: true })
+    .click();
+  await expect(page.getByLabel("IP whitelist", { exact: true })).toHaveValue(
+    /127\.0\.0\.1/,
+  );
+  await page.screenshot({
+    path: "evidence/ai-routing/request-limits-desktop.png",
+  });
+  await page
+    .getByRole("button", { name: "Restore defaults", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Save request limits", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Request limits saved");
   await page.getByRole("button", { name: "AI provider", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "AI providers", exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Free-only routing", { exact: true }).check();
+  await page.getByRole("button", { name: "Move Groq up", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Save AI settings", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toContainText("Saved");
+  await expect(
+    page.locator(".ai-provider-card").filter({
+      has: page.getByRole("heading", {
+        name: "Custom provider",
+        exact: true,
+      }),
+    }),
+  ).toContainText("Excluded by free-only mode");
+  await page.screenshot({ path: "evidence/ai-routing/providers-desktop.png" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+  await page.screenshot({
+    path: "evidence/ai-routing/providers-mobile.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByLabel("Free-only routing", { exact: true }).uncheck();
   await page
     .getByRole("combobox", { name: "API protocol", exact: true })
     .selectOption("chat-completions");
@@ -594,7 +660,9 @@ test("single admin enrollment, verified ticket reply, catalog, logout and recove
     .getByRole("button", { name: "Save AI settings", exact: true })
     .click();
   await expect(page.getByRole("status")).toContainText("Saved");
-  await expect(page.getByLabel("API key", { exact: true })).toHaveValue("");
+  await expect(
+    page.getByLabel("Custom provider API key", { exact: true }),
+  ).toHaveValue("");
   await page
     .getByRole("button", { name: "Browsing nodes", exact: true })
     .click();
@@ -841,4 +909,63 @@ test("native AI setup is explicit when no provider is connected", async ({
     ),
   ).toBe(true);
   await page.screenshot({ path: "evidence/ui-refinement/ai-mobile.png" });
+});
+
+test("AI Gemini opt-in is explicit and answer attribution survives reload", async ({
+  page,
+}) => {
+  const submitted: any[] = [];
+  await page.route("**/api/ai/config", (route) =>
+    route.fulfill({
+      json: {
+        configured: true,
+        model: "fixture-primary",
+        provider: "Groq",
+        geminiDataUse: true,
+      },
+    }),
+  );
+  await page.route("**/api/ai/chat", async (route) => {
+    submitted.push(route.request().postDataJSON());
+    await route.fulfill({
+      contentType: "application/x-ndjson",
+      body: [
+        {
+          type: "source",
+          provider: "Google Gemini",
+          model: "fixture-fallback-model",
+        },
+        { type: "delta", text: "Synthetic consent fixture reply" },
+        { type: "done" },
+      ]
+        .map((v) => JSON.stringify(v) + "\n")
+        .join(""),
+    });
+  });
+  await home(page);
+  await page.getByRole("button", { name: "AI", exact: true }).click();
+  const consent = page.getByRole("checkbox", {
+    name: /Allow Google Gemini as a backup/,
+  });
+  await expect(consent).not.toBeChecked();
+  await consent.check();
+  await page.getByLabel("Message Atlas AI").fill("Consent fixture question");
+  await page.getByRole("button", { name: "Send AI message" }).click();
+  await expect(page.locator(".chat-message.assistant")).toContainText(
+    "Synthetic consent fixture reply",
+  );
+  expect(submitted[0].allowGeminiDataUse).toBe(true);
+  await expect(page.locator(".chat-author-source")).toHaveText(
+    "Google Gemini · fixture-fallback-model",
+  );
+  await page.reload();
+  await page.getByRole("button", { name: "AI", exact: true }).click();
+  await expect(consent).toBeChecked();
+  await page
+    .locator(".chat-item")
+    .getByRole("button", { name: "Consent fixture question", exact: true })
+    .click();
+  await expect(page.locator(".chat-author-source")).toHaveText(
+    "Google Gemini · fixture-fallback-model",
+  );
 });

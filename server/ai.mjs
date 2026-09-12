@@ -1,84 +1,67 @@
-// Provider credentials remain server-side. Public callers can supply only user/assistant text.
-// Responses streaming: https://developers.openai.com/api/docs/guides/streaming-responses
-export function installAi(app, { store, session, rate, ip, fail }) {
-  const { get, set, seal, unseal, audit } = store;
-  const read = () => {
-    const saved = get("aiConfig");
-    return saved
-      ? { ...saved, key: saved.key ? unseal(saved.key) : "" }
-      : {
-          enabled: process.env.AI_ENABLED === "true",
-          baseUrl: process.env.AI_BASE_URL || "https://api.openai.com/v1",
-          model: process.env.AI_MODEL || "",
-          protocol:
-            process.env.AI_PROTOCOL === "chat-completions"
-              ? "chat-completions"
-              : "responses",
-          key: process.env.AI_API_KEY || "",
-          dailyLimit: 200,
-        };
+import {
+  createAiConfig,
+  providerPresets,
+  routingReason,
+} from "./ai-config.mjs";
+import { createAiBudget } from "./ai-budget.mjs";
+import {
+  instructions,
+  providerPayload,
+  providerError,
+  streamProvider,
+  retrySeconds,
+} from "./ai-stream.mjs";
+export function installAi(
+  app,
+  { store, session, rate, ip, fail, limitIp, requestLimits },
+) {
+  const configStore = createAiConfig(store),
+    budgets = createAiBudget(store.db);
+  const eligible = (c) => c.providers.filter((p) => !routingReason(c, p));
+  const publicConfig = () => {
+    const c = configStore.read(),
+      providers = c.enabled ? eligible(c) : [];
+    return {
+      configured: providers.length > 0,
+      model: providers[0]?.model || null,
+      provider: providers[0]?.name || null,
+      freeOnly: c.freeOnly,
+      geminiDataUse: providers.some(
+        (p) => p.id === "gemini" && p.billing === "free",
+      ),
+    };
   };
-  const available = (c) => !!(c.enabled && c.model && c.key);
-  app.get("/api/ai/config", () => {
-    const c = read();
-    return { configured: available(c), model: available(c) ? c.model : null };
-  });
+  const ownerConfig = () => {
+    const c = configStore.read();
+    return {
+      ...c,
+      providers: c.providers.map(({ key, ...p }) => ({
+        ...p,
+        hasKey: !!key,
+        usage: budgets.status(p.id),
+        routingStatus: routingReason(c, { ...p, key }) || "Ready",
+      })),
+      presets: providerPresets,
+    };
+  };
+  app.get("/api/ai/config", publicConfig);
   app.get("/api/admin/ai", (req) => {
     session(req);
-    const { key, ...c } = read();
-    return { ...c, hasKey: !!key };
+    return ownerConfig();
   });
   app.put("/api/admin/ai", (req) => {
     session(req, true);
-    const b = req.body || {},
-      old = read();
-    let u;
-    try {
-      u = new URL(b.baseUrl);
-    } catch {
-      throw fail("Enter a valid provider base URL.");
-    }
-    if (
-      u.username ||
-      u.password ||
-      u.search ||
-      u.hash ||
-      (u.protocol !== "https:" &&
-        !(
-          u.protocol === "http:" &&
-          ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)
-        ))
-    )
-      throw fail("Use HTTPS, or HTTP for a loopback provider.");
-    if (typeof b.model !== "string" || !/^[\w./:@-]{1,120}$/.test(b.model))
-      throw fail("Enter a provider model ID.");
-    if (!["responses", "chat-completions"].includes(b.protocol))
-      throw fail("Choose an API protocol.");
-    if (
-      b.apiKey !== undefined &&
-      (typeof b.apiKey !== "string" || b.apiKey.length > 4096)
-    )
-      throw fail("Invalid provider key.");
-    const key = b.clearKey ? "" : b.apiKey?.trim() || old.key;
-    const c = {
-      enabled: b.enabled === true,
-      baseUrl: u.href.replace(/\/$/, ""),
-      model: b.model,
-      protocol: b.protocol,
-      key: key ? seal(key) : "",
-      dailyLimit: Math.max(1, Math.min(10000, Number(b.dailyLimit) || 200)),
-    };
-    set("aiConfig", c);
-    audit("ai.settings_saved");
-    return { ok: true };
+    configStore.save(req.body);
+    return ownerConfig();
   });
   const active = new Map();
   let total = 0;
   app.post("/api/ai/chat", async (req, reply) => {
-    const c = read();
-    if (!available(c))
+    const config = configStore.read(),
+      candidates = config.enabled ? eligible(config) : [];
+    if (!candidates.length)
       throw fail(
-        "AI is not configured. Add a provider in the administrator panel.",
+        "AI is not configured. Enable an eligible provider in the administrator panel.",
         503,
       );
     const messages = req.body?.messages;
@@ -100,159 +83,176 @@ export function installAi(app, { store, session, rate, ip, fail }) {
       throw fail(
         "Send up to 30 text messages, ending with a user message. Shorten this conversation or start a new chat.",
       );
+    // The browser acknowledges the disclosure before any free Gemini routing.
+    const allowed = candidates.filter(
+      (p) =>
+        p.id !== "gemini" ||
+        p.billing !== "free" ||
+        req.body?.allowGeminiDataUse === true,
+    );
+    if (!allowed.length)
+      throw fail(
+        "Enable Gemini data sharing in the chat disclosure, or configure another provider.",
+        400,
+      );
     const client = ip(req);
-    if ((active.get(client) || 0) >= 2 || total >= 8)
+    if (
+      (active.get(client) || 0) >= requestLimits.aiCapacity(req.ip) ||
+      total >= 8
+    )
       throw fail("Another reply is in progress. Try again shortly.", 429);
-    rate("ai:" + client, 20, 3600000);
+    limitIp(req, "ai");
     rate(
       "ai:day:" + new Date().toISOString().slice(0, 10),
-      c.dailyLimit,
+      config.dailyLimit,
       86400000,
     );
     active.set(client, (active.get(client) || 0) + 1);
     total++;
-    const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), 60000);
-    const disconnect = () => abort.abort();
+    const controller = new AbortController(),
+      lifetime = setTimeout(() => controller.abort(), 60000);
+    const disconnect = () => controller.abort();
     reply.raw.once("close", disconnect);
-    let streaming = false;
+    let streaming = false,
+      attempted = false,
+      lastError;
     const send = (value) => {
       if (!reply.raw.destroyed) reply.raw.write(JSON.stringify(value) + "\n");
     };
     try {
-      const instructions =
-        "You are Atlas AI. Answer clearly and directly. Use Markdown for code or structure when useful. Do not claim to browse the web or run tools: no tools are connected.";
-      const payload =
-        c.protocol === "responses"
-          ? {
-              model: c.model,
-              input: messages.map(({ role, content }) => ({ role, content })),
-              instructions,
-              stream: true,
-              store: false,
-              max_output_tokens: 2048,
-            }
-          : {
-              model: c.model,
-              messages: [
-                { role: "system", content: instructions },
-                ...messages.map(({ role, content }) => ({ role, content })),
-              ],
-              stream: true,
-              max_tokens: 2048,
-            };
-      const upstream = await fetch(
-        c.baseUrl +
-          (c.protocol === "responses" ? "/responses" : "/chat/completions"),
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: "Bearer " + c.key,
-          },
-          body: JSON.stringify(payload),
-          signal: abort.signal,
-          redirect: "error",
-        },
-      );
-      if (!upstream.ok || !upstream.body) {
-        await upstream.body?.cancel();
-        throw fail(
-          upstream.status === 401 || upstream.status === 403
-            ? "The AI provider rejected its credentials. Ask the administrator to check the key."
-            : upstream.status === 429
-              ? "The AI provider rate limit was reached. Try again later."
-              : "The AI provider request failed. Check the model and endpoint in the administrator panel.",
-          502,
-        );
-      }
-      reply.hijack();
-      streaming = true;
-      reply.raw.writeHead(200, {
-        ...reply.getHeaders(),
-        "Content-Type": "application/x-ndjson; charset=utf-8",
-        "Cache-Control": "no-store",
-        "X-Accel-Buffering": "no",
-      });
-      let buffer = "",
-        completed = false,
-        output = 0;
-      const decoder = new TextDecoder();
-      for await (const chunk of upstream.body) {
-        buffer += decoder.decode(chunk, { stream: true });
-        if (buffer.length > 1000000)
-          throw Error("Provider event exceeded the stream limit.");
-        let split;
-        while ((split = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, split).trim();
-          buffer = buffer.slice(split + 1);
-          if (!line.startsWith("data:")) continue;
-          const raw = line.slice(5).trim();
-          if (raw === "[DONE]") {
-            completed = true;
-            continue;
-          }
-          let event;
-          try {
-            event = JSON.parse(raw);
-          } catch {
-            continue;
-          }
-          if (
-            event.type === "response.failed" ||
-            event.type === "error" ||
-            event.error
-          )
-            throw Error("The AI provider interrupted the reply.");
-          if (event.type === "response.incomplete")
-            throw Error(
-              "The provider reached its output limit. Ask it to continue in a new message.",
+      // UTF-8 byte count + protocol overhead is deliberately conservative until
+      // actual usage arrives. Unknown/aborted usage keeps its reservation.
+      const reserved =
+        Buffer.byteLength(JSON.stringify(messages)) +
+        Buffer.byteLength(instructions) +
+        512 +
+        config.maxOutputTokens;
+      for (const provider of allowed) {
+        if (controller.signal.aborted) break;
+        const settle = budgets.reserve(provider, reserved);
+        if (!settle) continue;
+        attempted = true;
+        const attempt = new AbortController();
+        const abort = () => attempt.abort();
+        controller.signal.addEventListener("abort", abort, { once: true });
+        let deadline = setTimeout(() => attempt.abort(), 12000);
+        try {
+          const upstream = await fetch(
+            provider.baseUrl +
+              (provider.protocol === "responses"
+                ? "/responses"
+                : "/chat/completions"),
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: "Bearer " + provider.key,
+              },
+              body: JSON.stringify(
+                providerPayload(provider, messages, config.maxOutputTokens),
+              ),
+              signal: attempt.signal,
+              redirect: "error",
+            },
+          );
+          if (!upstream.ok || !upstream.body) {
+            await upstream.body?.cancel();
+            const retryable =
+              upstream.status === 429 ||
+              upstream.status === 402 ||
+              upstream.status >= 500;
+            const message = [401, 403].includes(upstream.status)
+              ? "The AI provider rejected its credentials or account access. Ask the administrator to check the key and plan."
+              : upstream.status === 402
+                ? "The AI provider has no available API credits. Ask the administrator to check billing."
+                : upstream.status === 429
+                  ? "The AI provider rate limit was reached. Try again later."
+                  : "The AI provider request failed. Check the model and endpoint in the administrator panel.";
+            budgets.cool(
+              provider.id,
+              retrySeconds(
+                upstream.headers.get("retry-after"),
+                retryable ? 60 : 300,
+              ),
+              message,
             );
-          const delta =
-            c.protocol === "responses"
-              ? event.type === "response.output_text.delta"
-                ? event.delta
-                : ""
-              : event.choices?.[0]?.delta?.content;
-          if (typeof delta === "string" && delta) {
-            output += delta.length;
-            if (output > 100000)
-              throw Error("Reply exceeded the output limit.");
-            send({ type: "delta", text: delta });
+            throw providerError(message, retryable);
           }
-          if (
-            event.type === "response.completed" ||
-            event.choices?.[0]?.finish_reason
-          )
-            completed = true;
+          for await (const delta of streamProvider(
+            upstream,
+            provider,
+            settle,
+          )) {
+            if (!streaming) {
+              clearTimeout(deadline);
+              deadline = null;
+              reply.hijack();
+              streaming = true;
+              reply.raw.writeHead(200, {
+                ...reply.getHeaders(),
+                "Content-Type": "application/x-ndjson; charset=utf-8",
+                "Cache-Control": "no-store",
+                "X-Accel-Buffering": "no",
+              });
+              send({
+                type: "source",
+                provider: provider.name,
+                model: delta.model,
+              });
+            }
+            send({ type: "delta", text: delta.text });
+          }
+          send({ type: "done" });
+          reply.raw.end();
+          return;
+        } catch (error) {
+          if (streaming) throw error; // Never append a different model to a partial answer.
+          if (controller.signal.aborted) break;
+          const retryable = error.retryable ?? true;
+          lastError = error.statusCode
+            ? error
+            : providerError(
+                "The AI provider could not be reached. Try again shortly.",
+                true,
+              );
+          if (!budgets.status(provider.id).cooldown)
+            budgets.cool(provider.id, 30, "Connection or stream error");
+          if (!retryable) throw lastError;
+        } finally {
+          clearTimeout(deadline);
+          controller.signal.removeEventListener("abort", abort);
+          attempt.abort();
         }
       }
-      if (!completed || !output)
-        throw Error("The provider ended without a complete text reply.");
-      send({ type: "done" });
-      reply.raw.end();
-    } catch (e) {
+      if (controller.signal.aborted)
+        throw fail("Reply stopped or timed out.", 504);
+      if (attempted && lastError) throw lastError;
+      throw fail(
+        "The configured AI providers are at their current limits or cooling down. Try again later or start a shorter chat.",
+        429,
+      );
+    } catch (error) {
       if (streaming) {
         send({
           type: "error",
-          message: abort.signal.aborted
+          message: controller.signal.aborted
             ? "Reply stopped or timed out."
-            : e.statusCode
-              ? e.message
+            : error.statusCode
+              ? error.message
               : "The provider stream ended before completion. Please retry.",
         });
         reply.raw.end();
       } else if (!reply.raw.destroyed)
-        throw e.statusCode
-          ? e
-          : fail(
-              "The AI provider could not be reached. Check the provider settings.",
-              502,
-            );
+        throw error.statusCode
+          ? error
+          : fail("The AI request failed. Try again shortly.", 502);
     } finally {
-      clearTimeout(timer);
+      clearTimeout(lifetime);
       reply.raw.off("close", disconnect);
-      active.set(client, Math.max(0, (active.get(client) || 1) - 1));
+      controller.abort();
+      const remaining = (active.get(client) || 1) - 1;
+      if (remaining > 0) active.set(client, remaining);
+      else active.delete(client);
       total--;
     }
   });
