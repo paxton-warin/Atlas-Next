@@ -2675,13 +2675,20 @@ pre {
   scrollbar-width: thin;
 }
 .horizontal-tabs .new-tab {
-  flex: 0 0 auto;
-  width: auto;
+  flex: 0 0 30px;
+  width: 30px;
   margin: 0;
-  padding: 5px 8px;
+  padding: 0;
   height: 28px;
   min-height: 28px;
   white-space: nowrap;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+.horizontal-tabs .new-tab span {
+  display: none;
 }
 .horizontal-tabs .tab {
   flex: 0 1 180px;
@@ -2694,7 +2701,7 @@ pre {
   height: 28px;
 }
 .compact .horizontal-tabs .new-tab {
-  padding: 5px 8px;
+  padding: 0;
 }
 .horizontal-tabs .tab-main {
   justify-content: flex-start;
@@ -2879,6 +2886,58 @@ pre {
 }
 .ticket-thread .setting-card {
   margin: 0;
+}
+.support-page {
+  max-width: 1100px;
+}
+.support-page .support-layout {
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.support-page .ticket-body {
+  min-height: 320px;
+  margin-bottom: 0;
+}
+.support-page .ticket-list-heading {
+  padding: 10px 8px 0;
+  color: var(--subtle);
+  font-size: 12px;
+  font-weight: 550;
+}
+.support-page .ticket-body h2 {
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  line-height: 1.4;
+}
+.support-page .ticket-body > form > p {
+  color: var(--subtle);
+  font-size: 13px;
+  margin-bottom: 18px;
+}
+.support-page .empty-state {
+  padding: 48px 20px;
+  min-height: 280px;
+}
+.support-page .empty-state p {
+  font-size: 13px;
+}
+.support-page .message p {
+  font-size: 13px;
+}
+.support-page .message header,
+.support-page .message time {
+  font-size: 11px;
+}
+@media (max-width: 850px) {
+  .support-page .support-layout {
+    display: block;
+  }
+  .support-page .ticket-list-heading {
+    display: none;
+  }
 }
 .catalog-toolbar {
   margin-bottom: 18px;
@@ -3507,7 +3566,7 @@ pre {
 }
 .home-section .home-page {
   min-height: 100%;
-  padding: 24px clamp(20px, 5vw, 80px) 12px;
+  padding: 24px 16px 12px;
   display: flex;
   flex-direction: column;
 }
@@ -3636,12 +3695,28 @@ pre {
   padding-top: 12px;
 }
 .newtab-credit {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   color: var(--subtle);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
+}
+.newtab-credit strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.newtab-version {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 6px;
+  border: 1px solid var(--home-outline);
+  border-radius: 5px;
 }
 .newtab-customize {
   display: inline-flex;
+  margin-left: auto;
   align-items: center;
   gap: 7px;
   padding: 8px 10px;

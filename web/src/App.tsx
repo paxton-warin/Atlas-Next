@@ -1,4 +1,5 @@
 import Catalog from "./Catalog";
+import { version as appVersion } from "../../package.json";
 import {
   useEffect,
   useRef,
@@ -24,7 +25,6 @@ import {
   Heart,
   HelpCircle,
   History,
-  Home,
   Leaf,
   Maximize2,
   MoreHorizontal,
@@ -961,13 +961,6 @@ export default function App() {
                 enabled={settings.autocomplete}
                 submit={(value) => navigate(value, false, current?.engine)}
               />
-              <button
-                className="icon-button"
-                aria-label="Go to homepage"
-                onClick={() => setPage("home")}
-              >
-                <Home size={16} />
-              </button>
               <BrowsingOptions
                 routing={!!config?.nodeRouting}
                 node={config?.node}
@@ -1050,7 +1043,17 @@ export default function App() {
                   </div>
                 </section>
                 <div className="newtab-footer">
-                  <span className="newtab-credit">Made by Paxton Warin</span>
+                  <div className="newtab-credit">
+                    <span>
+                      Made by <strong>Paxton Warin</strong>
+                    </span>
+                    <span
+                      className="newtab-version"
+                      aria-label={`Atlas version ${appVersion}`}
+                    >
+                      v{appVersion}
+                    </span>
+                  </div>
                   <button
                     className="newtab-customize"
                     onClick={() => setPage("settings")}

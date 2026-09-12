@@ -1,14 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  ArrowUpRight,
-  Check,
-  Copy,
-  LifeBuoy,
-  MessageSquare,
-  Plus,
-  Send,
-  ArrowLeft,
-} from "lucide-react";
+import { Copy, MessageSquare, Plus, Send } from "lucide-react";
 import { api, readLocal, writeLocal } from "./model";
 type Access = { id: string; token: string; subject?: string };
 export default function Support({ toast }: { toast: (s: string) => void }) {
@@ -18,7 +9,7 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
   const [access, setAccess] = useState<Access | null>(null);
   const [ticket, setTicket] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(() => saved.length === 0);
   const [message, setMessage] = useState("");
   const [form, setForm] = useState({
     subject: "",
@@ -39,6 +30,7 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
       /^#ticket=([a-f0-9]{12})\.([A-Za-z0-9_-]{43})$/,
     );
     if (match) {
+      setCreating(false);
       remember({ id: match[1], token: match[2] });
       history.replaceState(null, "", "/support");
     }
@@ -73,7 +65,7 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
       remember({ ...result, subject: form.subject });
       setCreating(false);
       setForm({ subject: "", category: "Browsing", body: "", website: "" });
-      toast("Ticket opened. Save your private link.");
+      toast("Ticket created. Save the link to access it later.");
     } catch (e) {
       toast((e as Error).message);
     } finally {
@@ -105,7 +97,6 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
           <h1>Support</h1>
           <p>Report an issue or send feedback.</p>
         </div>
-        <LifeBuoy size={32} />
       </div>
       <div className="support-layout">
         <aside className="ticket-list">
@@ -119,7 +110,7 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
             <Plus size={17} />
             New ticket
           </button>
-          <span className="eyebrow">Tickets</span>
+          <span className="ticket-list-heading">Your tickets</span>
           {saved.map((t) => (
             <button
               key={t.id}
@@ -142,7 +133,10 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
           {creating ? (
             <form onSubmit={create}>
               <h2>New ticket</h2>
-              <p>Tell us what happened and what you expected.</p>
+              <p>
+                Describe the issue or feedback. Include steps to reproduce a
+                problem.
+              </p>
               <label className="form-field">
                 Category
                 <select
@@ -175,7 +169,7 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
                   required
                   minLength={10}
                   maxLength={5000}
-                  rows={7}
+                  rows={5}
                   value={form.body}
                   onChange={(e) => setForm({ ...form, body: e.target.value })}
                   placeholder="Describe the issue and how to reproduce it."
@@ -196,8 +190,8 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
                 Leave out passwords, login codes, and private browsing links.
               </p>
               <button className="button primary" disabled={busy}>
-                {busy ? "Sending…" : "Send message"}
-                <ArrowUpRight size={16} />
+                <Send size={15} />
+                {busy ? "Creating…" : "Create ticket"}
               </button>
             </form>
           ) : ticket && access ? (
@@ -208,9 +202,7 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
                   {ticket.status.replaceAll("_", " ")}
                 </span>
               </div>
-              <p className="small muted">
-                #{access.id.toUpperCase()} · Private conversation
-              </p>
+              <p className="small muted">Ticket #{access.id.toUpperCase()}</p>
               <button
                 className="button"
                 onClick={async () => {
@@ -263,29 +255,14 @@ export default function Support({ toast }: { toast: (s: string) => void }) {
               </form>
             </>
           ) : access ? (
-            <div className="empty-state">Loading your conversation…</div>
+            <div className="empty-state">Loading ticket…</div>
           ) : (
             <div className="empty-state">
               <div className="empty-icon">
                 <MessageSquare size={32} />
               </div>
-              <h2>
-                A real conversation.
-                <br />
-                Without an account.
-              </h2>
-              <p>
-                Open a ticket and get a private link to follow up.
-                <br />
-                Your conversations stay right here.
-              </p>
-              <button
-                className="button primary"
-                onClick={() => setCreating(true)}
-              >
-                Let's talk
-                <ArrowUpRight size={17} />
-              </button>
+              <h2>Select a ticket</h2>
+              <p>Choose a ticket to view replies, or create a new one.</p>
             </div>
           )}
         </section>

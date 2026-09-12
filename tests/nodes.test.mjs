@@ -5,15 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../server/app.mjs";
 import { createNodeService } from "../server/node-service.mjs";
+import { createNodePool } from "../server/node-pool.mjs";
 import { digest } from "../server/store.mjs";
 const origin = "http://main.example";
-async function fixture() {
+async function fixture(options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atlas-nodes-"));
   const app = await createApp({
     dataDir: dir,
     staticDir: "/not-built",
     appOrigin: origin,
     runtimeOrigin: "http://runtime.example",
+    ...options,
   });
   const nodes = [];
   async function node(name, code) {
@@ -218,6 +220,86 @@ test("owner attach requires administrator session and CSRF, with no visitor cred
     });
     assert.equal(list.statusCode, 200);
     assert.ok(!list.body.includes("credential"));
+  } finally {
+    await f.done();
+  }
+});
+
+test("equal-load reconnects rotate through main and both remote nodes without changing sticky sessions", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.node("VPS 2", "AABBCC"),
+      b = await f.node("VPS 3", "DDEEFF");
+    const counts = new Map([
+      ["local", 0],
+      [a.id, 0],
+      [b.id, 0],
+    ]);
+    for (let i = 0; i < 9; i++) {
+      // Recreate the pool between assignments to verify persisted tie-breaks.
+      const pool = createNodePool(f.app.store, {
+        runtimeOrigin: "http://runtime.example",
+      });
+      const lease = await pool.allocate("", origin, "http://runtime.example");
+      counts.set(lease.node.id, counts.get(lease.node.id) + 1);
+      const resumed = await pool.allocate(
+        lease.session,
+        origin,
+        "http://runtime.example",
+      );
+      assert.equal(resumed.node.id, lease.node.id);
+      pool.release(lease.session, origin);
+    }
+    assert.deepEqual([...counts.values()], [3, 3, 3]);
+  } finally {
+    await f.done();
+  }
+});
+
+test("main participates at its configured weight and disabled main is never allocated", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.node("VPS 2", "AABBCC"),
+      b = await f.node("VPS 3", "DDEEFF");
+    f.app.nodePool.update("local", { state: "active", weight: 2 });
+    const leases = [];
+    for (let i = 0; i < 8; i++)
+      leases.push(
+        await f.app.nodePool.allocate("", origin, "http://runtime.example"),
+      );
+    assert.equal(leases.filter((x) => x.node.id === "local").length, 4);
+    assert.equal(leases.filter((x) => x.node.id === a.id).length, 2);
+    assert.equal(leases.filter((x) => x.node.id === b.id).length, 2);
+    for (const lease of leases) f.app.nodePool.release(lease.session, origin);
+    f.app.nodePool.update("local", { state: "disabled", weight: 2 });
+    for (let i = 0; i < 6; i++) {
+      const lease = await f.app.nodePool.allocate(
+        "",
+        origin,
+        "http://runtime.example",
+      );
+      assert.notEqual(lease.node.id, "local");
+      f.app.nodePool.release(lease.session, origin);
+    }
+  } finally {
+    await f.done();
+  }
+});
+
+test("main with the coordinator-only runtime placeholder explains setup instead of allocating dead sessions", async () => {
+  const f = await fixture({ runtimeOrigin: "https://runtime.invalid" });
+  try {
+    const main = f.app.nodePool.list().find((n) => n.id === "local");
+    assert.equal(main.setupRequired, true);
+    assert.equal(main.online, false);
+    assert.throws(
+      () => f.app.nodePool.update("local", { state: "active", weight: 1 }),
+      /RUNTIME_ORIGIN/,
+    );
+    await assert.rejects(
+      f.app.nodePool.allocate("", origin, "https://runtime.invalid"),
+      /No browsing nodes/,
+    );
   } finally {
     await f.done();
   }

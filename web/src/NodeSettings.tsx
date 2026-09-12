@@ -51,12 +51,32 @@ export default function NodeSettings({ csrf }: { csrf: string }) {
             <div>
               <strong>{node.name}</strong>
               <span className={"node-health " + (node.online ? "online" : "")}>
-                {node.online ? "Online" : "Offline"}
+                {node.setupRequired
+                  ? "Setup required"
+                  : node.online
+                    ? "Online"
+                    : "Offline"}
               </span>
             </div>
             <p className="small">
-              {node.endpoint || "This server · local browsing runtime"}
+              {node.runtimeOrigin ||
+                node.endpoint ||
+                "This server · local browsing runtime"}
             </p>
+            {node.id === "local" && (
+              <p className="small">
+                {node.setupRequired ? (
+                  <>
+                    Set <code>RUNTIME_ORIGIN</code> to this server's separate
+                    browsing hostname and restart Atlas before enabling it.
+                  </>
+                ) : node.state === "active" ? (
+                  "Main server participates in load balancing alongside the other active nodes."
+                ) : (
+                  "Main server is not accepting new sessions. Set its state to Active to include it in load balancing."
+                )}
+              </p>
+            )}
             <p className="small">
               {node.connections} connections · {node.sessions} pinned sessions
               {node.seen
@@ -71,7 +91,9 @@ export default function NodeSettings({ csrf }: { csrf: string }) {
                   value={node.state}
                   onChange={(e) => void update(node, { state: e.target.value })}
                 >
-                  <option value="active">Active</option>
+                  <option value="active" disabled={node.setupRequired}>
+                    Active
+                  </option>
                   <option value="draining">Draining</option>
                   <option value="disabled">Disabled</option>
                 </select>

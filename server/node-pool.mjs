@@ -5,8 +5,10 @@ const TTL = 12 * 60 * 60 * 1000;
 const FRESH = 45000;
 const fail = (message, statusCode = 400) =>
   Object.assign(Error(message), { statusCode });
-export function createNodePool(store) {
+export function createNodePool(store, { runtimeOrigin } = {}) {
   const { db, seal, unseal, audit } = store;
+  const localReady =
+    !runtimeOrigin || new URL(runtimeOrigin).hostname !== "runtime.invalid";
   if (!store.get("localNodeSecret"))
     store.set("localNodeSecret", seal(token()));
   let localConnections = () => 0;
@@ -22,7 +24,8 @@ export function createNodePool(store) {
     "INSERT OR IGNORE INTO nodes VALUES ('local','Main server','','',?,1,0,0)",
   ).run(process.env.LOCAL_BROWSING === "false" ? "disabled" : "active");
   const node = (id) => db.prepare("SELECT * FROM nodes WHERE id=?").get(id);
-  const online = (n) => n && (n.id === "local" || Date.now() - n.seen < FRESH);
+  const online = (n) =>
+    n && (n.id === "local" ? localReady : Date.now() - n.seen < FRESH);
   const available = (n) => online(n) && n.state !== "disabled";
   const prune = () =>
     db.prepare("DELETE FROM browse_leases WHERE seen<?").run(Date.now() - TTL);
@@ -37,6 +40,8 @@ export function createNodePool(store) {
         ...n,
         connections: n.id === "local" ? localConnections() : n.connections,
         online: online(n),
+        runtimeOrigin: n.id === "local" ? runtimeOrigin : n.endpoint,
+        setupRequired: n.id === "local" && !localReady,
         sessions: db
           .prepare("SELECT count(*) AS n FROM browse_leases WHERE node=?")
           .get(n.id).n,
@@ -114,6 +119,10 @@ export function createNodePool(store) {
   function update(id, patch) {
     const n = node(id);
     if (!n) throw fail("Node not found.", 404);
+    if (id === "local" && patch.state === "active" && !localReady)
+      throw fail(
+        "Set RUNTIME_ORIGIN to the main server's separate browsing hostname before enabling Main server.",
+      );
     if (
       !["active", "draining", "disabled"].includes(patch.state) ||
       !Number.isInteger(patch.weight) ||
@@ -140,6 +149,9 @@ export function createNodePool(store) {
         409,
       );
     db.prepare("DELETE FROM nodes WHERE id=?").run(id);
+    const order = store.get("nodeAssignmentOrder") || {};
+    delete order[id];
+    store.set("nodeAssignmentOrder", order);
     audit("node.remove", id);
   }
   function authenticate(id, secret) {
@@ -185,10 +197,13 @@ export function createNodePool(store) {
     } else {
       // Synchronous SQLite allocation reserves a lease before the next request.
       const candidates = list().filter((n) => n.state === "active" && n.online);
+      const order = store.get("nodeAssignmentOrder") || {};
       candidates.sort(
         (a, b) =>
           (a.sessions + a.connections) / a.weight -
-            (b.sessions + b.connections) / b.weight || a.id.localeCompare(b.id),
+            (b.sessions + b.connections) / b.weight ||
+          (order[a.id] || 0) - (order[b.id] || 0) ||
+          a.id.localeCompare(b.id),
       );
       if (!candidates.length)
         throw fail("No browsing nodes are available.", 503);
@@ -208,6 +223,14 @@ export function createNodePool(store) {
         lease.created,
         lease.seen,
       );
+      // Persist tie-break order separately from leases, so reconnect/release
+      // cannot repeatedly favor UUID-named remotes over the "local" node.
+      order[lease.node] =
+        Object.values(order).reduce(
+          (max, value) => Math.max(max, Number(value) || 0),
+          0,
+        ) + 1;
+      store.set("nodeAssignmentOrder", order);
     }
     db.prepare("UPDATE browse_leases SET seen=? WHERE hash=?").run(
       Date.now(),

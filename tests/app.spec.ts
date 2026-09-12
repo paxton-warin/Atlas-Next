@@ -275,7 +275,9 @@ test("anonymous support ticket and reply", async ({ page }) => {
   await page
     .getByLabel("Message", { exact: true })
     .fill("I would like to report a browsing issue with a page.");
-  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Create ticket", exact: true })
+    .click();
   await expect(
     page.getByRole("heading", { name: "Chromebook browsing question" }),
   ).toBeVisible();

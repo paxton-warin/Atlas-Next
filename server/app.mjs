@@ -65,7 +65,7 @@ export async function createApp(options = {}) {
       : config.appOrigin;
   const store = openStore(config.dataDir),
     { db, get, set, audit, seal, unseal } = store;
-  const pool = createNodePool(store);
+  const pool = createNodePool(store, { runtimeOrigin: config.runtimeOrigin });
   app.decorate("nodePool", pool);
   app.decorate("store", store);
   app.decorate("atlasConfig", config);

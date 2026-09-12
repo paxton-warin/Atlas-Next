@@ -26,8 +26,9 @@ for (const compact of [true, false]) {
       expect(box.x - row.x).toBeLessThan(20);
       expect(box.y).toBeGreaterThanOrEqual(row.y);
       expect(row.height).toBeLessThanOrEqual(42);
-      const label = (await button.locator("span").boundingBox())!;
-      expect(label.height).toBeLessThan(20);
+      expect(box.width).toBeLessThanOrEqual(32);
+      expect(box.height).toBeLessThanOrEqual(30);
+      await expect(button.locator("span")).toBeHidden();
       await expect(button).toHaveCSS("white-space", "nowrap");
     }
     await page.screenshot({
