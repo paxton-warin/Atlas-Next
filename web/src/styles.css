@@ -4823,3 +4823,15 @@ pre {
     padding: 12px;
   }
 }
+
+/* Math fonts are bundled locally; wide display equations scroll in the message. */
+.chat-message-content .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 5px;
+  margin: 16px 0;
+}
+.chat-message-content .katex {
+  font-size: 1.08em;
+}

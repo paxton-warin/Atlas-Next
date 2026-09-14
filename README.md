@@ -68,11 +68,11 @@ Playwright uses installed Google Chrome. On another OS, set `CHROME_PATH` to the
 
 Read [the compatibility register](docs/COMPATIBILITY.md). A passing desktop fixture is **not** a claim that Google authentication, ChatGPT authentication, Spotify playback, or Chromebook behavior has been verified.
 
-Current measured result: **12 backend passes; 22 browser journey passes; 2 tracked upstream download failures; no unexpected failures**. Google and Spotify rendered logged-out interfaces in both Atlas and the baseline; ChatGPT showed a human-verification interstitial in both. Authentication, playback and physical Chromebook testing remain outstanding.
+Current local result: **47 backend passes; 71 browser journey passes; 2 tracked upstream download failures; no unexpected failures**. The frontend-relay fixture verifies Main transport through the current frontend origin while the frame stays isolated on a paired node. Local Caddy routing and AI LaTeX rendering are covered. Authentication, playback, production throughput and physical Chromebook testing remain outstanding.
 
 ## Deployment
 
-For your multi-CloudFront/direct-node setup, use [the node deployment guide](docs/NODES.md), `Dockerfile.node`, and the `nodes` branch. The legacy two-host direct deployment below remains available.
+For your multi-CloudFront/direct-node setup, use [the node deployment guide](docs/NODES.md), `Dockerfile.node`, and `compose.node.yaml` from this same `main` branch. Main can use the current frontend URL for website transport while a paired node hosts its isolated frame; see [three-VPS setup](docs/THREE-VPS-SETUP.md) and [existing-server update commands](docs/UPDATE-FRONTEND-RELAY.md). The legacy two-host direct deployment below remains available.
 
 The Docker/Caddy configuration is provided but has not been run against a public deployment; the local Docker daemon was not running during verification.
 

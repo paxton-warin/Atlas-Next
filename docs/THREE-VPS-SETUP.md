@@ -4,24 +4,30 @@
 
 Use **Ubuntu 24.04 LTS** on all three VPSs for the commands below. Substitute your actual public IPs, SSH user and AWS-assigned distribution hostnames. These are installation instructions, not a claim that your servers have been deployed.
 
-| VPS | DNS A record → public IP                   | Runs                                       | CloudFront origin               |
-| --- | ------------------------------------------ | ------------------------------------------ | ------------------------------- |
-| 1   | `vps-main.internals.paxton.co` → `VPS1_IP` | Atlas frontend, API, owner panel, database | Every frontend distribution     |
-| 2   | `vps-2.internals.paxton.co` → `VPS2_IP`    | Browsing node 2                            | One dedicated node distribution |
-| 3   | `vps-3.internals.paxton.co` → `VPS3_IP`    | Browsing node 3                            | One dedicated node distribution |
+| VPS | DNS A record → public IP                | Runs                                                   | CloudFront origin               |
+| --- | --------------------------------------- | ------------------------------------------------------ | ------------------------------- |
+| 1   | `vps-1.internals.paxton.co` → `VPS1_IP` | Atlas frontend, API, owner panel, database, Main relay | Every frontend distribution     |
+| 2   | `vps-2.internals.paxton.co` → `VPS2_IP` | Browsing node 2                                        | One dedicated node distribution |
+| 3   | `vps-3.internals.paxton.co` → `VPS3_IP` | Browsing node 3                                        | One dedicated node distribution |
 
 ```text
 Visitor → any frontend CloudFront link → VPS 1 (UI, API, assignment)
-Visitor → assigned node CloudFront link → VPS 2 OR VPS 3 → website
+Main assignment: visitor → current frontend CloudFront link /relay/* → VPS 1 → website
+Node 2/3 assignment: visitor → assigned node CloudFront link → VPS 2 OR VPS 3 → website
+Main frame/static runtime: visitor → one pinned, paired node hostname (isolated from Atlas)
 ```
 
-This layout provides **two browsing egress IPs**, with VPS 1 reserved for coordination. It does not combine both nodes' bandwidth for one visitor: each session stays on one node. Website data bypasses VPS 1. All Atlas API calls remain on the frontend link that visitor opened. Rewriting runs in the visitor's browser; nodes supply outbound connections and bandwidth.
+This layout provides **three browsing egress IPs** when all three nodes are Active. Main-assigned website traffic uses whichever frontend URL the visitor opened. Node 2/3 traffic goes directly to those nodes, bypassing VPS 1. All Atlas API calls stay on the current frontend link. Rewriting runs in the visitor's browser; each egress server supplies outbound connections and bandwidth. A single session does not combine multiple servers' bandwidth.
 
-Start with **three distributions total**: one frontend plus two nodes. After everything works, add your other frontend distributions using the same VPS 1 origin/configuration. Keep one stable frontend distribution for owner access and node heartbeats; sign into the owner panel through that URL when attaching nodes. Visitor settings/admin sessions are not automatically shared across different frontend URLs.
+Use **three distributions total**: one frontend plus two nodes. Add more frontend distributions with the same VPS 1 origin/configuration. No fourth runtime distribution or frontend alias allowlist is needed. Main's isolated website iframe and static runtime files are hosted on one of the existing nodes, while its actual website HTTP/WebSocket traffic uses VPS 1. Both choices stay pinned until Reconnect. At least one updated paired node must be online for Main to accept new sessions.
+
+Keep one stable frontend distribution for owner access and node heartbeats. Visitor settings/admin sessions are not shared across different frontend URLs.
+
+**Existing installation?** Follow [Update to frontend relay](UPDATE-FRONTEND-RELAY.md) instead of overwriting `.env` or recreating node identities. Update both nodes before Main.
 
 ## 0. Prepare the current source
 
-Use the current `main` branch from [paxton-warin/Atlas-Next](https://github.com/paxton-warin/Atlas-Next). The commands below use the existing local `Atlas-Next` and `Atlas-Nodes` worktrees. For a fresh installation, a second clone of `main` into `Atlas-Nodes` also contains `Dockerfile.node` and `compose.node.yaml`; explicitly select `compose.node.yaml` for node deployments as shown below.
+Use the current `main` branch from [paxton-warin/Atlas-Next](https://github.com/paxton-warin/Atlas-Next). The same `main` checkout contains the frontend and node images. Select `compose.node.yaml` for nodes; no separate branch or worktree is needed.
 
 The misplaced main frontend was moved from web/public/src back to web/src after all 17 files matched the last verified snapshot; the original layout is backed up. The preparation command below checks that its entry point is present before building.
 
@@ -34,10 +40,6 @@ pnpm install --frozen-lockfile
 pnpm runtime:fetch
 pnpm build
 
-cd /Users/paxton/Repositories/Atlas-Nodes
-pnpm install --frozen-lockfile
-pnpm runtime:fetch
-pnpm build
 ```
 
 Keep the prepared `upstream/scramjet-ls-bypass/app/vendor` files and `web/public/source` archives in the upload. Docker builds verify these pinned runtime assets. The connection dropdown is **Connection**; internal engine identifiers and pinned runtime filenames remain unchanged. The main navigation item stays Browser; the dropdown displays status and node details without an engine label.
@@ -81,11 +83,11 @@ On your Mac, replace `deploy` with your actual SSH user:
 ```sh
 SSH_USER=deploy
 rsync -az --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target \
-  /Users/paxton/Repositories/Atlas-Next/ "$SSH_USER@vps-main.internals.paxton.co:/opt/atlas/"
+  /Users/paxton/Repositories/Atlas-Next/ "$SSH_USER@vps-1.internals.paxton.co:/opt/atlas/"
 rsync -az --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target \
-  /Users/paxton/Repositories/Atlas-Nodes/ "$SSH_USER@vps-2.internals.paxton.co:/opt/atlas/"
+  /Users/paxton/Repositories/Atlas-Next/ "$SSH_USER@vps-2.internals.paxton.co:/opt/atlas/"
 rsync -az --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target \
-  /Users/paxton/Repositories/Atlas-Nodes/ "$SSH_USER@vps-3.internals.paxton.co:/opt/atlas/"
+  /Users/paxton/Repositories/Atlas-Next/ "$SSH_USER@vps-3.internals.paxton.co:/opt/atlas/"
 ```
 
 The build's source-archive script also expects the non-secret example env files and three historical source-evidence files. Copy those explicitly after the main upload (commands provided in the next block). No database, master key, live `.env`, admin credentials or paired-node data is transferred.
@@ -93,7 +95,7 @@ The build's source-archive script also expects the non-secret example env files 
 ```sh
 export SSH_USER
 bash <<'BASH'
-for spec in 'Atlas-Next vps-main.internals.paxton.co' 'Atlas-Nodes vps-2.internals.paxton.co' 'Atlas-Nodes vps-3.internals.paxton.co'; do
+for spec in 'Atlas-Next vps-1.internals.paxton.co' 'Atlas-Next vps-2.internals.paxton.co' 'Atlas-Next vps-3.internals.paxton.co'; do
   set -- $spec
   src="/Users/paxton/Repositories/$1"; host="$2"
   ssh "$SSH_USER@$host" 'mkdir -p /opt/atlas/evidence/ui-refinement/original/server'
@@ -121,11 +123,11 @@ Record each value for the next step. These are **three different infrastructure 
 
 Create standard custom-origin distributions, not S3 distributions. Use this table:
 
-| Distribution | Origin domain                  | Origin custom header             |
-| ------------ | ------------------------------ | -------------------------------- |
-| Frontend     | `vps-main.internals.paxton.co` | `X-Atlas-Origin-Key` = VPS 1 key |
-| Node 2       | `vps-2.internals.paxton.co`    | `X-Atlas-Origin-Key` = VPS 2 key |
-| Node 3       | `vps-3.internals.paxton.co`    | `X-Atlas-Origin-Key` = VPS 3 key |
+| Distribution | Origin domain               | Origin custom header             |
+| ------------ | --------------------------- | -------------------------------- |
+| Frontend     | `vps-1.internals.paxton.co` | `X-Atlas-Origin-Key` = VPS 1 key |
+| Node 2       | `vps-2.internals.paxton.co` | `X-Atlas-Origin-Key` = VPS 2 key |
+| Node 3       | `vps-3.internals.paxton.co` | `X-Atlas-Origin-Key` = VPS 3 key |
 
 For **each distribution**:
 
@@ -151,9 +153,10 @@ cat > .env <<EOF
 HOST=0.0.0.0
 NODE_ENV=production
 APP_ORIGIN=https://$FRONTEND_CF
-LOCAL_BROWSING=false
+LOCAL_BROWSING=true
+LOCAL_RELAY_MODE=frontend
 ADMIN_PATH=/_control/atlas-owner
-ORIGIN_HOST=vps-main.internals.paxton.co
+ORIGIN_HOST=vps-1.internals.paxton.co
 ORIGIN_KEY=$(cat .origin-key)
 EOF
 sudo docker compose -p atlas-main -f compose.cloudfront.yaml config --quiet
@@ -162,7 +165,9 @@ sudo docker compose -p atlas-main -f compose.cloudfront.yaml ps
 sudo docker compose -p atlas-main -f compose.cloudfront.yaml logs --tail=60 edge app
 ```
 
-This file uses `Caddyfile.cloudfront`, not the direct-host `Caddyfile`. `TRUST_PROXY` and `/data` are already set in Compose. With local browsing off, the app automatically uses an unused HTTPS runtime placeholder until nodes are attached; do not set `RUNTIME_ORIGIN` to the frontend hostname. Browsing is unavailable until at least one node is attached. On an existing database, also disable **Main server** in the owner panel; the env flag is only the initial default.
+This uses `Caddyfile.cloudfront`, not the direct-host `Caddyfile`. `TRUST_PROXY` and `/data` are set in Compose. In frontend-relay mode, leave `RUNTIME_ORIGIN` and `RUNTIME_HOST` unset. Caddy sends `/relay/*` and `/wisp/*` to port 4181; the frontend, API and owner panel still use 4180 on **every frontend alias**. The isolated iframe uses a paired node origin, not the frontend page. Browsing becomes available after nodes are attached. Main remains Setup required until a healthy paired node advertises frontend-relay support.
+
+On an existing database, `LOCAL_BROWSING=true` does not override a saved Disabled state. Enable Main in the owner panel after updating and attaching the nodes. Do not add Main as a separate paired node.
 
 After CloudFront and origin TLS are ready:
 
@@ -205,7 +210,7 @@ On the **stable frontend CloudFront URL**, open **Owner panel → Browsing nodes
 
 1. Name: `Node 2`; endpoint: `https://YOUR_NODE2.cloudfront.net`; pairing code: latest code from VPS 2; click **Attach node**.
 2. Name: `Node 3`; endpoint: `https://YOUR_NODE3.cloudfront.net`; pairing code: latest code from VPS 3; click **Attach node**.
-3. Wait for both to show **Online**. Set both **Active**, **weight 1**. Keep **Main server Disabled**.
+3. Wait for both to show **Online**. Set both **Active**, **weight 1**. Set **Main server Active**, **weight 1**, after it shows ready. Its endpoint label should read **Current frontend URL · Main server relay**.
 4. Save nothing by hand in the node database. Pairing exchanges Atlas credentials; each node's Docker data volume retains its own identity.
 
 Equal weights give capacity-weighted sticky assignment using session/connection counts—not measured CPU or Mbps. Increase the stronger node's weight proportionally if the VPS capacities differ. Draining stops new assignments but keeps current sessions; Reconnect explicitly allows a different node/IP. Keep the stable frontend distribution online because nodes heartbeat through the control URL saved during attachment.
@@ -214,8 +219,8 @@ For built-in chat, configure the chosen provider endpoint, protocol, model and A
 
 ## 8. Verify the actual deployment
 
-- Open the frontend. Open **Connection**: it should show Node 2 or Node 3, not Main server.
-- Open DevTools → Network: `/api/...` stays on that frontend CloudFront host; runtime/relay traffic goes to the chosen node CloudFront host. VPS 1 should not relay website bytes.
+- Open the frontend. Open **Connection**: new assignments should include Main server, Node 2 and Node 3. Existing sticky sessions do not move automatically.
+- Open DevTools → Network: `/api/...` stays on that frontend CloudFront host; for Node 2/3, runtime/relay traffic goes directly to that node. For Main, the frame is on a paired node but the transport WebSocket uses the current frontend host's `/relay/` route. VPS 1 should only carry website bytes for Main-assigned sessions.
 - Reload and open additional tabs: the assigned node should stay the same. Use a different browser profile to observe a separate assignment; perfect alternation is not expected.
 - Use **Connection → Reconnect node**: the node may change. Cookies/storage are tied to node origin, so moving nodes can require signing in again.
 - Test your real Google login/CAPTCHA, ChatGPT and Spotify flows on your Chromebook. Local fixture passes do not establish those authenticated journeys.
@@ -232,4 +237,8 @@ For built-in chat, configure the chosen provider endpoint, protocol, model and A
 
 Update by uploading the matching current source and rebuilding with the same Compose project name and data volumes. Update nodes one at a time after draining; keep the second node available. Do not use `docker compose down -v`: it deletes persistent volumes. Before upgrading, stop the affected service and back up its full named volume; preserve the main database/master key and each node's distinct `node.json`. Restore data only while the corresponding service is stopped. Retain the previous image and deployment files for rollback.
 
-Adding VPS 1 as a **third browsing IP** is optional later: it needs its own runtime origin/CloudFront distribution targeting port 4181 through Caddy, plus a real `RUNTIME_ORIGIN`, before enabling Main server. The coordinator-only configuration here intentionally omits that extra endpoint.
+### Optional dedicated main runtime (legacy mode)
+
+The default above needs no fourth distribution. To retain a previous dedicated runtime instead, explicitly set `LOCAL_RELAY_MODE=isolated`, `RUNTIME_ORIGIN=https://RUNTIME_CF` and `RUNTIME_HOST=RUNTIME_CF`. Its distribution must point to the same VPS 1 origin; `Caddyfile.cloudfront` routes that viewer hostname to port 4181. Every other frontend hostname continues to serve port 4180. Application and runtime hostnames must differ.
+
+An iframe error containing `frame-ancestors 'none'` means that iframe URL served the frontend (or an edge policy added a denial), not the intended isolated runtime. Preserve the frontend's anti-framing headers. In frontend-relay mode, remove the obsolete runtime variables, update both nodes, recreate **app and edge**, then Reconnect. Check that CloudFront has no response-headers policy adding a framing denial to node responses.

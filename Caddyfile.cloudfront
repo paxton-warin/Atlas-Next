@@ -1,10 +1,37 @@
-# CloudFront origin Host/SNI stays your origin domain, not *.cloudfront.net.
+# Preserve origin Host/SNI; derive the visitor origin from the viewer-request function.
 {$ORIGIN_HOST} {
-  @unauthorized not header X-Atlas-Origin-Key {$ORIGIN_KEY}
-  respond @unauthorized 403
-  reverse_proxy app:4180 {
-    header_up X-Forwarded-Host {http.request.header.X-Atlas-Viewer-Host}
-    header_up X-Forwarded-Proto https
-    header_up X-Forwarded-For {http.request.header.X-Atlas-Viewer-Ip}
+  # Keep the origin-key check ahead of the mutually exclusive routing handlers.
+  route {
+    @unauthorized not header X-Atlas-Origin-Key {$ORIGIN_KEY}
+    respond @unauthorized 403
+
+    # Optional legacy, dedicated runtime distribution. Leave RUNTIME_HOST unset
+    # in frontend-relay mode: all frontend aliases keep serving Atlas at /.
+    @runtime header X-Atlas-Viewer-Host {$RUNTIME_HOST:runtime.invalid}
+    handle @runtime {
+      reverse_proxy app:4181 {
+        header_up X-Forwarded-Host {http.request.header.X-Atlas-Viewer-Host}
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {http.request.header.X-Atlas-Viewer-Ip}
+      }
+    }
+
+    # Only ticket-authenticated WebSocket relays use the local browsing service.
+    @relay path /relay/* /wisp/*
+    handle @relay {
+      reverse_proxy app:4181 {
+        header_up X-Forwarded-Host {http.request.header.X-Atlas-Viewer-Host}
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {http.request.header.X-Atlas-Viewer-Ip}
+      }
+    }
+
+    handle {
+      reverse_proxy app:4180 {
+        header_up X-Forwarded-Host {http.request.header.X-Atlas-Viewer-Host}
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {http.request.header.X-Atlas-Viewer-Ip}
+      }
+    }
   }
 }

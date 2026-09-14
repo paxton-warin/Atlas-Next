@@ -5,18 +5,18 @@ For the complete three-server procedure, see [Three VPS setup](THREE-VPS-SETUP.m
 ## Traffic
 
 ```text
-100 frontend CloudFront distributions → vps-main.internals.paxton.co
+100 frontend CloudFront distributions → vps-1.internals.paxton.co
                                       → frontend + Atlas API + owner panel
 Browser → assigned node CloudFront endpoint → VPS node → destination websites
 ```
 
-Atlas API requests remain relative `/api/...` on the frontend domain the visitor opened. Website requests, downloads and WebSocket traffic use the assigned node directly; the main server does not relay this data. Scramjet rewriting runs in the browser. The node supplies outbound connections and its public IP/bandwidth, not server-side rendering. The frontend address remains unchanged; the node origin is visible in network tools.
+Atlas API requests remain relative `/api/...` on the frontend domain the visitor opened. Website requests, downloads and WebSocket traffic use the assigned egress server directly. Node 2/3 traffic bypasses main; Main-assigned traffic uses the current frontend URL through Caddy to the main relay on port 4181. Scramjet rewriting runs in the browser. The node supplies outbound connections and its public IP/bandwidth, not server-side rendering. The frontend address remains unchanged; the node origin is visible in network tools.
 
-There is no frontend domain allowlist or per-alias app configuration. Same-origin checks use the actual request origin, with forwarded headers accepted only from `TRUST_PROXY`. Keep one browser-runtime CloudFront endpoint per node. Do not map a node's endpoint to the main frontend service.
+There is no frontend domain allowlist or per-alias app configuration. Same-origin checks use the actual request origin, with forwarded headers accepted only from `TRUST_PROXY`. Keep one browser-runtime CloudFront endpoint per remote node. In `LOCAL_RELAY_MODE=frontend`, Main uses one of those nodes only for its isolated iframe/static runtime assets, and the current frontend URL for actual website transport. This avoids a fourth distribution without sharing a website frame's origin with Atlas/owner APIs. Do not map a remote node's endpoint to the main frontend service.
 
 ## Point → attach
 
-1. On a node, start the `nodes` branch deployment. A fresh node prints `NODE_PAIRING_CODE=...` in its logs. The code lasts ten minutes; an unattached node prints a replacement when it expires.
+1. On a node, start the `main` checkout using `compose.node.yaml`. A fresh node prints `NODE_PAIRING_CODE=...` in its logs. The code lasts ten minutes; an unattached node prints a replacement when it expires.
 2. On the main app, open **Owner panel → Browsing nodes**.
 3. Enter a name, the node's CloudFront URL, and its pairing code. Click **Attach node**.
 4. Atlas exchanges credentials over the node connection, saves them, checks reachability and displays **Online**. No hand-edited Atlas node IDs, shared tokens, or domain lists.
@@ -55,13 +55,14 @@ This preserves the origin Host/SNI as `vps-*.internals.paxton.co`, while Atlas r
 
 Sources: [AWS WebSocket support](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/distribution-working-with.websockets.html), [origin request policies](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/origin-request-understand-origin-request-policy.html), [origin TLS](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-https-cloudfront-to-custom-origin.html), [edge header restrictions](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/edge-function-restrictions-all.html).
 
-On main, use `Caddyfile.cloudfront` in place of the direct-host Caddyfile. Keep the existing main application network/`TRUST_PROXY` setting. Set `APP_ORIGIN` to the main HTTPS origin as a fallback; it is not an alias allowlist. For a coordinator-only main, set `LOCAL_BROWSING=false` on first startup; otherwise disable **Main server** in the owner panel. If main also carries browsing traffic, give its runtime (port 4181) its own CloudFront distribution and set `RUNTIME_ORIGIN` to that endpoint. Never route website traffic through port 4180.
+On main, use `Caddyfile.cloudfront` in place of the direct-host Caddyfile. Keep the existing main application network/`TRUST_PROXY` setting. Set `APP_ORIGIN` to the main HTTPS origin as a fallback; it is not an alias allowlist. For a coordinator-only main, set `LOCAL_BROWSING=false` on first startup; otherwise disable **Main server** in the owner panel. For Main browsing, use `LOCAL_RELAY_MODE=frontend` (the CloudFront Compose default), `LOCAL_BROWSING=true`, remove `RUNTIME_ORIGIN`/`RUNTIME_HOST`, and update remote nodes first. Caddy forwards only `/relay/*` and `/wisp/*` to 4181 on the visitor's existing frontend hostname. The frame stays on a paired node. Legacy dedicated-origin mode is still available with `LOCAL_RELAY_MODE=isolated`. See [existing-server update commands](UPDATE-FRONTEND-RELAY.md).
 
 ## Assignment and owner controls
 
 - Healthy, **Active** nodes are ranked by `(pinned sessions + reported open relay connections) / weight`. Allocation reserves a SQLite lease before returning it, preventing simultaneous clients from all choosing an unreserved node. This is a practical load signal, not measured bandwidth or CPU utilization.
 - Equal-load ties go to the least recently assigned node. This order survives reconnects and restarts, so an active Main server is not starved by remote node IDs. Existing sessions remain pinned; the tie-break only affects new assignments.
-- Main server must be **Active** and have a real, separate browsing `RUNTIME_ORIGIN` to receive sessions. The coordinator-only setup intentionally disables it. The owner panel shows its runtime hostname and setup/state explanation; the `runtime.invalid` placeholder is never eligible for assignment.
+- Main server must be **Active**. In frontend-relay mode it also requires a healthy Active paired node advertising `frontend-relay-v1`; older nodes must be upgraded first. The owner panel labels Main **Current frontend URL · Main server relay**. Isolated mode instead requires a real separate `RUNTIME_ORIGIN`. The placeholder is never sent as a browsing URL.
+- Main leases pin both their egress (Main) and frame host. Frame-host draining preserves existing leases; disabling/offlining it requires explicit Reconnect rather than silently moving storage or IP. **Hosted frames** counts are separate from outbound relay/session counts, and a node hosting active Main frames is protected from removal. Runtime-host tickets and Main-relay tickets use separate signing keys and purposes; a frame ticket does not authorize egress through its host node.
 - **Weight** controls relative capacity (1–100). **Draining** stops new assignments and preserves current leases. **Disabled** rejects new connections and closes existing relay connections once its control state arrives.
 - Nodes heartbeat every 15 seconds; the backend also probes their endpoint. At 45 seconds without a valid control update, a node rejects new connections. Ordered control revisions prevent late updates overwriting newer assignments. Relay authorizations are rechecked every five seconds, so revocation and stale control state also close existing relay connections.
 - A session is pinned in SQLite and reused across app reloads. Offline nodes do not trigger silent failover. **Reconnect** explicitly ends the old assignment and permits a new IP. Browser cookies/storage are origin-bound; switching nodes may require signing in again.

@@ -13,3 +13,5 @@ Exact application dependencies and integrity hashes are in pnpm-lock.yaml. Built
 - React Markdown 10.1.0 and remark-gfm 4.0.1: https://github.com/remarkjs/react-markdown and https://github.com/remarkjs/remark-gfm — MIT.
 
 - Expanded Apps/Games catalog and cover images: adapted from UseInterstellar/Interstellar at `1e13802605b1ff85461adcb0c438594cbe600415` (AGPL-3.0), https://github.com/UseInterstellar/Interstellar/tree/1e13802605b1ff85461adcb0c438594cbe600415 . Original license is included in docs/catalog/Interstellar-LICENSE.txt. Names/logos identify their respective services and games. Atlas bundles catalog metadata and covers, not the external games themselves. `scripts/import-catalog.py` records the pinned source and selection/availability checks; broken relative deployment routes are not imported. Owner edits and hidden entries are retained on restart.
+
+- KaTeX 0.18.7 (bundled math renderer/styles/fonts): https://github.com/KaTeX/KaTeX — MIT, notice retained in `docs/licenses/KaTeX-MIT.txt`. remark-math 6.0.0 and rehype-katex 7.0.1: https://github.com/remarkjs/remark-math — MIT; dependency versions/integrity are pinned in pnpm-lock.yaml.

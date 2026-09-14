@@ -59,13 +59,17 @@ export default function NodeSettings({ csrf }: { csrf: string }) {
               </span>
             </div>
             <p className="small">
-              {node.runtimeOrigin ||
-                node.endpoint ||
-                "This server · local browsing runtime"}
+              {node.relayMode === "frontend"
+                ? "Current frontend URL · Main server relay"
+                : node.runtimeOrigin ||
+                  node.endpoint ||
+                  "This server · local browsing runtime"}
             </p>
             {node.id === "local" && (
               <p className="small">
-                {node.setupRequired ? (
+                {node.setupRequired && node.relayMode === "frontend" ? (
+                  "Update and attach a healthy node to host the isolated browsing frame. Website traffic still uses Main server's IP and bandwidth."
+                ) : node.setupRequired ? (
                   <>
                     Set <code>RUNTIME_ORIGIN</code> to this server's separate
                     browsing hostname and restart Atlas before enabling it.
@@ -79,6 +83,9 @@ export default function NodeSettings({ csrf }: { csrf: string }) {
             )}
             <p className="small">
               {node.connections} connections · {node.sessions} pinned sessions
+              {node.hostedSessions
+                ? ` · ${node.hostedSessions} hosted frames`
+                : ""}
               {node.seen
                 ? " · Seen " + new Date(node.seen).toLocaleTimeString()
                 : ""}
@@ -116,7 +123,7 @@ export default function NodeSettings({ csrf }: { csrf: string }) {
               {node.id !== "local" && (
                 <button
                   className="button"
-                  disabled={node.sessions > 0}
+                  disabled={node.sessions > 0 || node.hostedSessions > 0}
                   onClick={async () => {
                     if (!confirm("Remove " + node.name + "?")) return;
                     try {

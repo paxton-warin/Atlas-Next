@@ -99,3 +99,11 @@ The interface, setup wizard, settings, owner configuration and saved-tab migrati
 The top navigation is centered at desktop and mobile widths. The address bar exposes existing autocomplete and selects its current URL on Cmd+K (Apple) or Ctrl+K (Windows/ChromeOS/Linux), including focus from nested website frames. Popup tabs share the existing runtime and pinned node; opening a popup does not reconnect or change the browsing IP.
 
 Controlled tests cover native Enter GET submission, Google-shaped textarea Enter handling (including Shift/IME/default-prevented cases), nested callback POST/303 plus HttpOnly cookie retention, popup POST and multipart/submitter overrides. The textarea fixture is mocked, not a real Google search or solved CAPTCHA. A live logged-out Google probe separately reached Google's challenge page after Enter. No challenge was solved; real post-CAPTCHA return and authenticated Google/ChatGPT/Spotify success remain unverified. Evidence and test totals are recorded in `evidence/google-navigation/VERIFICATION.txt`.
+
+## Frontend relay and AI math — 2026-09-13
+
+CloudFront mode supports a split Main assignment: the current frontend origin carries its authenticated relay WebSocket; an updated paired node hosts the isolated website frame/static runtime. Node 2/3 assignments retain direct egress. Main/API/owner anti-framing headers remain unchanged. The lease pins both egress and frame host, rejects wrong-purpose tickets, and requires explicit reconnect if either becomes unavailable.
+
+Controlled Chrome tests exercise a real Scramjet-rewritten fixture over this split route, POST/fetch, WebSocket echo, cookie continuity after reload/reopening a tab, and no host-node relay socket. Backend fixtures exercise multiple frontend aliases, balanced allocation, revocation, and draining/disabled frame hosts. A real local Caddy probe checks origin-key rejection, frontend/API routing and relay upgrades. Docker image deployment, public AWS configuration, authenticated websites and VPS throughput still need deployment verification.
+
+AI tests cover inline/display LaTeX, local KaTeX font loading, narrow-screen bounds and blocked trusted commands. Delimiter unit tests preserve Markdown code and incomplete streamed input. See [existing deployment update commands](UPDATE-FRONTEND-RELAY.md).

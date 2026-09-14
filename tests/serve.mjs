@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { digest, openStore } from "../server/store.mjs";
 import { createNodeService } from "../server/node-service.mjs";
 import { createRuntime } from "../server/runtime.mjs";
+import { createApp } from "../server/app.mjs";
 import { navigationFixture } from "./navigation-fixture.mjs";
 const dir = mkdtempSync(join(tmpdir(), "atlas-browser-"));
 const seed = openStore(dir);
@@ -232,10 +233,63 @@ const pairedNode = await createNodeService({
   pairing: { verify: (code) => code === "AABBCCDDEEFF", save: () => {} },
 });
 await pairedNode.listen({ port: 4195, host: "127.0.0.1" });
+// Full frontend-relay fixture: shared isolated frame host, but the actual
+// Scramjet HTTP/WebSocket transport terminates at the frontend server.
+const mainRelayDir = mkdtempSync(join(tmpdir(), "atlas-main-relay-browser-"));
+const mainRelay = await createApp({
+  dataDir: mainRelayDir,
+  appOrigin: "http://localhost:4196",
+  runtimeOrigin: "https://runtime.invalid",
+  localRelayMode: "frontend",
+  nodesEnabled: true,
+});
+const frameHost = await createNodeService({
+  fixture: true,
+  pairing: { verify: (code) => code === "FRAMEHOST", save: () => {} },
+});
+await frameHost.listen({ host: "127.0.0.1", port: 4194 });
+const mainTransport = await createRuntime({
+  appOrigin: "http://localhost:4196",
+  runtimeOrigin: "https://runtime.invalid",
+  fixture: true,
+  authorize: (ticket, origin, purpose) =>
+    mainRelay.nodePool.resolve(ticket, origin, purpose),
+});
+await mainTransport.listen({ host: "127.0.0.1", port: 4197 });
+mainRelay.nodePool.setLocalConnections(() => mainTransport.connectionCount());
+// The real Caddy path forwarding is separately exercised by cloudfront-routing-probe.
+mainRelay.server.on("upgrade", mainTransport.server.listeners("upgrade")[0]);
+await mainRelay.listen({ host: "127.0.0.1", port: 4196 });
+const framePair = await mainRelay.nodePool.attach(
+  { name: "Node 2", endpoint: "http://127.0.0.1:4194", code: "FRAMEHOST" },
+  "http://localhost:4196",
+);
+const mainHeartbeat = setInterval(async () => {
+  const n = mainRelay.store.db
+    .prepare("SELECT credential FROM nodes WHERE id=?")
+    .get(framePair.id);
+  await mainRelay.nodePool
+    .heartbeat(
+      framePair.id,
+      mainRelay.store.unseal(n.credential),
+      frameHost.connectionCount(),
+    )
+    .catch(() => {});
+  frameHost.applyControl(mainRelay.nodePool.nodeState(framePair.id));
+}, 10000);
 console.log("TEST_SERVERS_READY");
 for (const sig of ["SIGINT", "SIGTERM"])
   process.once(sig, async () => {
     for (const client of ws.clients) client.terminate();
+    clearInterval(mainHeartbeat);
+    for (const service of [mainRelay, mainTransport, frameHost])
+      service.server.closeAllConnections?.();
+    await Promise.all([
+      mainRelay.close(),
+      mainTransport.close(),
+      frameHost.close(),
+    ]);
+    rmSync(mainRelayDir, { recursive: true, force: true });
     fixture.closeAllConnections();
     fixture.close();
     const stopped = once(appProcess, "exit");

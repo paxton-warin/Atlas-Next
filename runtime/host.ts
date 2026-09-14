@@ -1,4 +1,5 @@
 // Pinned fork bootstrap/transport; Atlas adds its frame bridge and upgrade handling.
+import { createRelayController } from "./relay-controller";
 import { migrateCookies, activateWorker } from "./runtime-migration";
 import { loadRuntimeConfig, watchRuntimeSession } from "./connection";
 import { watchFavicon } from "./favicon";
@@ -44,18 +45,21 @@ async function init() {
   // loadRest avoids its init() returning the old active worker during an update.
   const bootstrapPath = "/bootstrap/bootstrap-client.js";
   const { loadRest } = await import(/* @vite-ignore */ bootstrapPath);
-  controller = await loadRest(sw, {
-    transport: "http",
-    workerPath: "/worker.js",
-    streamRelayPath: "/relay/" + relayQuery,
-    httpengineClientPath: "/clients/httpengine-client.js",
-    runtimekitBundlePath: "/runtime/runtimekit.js",
-    runtimekitWasmPath: "/runtime/runtimekit.wasm",
-    runtimekitUtilsBundlePath: "/runtime/runtimekit-utils.js",
-    runtimekitControllerApiPath: "/controller/controller.api.js",
-    runtimekitControllerInjectPath: "/controller/controller.inject.js",
-    runtimekitControllerWorkerPath: "/controller/controller.worker.js",
-  });
+  controller =
+    config.relayOrigin && config.relayTicket
+      ? await createRelayController(sw, config.relayOrigin, config.relayTicket)
+      : await loadRest(sw, {
+          transport: "http",
+          workerPath: "/worker.js",
+          streamRelayPath: "/relay/" + relayQuery,
+          httpengineClientPath: "/clients/httpengine-client.js",
+          runtimekitBundlePath: "/runtime/runtimekit.js",
+          runtimekitWasmPath: "/runtime/runtimekit.wasm",
+          runtimekitUtilsBundlePath: "/runtime/runtimekit-utils.js",
+          runtimekitControllerApiPath: "/controller/controller.api.js",
+          runtimekitControllerInjectPath: "/controller/controller.inject.js",
+          runtimekitControllerWorkerPath: "/controller/controller.worker.js",
+        });
   await Promise.race([
     controller.wait(),
     new Promise((_, reject) =>

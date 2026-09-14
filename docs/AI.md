@@ -61,3 +61,15 @@ Checked September 12, 2026:
 - GPT-OSS input reservations use the o200k text tokenizer plus framing headroom and the configured reply cap, instead of treating each byte as a token. This avoids falsely rejecting long-answer follow-ups. Actual provider-reported usage still reconciles the reservation. Models with other tokenizers retain conservative byte-based reservations. Configured/provider limits still apply; oversized context has a distinct error rather than a misleading wait-and-retry message.
 
 Implementation references: [GPT-OSS tokenizer](https://github.com/openai/gpt-oss/blob/main/gpt_oss/tokenizer.py), [PDF.js text extraction API](https://mozilla.github.io/pdf.js/api/draft/module-pdfjsLib.html), [Mammoth raw-text extraction](https://github.com/mwilliamson/mammoth.js#extracting-raw-text).
+
+## LaTeX math
+
+Chat renders inline `$E=mc^2$` and display `$$...$$`, plus common model delimiters `\(...\)` and `\[...\]`. Fractions, roots, matrices, sums and integrals use locally bundled KaTeX fonts/styles; no math CDN is requested. Code spans/fences remain literal. Copying a message retains its original Markdown/LaTeX source. Incomplete streamed formulas render once their delimiters are complete; unsupported commands do not crash the conversation. Long display equations scroll within the message lane on narrow screens.
+
+Example prompt:
+
+```text
+Explain the quadratic formula. Use LaTeX for the formula and show the steps.
+```
+
+The renderer uses `remark-math` with `rehype-katex`, disables trusted HTML/link commands and bounds macro expansion and user-requested sizing. References: [remark-math rendering](https://github.com/remarkjs/remark-math), [KaTeX options](https://katex.org/docs/options.html).

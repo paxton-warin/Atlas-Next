@@ -137,19 +137,23 @@ export async function createRuntime({
   const sockets = new Set();
   const sessions = new Map();
   const authorizations = new Map();
-  const getAuthorization = (req, origin) => {
+  const getAuthorization = (req, origin, purpose = "runtime") => {
     const raw =
       req.headers.authorization?.replace(/^Bearer /, "") ||
       new URL(req.url, "http://runtime").pathname.match(
         /^\/(?:relay|wisp)\/([A-Za-z0-9_.-]+)\/$/,
       )?.[1];
-    return authorize?.(raw, origin || requestOrigin(req, runtimeOrigin));
+    return authorize?.(
+      raw,
+      origin || requestOrigin(req, runtimeOrigin),
+      purpose,
+    );
   };
   const perIp = new Map();
   app.server.on("upgrade", (req, socket, head) => {
     let assignment;
     try {
-      assignment = getAuthorization(req, req.headers.origin);
+      assignment = getAuthorization(req, req.headers.origin, "relay");
     } catch {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
@@ -174,7 +178,7 @@ export async function createRuntime({
     sockets.add(socket);
     if (authorize)
       authorizations.set(socket, () =>
-        getAuthorization(req, req.headers.origin),
+        getAuthorization(req, req.headers.origin, "relay"),
       );
     if (sessionKey) sessions.set(sessionKey, sessionCount + 1);
     if (!authorize) perIp.set(ip, n + 1);
@@ -239,6 +243,12 @@ export async function createRuntime({
         : runtimeOrigin,
       fixture,
       node: assignment?.node,
+      ...(assignment?.relayOrigin
+        ? {
+            relayOrigin: assignment.relayOrigin,
+            relayTicket: assignment.relayTicket,
+          }
+        : {}),
     };
   });
   if (health) app.get("/node/health", health);
@@ -246,11 +256,7 @@ export async function createRuntime({
   app.get("/health", () => ({ status: "ok", wisp: "listening" }));
   await app.register(fastifyStatic, { root: staticDir });
   app.setNotFoundHandler((req, reply) => {
-    if (
-      ["/~/app/", "/~/sj/"].some((prefix) =>
-        req.url.startsWith(prefix),
-      )
-    )
+    if (["/~/app/", "/~/sj/"].some((prefix) => req.url.startsWith(prefix)))
       return reply
         .code(503)
         .type("text/plain")

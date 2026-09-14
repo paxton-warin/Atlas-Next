@@ -370,3 +370,138 @@ test("CloudFront viewer headers preserve alias and IP through the trusted origin
     else process.env.TRUST_PROXY = previous;
   }
 });
+
+test("frontend relay mode pins Main's egress to each visitor URL with an isolated paired host", async () => {
+  const f = await fixture({
+    localRelayMode: "frontend",
+    runtimeOrigin: "https://runtime.invalid",
+  });
+  try {
+    assert.equal(
+      f.app.nodePool.list().find((n) => n.id === "local").setupRequired,
+      true,
+    );
+    const a = await f.node("Node 2", "HOSTCODE"),
+      b = await f.node("Node 3", "HOSTCODE3");
+    assert.equal(
+      f.app.nodePool.list().find((n) => n.id === "local").setupRequired,
+      false,
+    );
+    const counts = { local: 0, [a.id]: 0, [b.id]: 0 };
+    for (let i = 0; i < 30; i++) {
+      const visitor = `https://d${i}.cloudfront.net`;
+      const lease = await f.app.nodePool.allocate(
+        "",
+        visitor,
+        "https://runtime.invalid",
+      );
+      counts[lease.node.id]++;
+      if (lease.node.id === "local") {
+        assert.equal(lease.relayOrigin, visitor);
+        assert.notEqual(lease.runtimeOrigin, visitor);
+        const config = await fetch(lease.runtimeOrigin + "/runtime-config", {
+          headers: { authorization: "Bearer " + lease.ticket },
+        });
+        assert.equal(config.status, 200);
+        const runtime = await config.json();
+        assert.equal(runtime.node.id, "local");
+        assert.equal(runtime.relayOrigin, visitor);
+        assert.equal(
+          f.app.nodePool.resolve(
+            runtime.relayTicket,
+            lease.runtimeOrigin,
+            "relay",
+          ).node.id,
+          "local",
+        );
+        assert.throws(() =>
+          f.app.nodePool.resolve(lease.ticket, lease.runtimeOrigin, "relay"),
+        );
+        assert.throws(() =>
+          f.app.nodePool.resolve(
+            runtime.relayTicket,
+            "https://wrong.example",
+            "relay",
+          ),
+        );
+        assert.throws(() =>
+          f.app.nodePool.resolve(
+            runtime.relayTicket,
+            lease.runtimeOrigin,
+            "runtime",
+          ),
+        );
+        const again = await f.app.nodePool.allocate(
+          lease.session,
+          visitor,
+          "https://runtime.invalid",
+        );
+        assert.equal(again.node.id, "local");
+        assert.equal(again.runtimeOrigin, lease.runtimeOrigin);
+        assert.throws(
+          () => f.app.nodePool.remove(lease.runtimeHost.id),
+          /Drain/,
+        );
+        f.app.nodePool.release(lease.session, visitor);
+        assert.throws(() =>
+          f.app.nodePool.resolve(
+            runtime.relayTicket,
+            lease.runtimeOrigin,
+            "relay",
+          ),
+        );
+      } else f.app.nodePool.release(lease.session, visitor);
+    }
+    assert.deepEqual(Object.values(counts), [10, 10, 10]);
+  } finally {
+    await f.done();
+  }
+});
+
+test("a pinned Main runtime host drains without moving IP/storage and disables explicitly", async () => {
+  const f = await fixture({
+    localRelayMode: "frontend",
+    runtimeOrigin: "https://runtime.invalid",
+  });
+  try {
+    const a = await f.node("Node 2", "HOST"),
+      b = await f.node("Node 3", "HOST3");
+    let lease;
+    for (let i = 0; i < 3; i++) {
+      const l = await f.app.nodePool.allocate(
+        "",
+        origin,
+        "https://runtime.invalid",
+      );
+      if (l.node.id === "local") {
+        lease = l;
+        break;
+      }
+      f.app.nodePool.release(l.session, origin);
+    }
+    assert.ok(lease);
+    const host = lease.runtimeHost.id;
+    f.app.nodePool.update(a.id, { state: "draining", weight: 1 });
+    f.app.nodePool.update(b.id, { state: "draining", weight: 1 });
+    const again = await f.app.nodePool.allocate(
+      lease.session,
+      origin,
+      "https://runtime.invalid",
+    );
+    assert.equal(again.runtimeOrigin, lease.runtimeOrigin);
+    assert.equal(again.node.online, true);
+    f.app.nodePool.update(host, { state: "disabled", weight: 1 });
+    await assert.rejects(
+      f.app.nodePool.allocate(lease.session, origin, "https://runtime.invalid"),
+      /unavailable/,
+    );
+    assert.equal(
+      f.app.store.db
+        .prepare("SELECT node FROM browse_leases WHERE runtime_node=?")
+        .get(host).node,
+      "local",
+    );
+  } finally {
+    await f.done();
+  }
+});

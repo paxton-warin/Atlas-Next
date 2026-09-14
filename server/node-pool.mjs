@@ -5,9 +5,13 @@ const TTL = 12 * 60 * 60 * 1000;
 const FRESH = 45000;
 const fail = (message, statusCode = 400) =>
   Object.assign(Error(message), { statusCode });
-export function createNodePool(store, { runtimeOrigin } = {}) {
+export function createNodePool(
+  store,
+  { runtimeOrigin, localRelayMode = "isolated" } = {},
+) {
   const { db, seal, unseal, audit } = store;
-  const localReady =
+  const frontendRelay = localRelayMode === "frontend";
+  const isolatedReady =
     !runtimeOrigin || new URL(runtimeOrigin).hostname !== "runtime.invalid";
   if (!store.get("localNodeSecret"))
     store.set("localNodeSecret", seal(token()));
@@ -24,8 +28,26 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
     "INSERT OR IGNORE INTO nodes VALUES ('local','Main server','','',?,1,0,0)",
   ).run(process.env.LOCAL_BROWSING === "false" ? "disabled" : "active");
   const node = (id) => db.prepare("SELECT * FROM nodes WHERE id=?").get(id);
+  if (
+    !db
+      .prepare("PRAGMA table_info(browse_leases)")
+      .all()
+      .some((c) => c.name === "runtime_node")
+  )
+    db.exec("ALTER TABLE browse_leases ADD COLUMN runtime_node TEXT");
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS browse_leases_runtime_node ON browse_leases(runtime_node)",
+  );
+  const hostCapable = (n) =>
+    (store.get("nodeCapabilities") || {})[n.id]?.includes("frontend-relay-v1");
+  const hosts = () =>
+    db
+      .prepare("SELECT * FROM nodes WHERE id != 'local' AND state = 'active'")
+      .all()
+      .filter((n) => Date.now() - n.seen < FRESH && hostCapable(n));
+  const localReady = () => (frontendRelay ? hosts().length > 0 : isolatedReady);
   const online = (n) =>
-    n && (n.id === "local" ? localReady : Date.now() - n.seen < FRESH);
+    n && (n.id === "local" ? localReady() : Date.now() - n.seen < FRESH);
   const available = (n) => online(n) && n.state !== "disabled";
   const prune = () =>
     db.prepare("DELETE FROM browse_leases WHERE seen<?").run(Date.now() - TTL);
@@ -40,8 +62,18 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
         ...n,
         connections: n.id === "local" ? localConnections() : n.connections,
         online: online(n),
-        runtimeOrigin: n.id === "local" ? runtimeOrigin : n.endpoint,
-        setupRequired: n.id === "local" && !localReady,
+        runtimeOrigin:
+          n.id === "local"
+            ? frontendRelay
+              ? null
+              : runtimeOrigin
+            : n.endpoint,
+        relayMode: n.id === "local" ? localRelayMode : "direct",
+        capabilities: (store.get("nodeCapabilities") || {})[n.id] || [],
+        setupRequired: n.id === "local" && !localReady(),
+        hostedSessions: db
+          .prepare("SELECT count(*) n FROM browse_leases WHERE runtime_node=?")
+          .get(n.id).n,
         sessions: db
           .prepare("SELECT count(*) AS n FROM browse_leases WHERE node=?")
           .get(n.id).n,
@@ -119,9 +151,11 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
   function update(id, patch) {
     const n = node(id);
     if (!n) throw fail("Node not found.", 404);
-    if (id === "local" && patch.state === "active" && !localReady)
+    if (id === "local" && patch.state === "active" && !localReady())
       throw fail(
-        "Set RUNTIME_ORIGIN to the main server's separate browsing hostname before enabling Main server.",
+        frontendRelay
+          ? "Update and attach at least one healthy node with frontend-relay support before enabling Main server."
+          : "Set RUNTIME_ORIGIN to the main server's separate browsing hostname before enabling Main server.",
       );
     if (
       !["active", "draining", "disabled"].includes(patch.state) ||
@@ -142,7 +176,11 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
     if (id === "local")
       throw fail("Disable the main server instead of removing it.");
     if (
-      db.prepare("SELECT count(*) n FROM browse_leases WHERE node=?").get(id).n
+      db
+        .prepare(
+          "SELECT count(*) n FROM browse_leases WHERE node=? OR runtime_node=?",
+        )
+        .get(id, id).n
     )
       throw fail(
         "Drain this node until its sessions end before removing it.",
@@ -152,6 +190,9 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
     const order = store.get("nodeAssignmentOrder") || {};
     delete order[id];
     store.set("nodeAssignmentOrder", order);
+    const capabilities = store.get("nodeCapabilities") || {};
+    delete capabilities[id];
+    store.set("nodeCapabilities", capabilities);
     audit("node.remove", id);
   }
   function authenticate(id, secret) {
@@ -173,8 +214,14 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
       signal: AbortSignal.timeout(3000),
       redirect: "error",
     });
-    if (!response.ok || (await response.json()).id !== id)
+    const health = response.ok ? await response.json() : null;
+    if (!health || health.id !== id)
       throw fail("Node endpoint check failed.", 502);
+    const capabilities = store.get("nodeCapabilities") || {};
+    capabilities[id] = Array.isArray(health.capabilities)
+      ? health.capabilities.filter((c) => c === "frontend-relay-v1")
+      : [];
+    store.set("nodeCapabilities", capabilities);
     db.prepare("UPDATE nodes SET seen=?,connections=? WHERE id=?").run(
       Date.now(),
       Math.max(0, Math.min(100000, Number(connections) || 0)),
@@ -215,13 +262,30 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
         origin,
         created: Date.now(),
         seen: Date.now(),
+        runtime_node:
+          candidates[0].id === "local" && frontendRelay
+            ? hosts()
+                .filter(
+                  (n) =>
+                    new URL(n.endpoint).hostname !== new URL(origin).hostname,
+                )
+                .sort((a, b) => a.id.localeCompare(b.id))[0]?.id
+            : null,
       };
-      db.prepare("INSERT INTO browse_leases VALUES (?,?,?,?,?)").run(
+      if (candidates[0].id === "local" && frontendRelay && !lease.runtime_node)
+        throw fail(
+          "No isolated runtime host is available for Main server.",
+          503,
+        );
+      db.prepare(
+        "INSERT INTO browse_leases(hash,node,origin,created,seen,runtime_node) VALUES (?,?,?,?,?,?)",
+      ).run(
         hash,
         lease.node,
         origin,
         lease.created,
         lease.seen,
+        lease.runtime_node,
       );
       // Persist tie-break order separately from leases, so reconnect/release
       // cannot repeatedly favor UUID-named remotes over the "local" node.
@@ -237,15 +301,39 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
       hash,
     );
     const n = node(lease.node);
-    const selectedOrigin = n?.id === "local" ? runtimeOrigin : n?.endpoint;
-    if (n?.id !== "local" && available(n)) {
-      const response = await fetch(n.endpoint + "/node/control", {
+    if (n?.id === "local" && frontendRelay && !lease.runtime_node)
+      throw fail(
+        "Main server connection changed. Choose Reconnect to start a new session.",
+        409,
+      );
+    if (n?.id === "local" && !frontendRelay && lease.runtime_node)
+      throw fail(
+        "Main server connection changed. Choose Reconnect to start a new session.",
+        409,
+      );
+    const host = lease.runtime_node ? node(lease.runtime_node) : n;
+    const selectedOrigin = lease.runtime_node
+      ? host?.endpoint
+      : n?.id === "local"
+        ? runtimeOrigin
+        : n?.endpoint;
+    const hostAvailable =
+      host &&
+      (host.id === "local" ||
+        (Date.now() - host.seen < FRESH && host.state !== "disabled"));
+    if (lease.runtime_node && (!hostAvailable || !n || n.state === "disabled"))
+      throw fail(
+        "Your assigned node or runtime host is unavailable. Reconnect explicitly to select another connection.",
+        503,
+      );
+    if (host?.id !== "local" && available(host)) {
+      const response = await fetch(host.endpoint + "/node/control", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          authorization: "Bearer " + unseal(n.credential),
+          authorization: "Bearer " + unseal(host.credential),
         },
-        body: JSON.stringify(nodeState(n.id)),
+        body: JSON.stringify(nodeState(host.id)),
         signal: AbortSignal.timeout(3000),
         redirect: "error",
       });
@@ -265,22 +353,54 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
       node: {
         id: n?.id || lease.node,
         name: n?.name || "Removed node",
-        online: available(n),
+        online: lease.runtime_node
+          ? Boolean(hostAvailable && n && n.state !== "disabled")
+          : available(n),
       },
-      ticket: signTicket(
-        {
-          lease: hash,
-          origin,
-          runtimeOrigin: selectedOrigin,
-          node: n.id,
-          name: n.name,
-          expires: expiresAt,
-        },
-        n.id === "local" ? localSecret : unseal(n.credential),
-      ),
+      relayOrigin: lease.runtime_node ? origin : selectedOrigin,
+      runtimeHost: lease.runtime_node
+        ? { id: host.id, name: host.name }
+        : undefined,
+      ticket: lease.runtime_node
+        ? signTicket(
+            {
+              lease: hash,
+              origin,
+              runtimeOrigin: selectedOrigin,
+              node: host.id,
+              name: n.name,
+              role: "runtime-host",
+              expires: expiresAt,
+              relayOrigin: origin,
+              relayTicket: signTicket(
+                {
+                  lease: hash,
+                  origin,
+                  runtimeOrigin: selectedOrigin,
+                  node: "local",
+                  name: n.name,
+                  role: "frontend-relay",
+                  expires: expiresAt,
+                },
+                localSecret,
+              ),
+            },
+            unseal(host.credential),
+          )
+        : signTicket(
+            {
+              lease: hash,
+              origin,
+              runtimeOrigin: selectedOrigin,
+              node: n.id,
+              name: n.name,
+              expires: expiresAt,
+            },
+            n.id === "local" ? localSecret : unseal(n.credential),
+          ),
     };
   }
-  function resolve(ticket, runtimeOrigin) {
+  function resolve(ticket, runtimeOrigin, purpose = "runtime") {
     let t;
     try {
       t = verifyTicket(ticket, localSecret, runtimeOrigin);
@@ -295,8 +415,24 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
     if (!lease || lease.origin !== t.origin || Date.now() - lease.seen > TTL)
       throw fail("Browsing session expired.", 401);
     const n = node(lease.node);
+    if (
+      lease.runtime_node &&
+      (purpose !== "relay" ||
+        t.role !== "frontend-relay" ||
+        t.node !== "local" ||
+        node(lease.runtime_node)?.endpoint !== runtimeOrigin)
+    )
+      throw fail("Invalid relay ticket.", 401);
+    if (lease.runtime_node) {
+      const host = node(lease.runtime_node);
+      if (!host || host.state === "disabled" || Date.now() - host.seen >= FRESH)
+        throw fail(
+          "Runtime host is unavailable. Reconnect explicitly from Atlas.",
+          503,
+        );
+    }
     // Never fail over an existing session: its outbound IP must not silently change.
-    if (!available(n))
+    if (!(n && n.state !== "disabled" && (lease.runtime_node || online(n))))
       throw fail(
         "Your browsing node is offline. Reconnect explicitly to choose another node.",
         503,
@@ -329,8 +465,10 @@ export function createNodePool(store, { runtimeOrigin } = {}) {
       revision,
       state: n.state,
       leases: db
-        .prepare("SELECT hash FROM browse_leases WHERE node=?")
-        .all(id)
+        .prepare(
+          "SELECT hash FROM browse_leases WHERE node=? OR runtime_node=?",
+        )
+        .all(id, id)
         .map((x) => x.hash),
     };
   }

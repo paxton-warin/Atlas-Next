@@ -29,8 +29,12 @@ export const otp = (secret) =>
 export const defaults = () => ({
   dataDir: resolve(process.env.DATA_DIR || "data"),
   appOrigin: process.env.APP_ORIGIN || "http://localhost:4180",
+  localRelayMode:
+    process.env.LOCAL_RELAY_MODE === "frontend" ? "frontend" : "isolated",
   runtimeOrigin:
-    process.env.RUNTIME_ORIGIN ||
+    (process.env.LOCAL_RELAY_MODE === "frontend"
+      ? "https://runtime.invalid"
+      : process.env.RUNTIME_ORIGIN) ||
     (process.env.LOCAL_BROWSING === "false"
       ? "https://runtime.invalid"
       : "http://127.0.0.1:4181"),
@@ -71,7 +75,10 @@ export async function createApp(options = {}) {
       : config.appOrigin;
   const store = openStore(config.dataDir),
     { db, get, set, audit, seal, unseal } = store;
-  const pool = createNodePool(store, { runtimeOrigin: config.runtimeOrigin });
+  const pool = createNodePool(store, {
+    runtimeOrigin: config.runtimeOrigin,
+    localRelayMode: config.localRelayMode,
+  });
   app.decorate("nodePool", pool);
   app.decorate("store", store);
   app.decorate("atlasConfig", config);

@@ -22,3 +22,16 @@ upstream/scramjet-ls-bypass/packages/**/node_modules
 upstream/scramjet-ls-bypass/packages/core/rewriter/target
 node-data
 .origin-key
+
+# Never send environment backups or database snapshots to the build context.
+.env.*
+!.env.example
+!.env.node.example
+backups
+*.sqlite*
+*.db*
+*.pem
+*.key
+.aws
+.ssh
+.npmrc

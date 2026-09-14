@@ -7,6 +7,7 @@ services:
     environment:
       HOST: 0.0.0.0
       NODE_ENV: production
+      LOCAL_RELAY_MODE: ${LOCAL_RELAY_MODE:-frontend}
       DATA_DIR: /data
       TRUST_PROXY: 172.30.80.3
     volumes:

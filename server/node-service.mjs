@@ -20,7 +20,7 @@ export async function createNodeService({
     runtimeOrigin,
     fixture,
     staticDir,
-    authorize(raw, origin) {
+    authorize(raw, origin, purpose = "runtime") {
       if (!secret)
         throw Object.assign(Error("Node is not attached."), {
           statusCode: 503,
@@ -36,10 +36,25 @@ export async function createNodeService({
           Error("Node session is unavailable. Reconnect from Atlas."),
           { statusCode: 503 },
         );
+      if (
+        ticket.role === "runtime-host" &&
+        (purpose === "relay" ||
+          ticket.relayOrigin !== ticket.origin ||
+          typeof ticket.relayTicket !== "string")
+      )
+        throw Object.assign(Error("Invalid runtime-host ticket."), {
+          statusCode: 401,
+        });
       return {
+        ...(ticket.role === "runtime-host"
+          ? { relayOrigin: ticket.relayOrigin, relayTicket: ticket.relayTicket }
+          : {}),
         appOrigin: ticket.origin,
         session: ticket.lease,
-        node: { id, name: ticket.name },
+        node: {
+          id: ticket.role === "runtime-host" ? "local" : id,
+          name: ticket.name,
+        },
       };
     },
     health(req, reply) {
@@ -49,7 +64,12 @@ export async function createNodeService({
         digest(req.headers.authorization || "") !== digest("Bearer " + secret)
       )
         return reply.code(401).send({ error: "Node verification required." });
-      return { id, status: "ok", connections: app.connectionCount() };
+      return {
+        id,
+        status: "ok",
+        connections: app.connectionCount(),
+        capabilities: ["frontend-relay-v1"],
+      };
     },
   });
   let attempts = 0,

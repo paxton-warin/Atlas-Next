@@ -16,6 +16,10 @@ import {
 } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
+import { normalizeMath } from "./chat-math";
 import { api, readLocal, writeLocal } from "./model";
 import {
   acceptedFiles,
@@ -571,7 +575,18 @@ export default function AiChat() {
                   <div className="chat-message-content">
                     {message.content ? (
                       <Markdown
-                        remarkPlugins={[remarkGfm]}
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[
+                          [
+                            rehypeKatex,
+                            {
+                              trust: false,
+                              throwOnError: false,
+                              maxExpand: 1000,
+                              maxSize: 20,
+                            },
+                          ],
+                        ]}
                         skipHtml
                         components={{
                           a: (props) => (
@@ -584,7 +599,7 @@ export default function AiChat() {
                           img: () => null,
                         }}
                       >
-                        {message.content}
+                        {normalizeMath(message.content)}
                       </Markdown>
                     ) : (
                       <span className="thinking">
