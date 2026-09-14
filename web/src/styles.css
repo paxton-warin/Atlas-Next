@@ -300,11 +300,18 @@ input[type="checkbox"] {
   background: var(--line);
   color: var(--text);
 }
-.popout-button {
+.toolbar-view-button {
   flex-shrink: 0;
+  width: 30px;
   border: 1px solid var(--line);
-  color: var(--text);
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+  color: var(--muted);
   text-decoration: none;
+}
+.toolbar-view-button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  color: var(--accent);
 }
 .workspace {
   height: calc(100% - 76px);

@@ -344,8 +344,12 @@ test("initial player-data hooks install synchronously and leave site properties 
   // Invoke directly: init.post is not awaited by the engine.
   f.frame.hooks.init.post[0](context, {});
   win.ytInitialPlayerResponse = player();
+  assert.equal(win.ytInitialPlayerResponse.adPlacements, undefined);
   assert.equal(
-    Object.hasOwn(win.ytInitialPlayerResponse, "adPlacements"),
+    Object.hasOwn(
+      JSON.parse(JSON.stringify(win.ytInitialPlayerResponse)),
+      "adPlacements",
+    ),
     false,
   );
   assert.equal(
@@ -385,4 +389,166 @@ test("invalid UTF-8 JSON leaves source bytes untouched", async () => {
       invalid,
     );
   }
+});
+
+test("watch response arrays prune only direct playerResponse envelopes without mutating unrelated data", () => {
+  const unchanged = {
+    response: { contents: { adSlots: ["not player data"] } },
+  };
+  const original = [
+    unchanged,
+    { playerResponse: player(), response: { loggedIn: true } },
+    { adSlots: ["not a player envelope"] },
+  ];
+  const filtered = pruneYouTubePayload(original);
+  assert.notEqual(filtered, original);
+  assert.equal(filtered[0], unchanged);
+  assert.equal(filtered[2], original[2]);
+  assert.equal(filtered[1].response, original[1].response);
+  assert.equal(filtered[1].playerResponse.adSlots, undefined);
+  assert.equal(
+    filtered[1].playerResponse.streamingData,
+    original[1].playerResponse.streamingData,
+  );
+  assert.equal(original[1].playerResponse.adSlots.length, 1);
+  const noMatch = [unchanged, { playerResponse: "not JSON" }];
+  assert.equal(pruneYouTubePayload(noMatch), noMatch);
+  const huge = Array.from({ length: 1025 }, () => ({
+    playerResponse: player(),
+  }));
+  assert.equal(pruneYouTubePayload(huge), huge);
+  const getter = [];
+  Object.defineProperty(getter, "0", {
+    get() {
+      throw Error("Do not execute getters");
+    },
+    configurable: true,
+  });
+  assert.equal(pruneYouTubePayload(getter), getter);
+  const frozen = Object.freeze([{ playerResponse: player() }]);
+  assert.equal(pruneYouTubePayload(frozen), frozen);
+});
+
+test("get_watch, watch, and playlist JSON use the same player-envelope filtering for SPA navigation", async () => {
+  const f = fixture();
+  for (const route of [
+    "/youtubei/v1/get_watch?prettyPrint=false",
+    "/watch?v=fixture&pbj=1",
+    "/playlist?list=fixture&pbj=1",
+  ]) {
+    const original = JSON.stringify([
+      { response: { title: "Watch page" } },
+      { playerResponse: player() },
+    ]);
+    const props = response(original);
+    await f.run(
+      "response",
+      { parsed: { url: new URL(route, youtube) } },
+      props,
+    );
+    const filtered = JSON.parse(props.response.body);
+    assert.equal(filtered[1].playerResponse.adSlots, undefined, route);
+    assert.equal(filtered[1].playerResponse.videoDetails.videoId, "fixture");
+    assert.deepEqual(filtered[0], { response: { title: "Watch page" } });
+    const html = response(original, { "content-type": "text/html" });
+    await f.run("response", { parsed: { url: new URL(route, youtube) } }, html);
+    assert.equal(html.response.body, original);
+  }
+});
+
+function hookWindow(f) {
+  const nodes = new Map();
+  const win = {
+    document: {
+      head: {
+        appendChild(node) {
+          nodes.set(node.id, node);
+        },
+      },
+      documentElement: {},
+      getElementById(id) {
+        return nodes.get(id);
+      },
+      createElement() {
+        return {};
+      },
+      addEventListener() {},
+    },
+  };
+  f.frame.hooks.init.post[0](
+    { window: win, client: { url: new URL(youtube) }, isTopLevel: true },
+    {},
+  );
+  return win;
+}
+
+test("initial player objects keep identity and suppress late ad-array assignments including held references", () => {
+  const f = fixture();
+  const win = hookWindow(f);
+  const held = {
+    streamingData: { formats: ["content"] },
+    videoDetails: { videoId: "x" },
+  };
+  win.ytInitialPlayerResponse = held;
+  assert.equal(win.ytInitialPlayerResponse, held);
+  const ads = [{ ad: "late" }];
+  held.adSlots = ads;
+  assert.equal(held.adSlots, undefined);
+  assert.equal(win.ytInitialPlayerResponse.adSlots, undefined);
+  assert.equal(JSON.stringify(held).includes("adSlots"), false);
+  f.enable(false);
+  assert.equal(held.adSlots, ads);
+  const newerAds = [{ ad: "newer" }];
+  held.adSlots = newerAds;
+  assert.equal(held.adSlots, newerAds);
+  f.enable(true);
+  assert.equal(held.adSlots, undefined);
+  held.playerAds = "new schema";
+  assert.equal(held.playerAds, "new schema");
+  assert.deepEqual(held.streamingData, { formats: ["content"] });
+  assert.equal(held.videoDetails.videoId, "x");
+});
+
+test("global playerResponse and nested ytInitialData playerResponse track replacement without changing unrelated fields", () => {
+  const f = fixture();
+  const win = hookWindow(f);
+  const direct = player();
+  win.playerResponse = direct;
+  assert.equal(win.playerResponse, direct);
+  assert.equal(direct.adPlacements, undefined);
+  win.ytInitialData = { contents: { adSlots: ["unrelated"] } };
+  const nested = player();
+  win.ytInitialData.playerResponse = nested;
+  assert.equal(win.ytInitialData.playerResponse, nested);
+  assert.equal(nested.adSlots, undefined);
+  assert.deepEqual(win.ytInitialData.contents.adSlots, ["unrelated"]);
+  const replacement = player();
+  win.ytInitialData.playerResponse = replacement;
+  assert.equal(replacement.playerAds, undefined);
+  f.enable(false);
+  assert.equal(direct.adPlacements.length, 1);
+  assert.equal(nested.adSlots.length, 1);
+  assert.equal(replacement.playerAds.length, 1);
+});
+
+test("late-data hooks preserve immutable, accessor, and unfamiliar site properties", () => {
+  const f = fixture();
+  const win = hookWindow(f);
+  const frozen = Object.freeze(player());
+  win.ytInitialPlayerResponse = frozen;
+  assert.equal(win.ytInitialPlayerResponse, frozen);
+  const accessors = {};
+  Object.defineProperty(accessors, "adSlots", {
+    configurable: true,
+    get() {
+      throw Error("Site getter");
+    },
+  });
+  const descriptor = Object.getOwnPropertyDescriptor(accessors, "adSlots");
+  win.ytInitialPlayerResponse = accessors;
+  assert.equal(
+    Object.getOwnPropertyDescriptor(accessors, "adSlots").get,
+    descriptor.get,
+  );
+  assert.throws(() => accessors.adSlots, /Site getter/);
 });

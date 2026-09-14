@@ -521,17 +521,32 @@ window.addEventListener("message", async (event) => {
 if (standalone) {
   const bar = document.createElement("form");
   bar.id = "popup-toolbar";
-  bar.innerHTML =
-    '<strong>Atlas</strong><button type="button" id="popup-back" aria-label="Go back">←</button><button type="button" id="popup-reload" aria-label="Reload">↻</button><input id="popup-address" type="url" aria-label="Website address" required><button>Go ↗</button><span id="popup-status" role="status"></span>';
+  bar.setAttribute("aria-label", "Popout browser controls");
+  bar.innerHTML = `
+    <span class="popup-brand">Atlas</span>
+    <button type="button" id="popup-back" aria-label="Go back" title="Go back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7M5 12h14"/></svg>
+    </button>
+    <button type="button" id="popup-reload" aria-label="Reload" title="Reload">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.7L21 8M21 3v5h-5"/></svg>
+    </button>
+    <div class="popup-address-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a17 17 0 0 1 0 18 17 17 0 0 1 0-18Z"/></svg>
+      <input id="popup-address" type="url" aria-label="Website address" placeholder="Enter a URL" autocomplete="off" spellcheck="false" required>
+      <button type="submit" id="popup-go" aria-label="Go to website" title="Go to website">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg>
+      </button>
+    </div>
+    <span id="popup-status" role="status" aria-live="polite"></span>`;
   const returnLink = document.createElement("a");
   returnLink.href = config.appOrigin;
-  returnLink.textContent = "Return to Atlas";
+  returnLink.setAttribute("aria-label", "Return to Atlas");
+  returnLink.title = "Return to Atlas";
+  returnLink.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 9v12"/></svg><span class="popup-return-label">Return to Atlas</span>`;
   returnLink.id = "popup-return";
   bar.append(returnLink);
+  document.body.classList.add("runtime-standalone");
   document.body.prepend(bar);
-  container.style.top = "52px";
-  container.style.height = "calc(100% - 52px)";
-  container.style.position = "absolute";
   const field = bar.querySelector<HTMLInputElement>("input")!;
   const go = async () => {
     if (standaloneExpired) return;

@@ -1036,7 +1036,7 @@ export default function App() {
               />
               {directTabUrl ? (
                 <a
-                  className="icon-button popout-button"
+                  className="icon-button toolbar-view-button popout-button"
                   href={directTabUrl}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -1047,7 +1047,7 @@ export default function App() {
                 </a>
               ) : (
                 <button
-                  className="icon-button popout-button"
+                  className="icon-button toolbar-view-button popout-button"
                   disabled
                   aria-label="Pop out tab"
                   title="Open a website with an active connection to pop it out"
@@ -1056,8 +1056,9 @@ export default function App() {
                 </button>
               )}
               <button
-                className="icon-button"
+                className="icon-button toolbar-view-button"
                 aria-label={focusMode ? "Exit focus mode" : "Enter focus mode"}
+                aria-pressed={focusMode}
                 title={focusMode ? "Exit focus mode" : "Focus mode"}
                 onClick={() => setFocusMode(!focusMode)}
               >

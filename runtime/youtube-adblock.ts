@@ -1,9 +1,11 @@
+import { installYouTubePlayerAdHandling } from "./youtube-player.ts";
 // Independent, deliberately narrow YouTube filtering. Known player ad fields
 // are documented in the maintained uAssets rules, not copied scriptlets:
 // https://github.com/uBlockOrigin/uAssets/blob/master/filters/filters.txt
-// Stream hosts also carry the actual video; never block googlevideo.com or seek
-// the player. Server-stitched ads and future YouTube changes can still show ads.
+// Stream hosts also carry the actual video; never blanket-block googlevideo.com.
+// Player-side ad completion is separately gated to explicit ad state.
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_RESPONSE_ENVELOPES = 1024;
 const READ_TIMEOUT_MS = 5000;
 const AD_FIELDS = ["playerAds", "adPlacements", "adSlots"] as const;
 const documents = new WeakSet<Document>();
@@ -59,10 +61,11 @@ function dataProperty(value: object, key: string) {
   return descriptor && "value" in descriptor ? descriptor : undefined;
 }
 
-// Only the response root and the documented playerResponse envelope are
-// inspected. Never recursively delete vaguely named fields in arbitrary data.
-// This is copy-on-change: callers keep original identity and bytes on no-op.
-export function pruneYouTubePayload<T>(value: T): T {
+// Only a response root and its direct playerResponse envelope are inspected.
+// Watch responses can also be arrays of envelopes; unrelated nested data stays
+// untouched. Maintained examples: uAssets/filters/quick-fixes.txt (player,
+// get_watch, watch and playlist). This is independent copy-on-change code.
+function prunePlayerObject<T>(value: T, includeRoot: boolean): T {
   if (!record(value)) return value;
   let output: Record<string, unknown> | undefined;
   const writableCopy = () =>
@@ -70,10 +73,12 @@ export function pruneYouTubePayload<T>(value: T): T {
       Object.getPrototypeOf(value),
       Object.getOwnPropertyDescriptors(value),
     ));
-  for (const key of AD_FIELDS) {
-    const descriptor = dataProperty(value, key);
-    if (descriptor?.configurable && Array.isArray(descriptor.value)) {
-      delete writableCopy()[key];
+  if (includeRoot) {
+    for (const key of AD_FIELDS) {
+      const descriptor = dataProperty(value, key);
+      if (descriptor?.configurable && Array.isArray(descriptor.value)) {
+        delete writableCopy()[key];
+      }
     }
   }
   const nested = dataProperty(value, "playerResponse");
@@ -99,6 +104,25 @@ export function pruneYouTubePayload<T>(value: T): T {
   return (output ?? value) as T;
 }
 
+export function pruneYouTubePayload<T>(value: T): T {
+  if (!Array.isArray(value)) return prunePlayerObject(value, true);
+  if (value.length > MAX_RESPONSE_ENVELOPES) return value;
+  let output: unknown[] | undefined;
+  for (let index = 0; index < value.length; index++) {
+    const descriptor = dataProperty(value, String(index));
+    if (!descriptor?.configurable) continue;
+    // Do not interpret arbitrary objects inside arrays as player responses.
+    const filtered = prunePlayerObject(descriptor.value, false);
+    if (filtered === descriptor.value) continue;
+    output ??= Object.defineProperties(
+      [],
+      Object.getOwnPropertyDescriptors(value) as PropertyDescriptorMap,
+    );
+    Object.defineProperty(output!, index, { ...descriptor, value: filtered });
+  }
+  return (output ?? value) as T;
+}
+
 function installDocument(
   win: Window & typeof globalThis,
   pageUrl: () => string,
@@ -108,38 +132,76 @@ function installDocument(
     return;
   const doc = win.document;
   documents.add(doc);
-  for (const key of ["ytInitialPlayerResponse", "ytInitialData"]) {
+  const active = () => enabled() && isYouTubeUrl(pageUrl());
+  const guardedPlayers = new WeakSet<object>();
+  const guardedEnvelopes = new WeakSet<object>();
+  // Keep the actual object, rather than cloning at window assignment: YouTube
+  // can retain that object and fill its ad arrays afterwards. Configurable
+  // accessors suppress only array-valued ad fields while the setting is on;
+  // opt-out reveals the latest underlying site value. Never replace site-owned
+  // accessors or immutable data, and never change streams or playability fields.
+  const watchProperty = (
+    target: object,
+    key: string,
+    prepare?: (value: unknown) => void,
+    adField = false,
+  ) => {
     try {
-      const descriptor = Object.getOwnPropertyDescriptor(win, key);
-      // Existing custom accessors or immutable properties belong to the site.
+      const descriptor = Object.getOwnPropertyDescriptor(target, key);
       if (
         descriptor &&
         (!descriptor.configurable ||
           !("value" in descriptor) ||
           !descriptor.writable)
       )
-        continue;
+        return;
       let current = descriptor?.value;
-      if (enabled()) current = pruneYouTubePayload(current);
-      Object.defineProperty(win, key, {
+      let enumerable = descriptor?.enumerable ?? false;
+      if (active()) prepare?.(current);
+      Object.defineProperty(target, key, {
         configurable: true,
-        enumerable: descriptor?.enumerable ?? true,
-        get: () => current,
+        enumerable,
+        get: () => {
+          if (active()) {
+            prepare?.(current);
+            if (adField && Array.isArray(current)) return undefined;
+          }
+          return current;
+        },
         set: (value) => {
+          current = value;
           try {
-            current =
-              enabled() && isYouTubeUrl(pageUrl())
-                ? pruneYouTubePayload(value)
-                : value;
+            // An absent property becomes enumerable on its first assignment,
+            // matching ordinary data-property behavior when filtering is off.
+            if (!descriptor && !enumerable) {
+              Object.defineProperty(target, key, { enumerable: true });
+              enumerable = true;
+            }
+            if (active()) prepare?.(value);
           } catch {
-            current = value;
+            /* Preserve the site's assigned value if its object rejects hooks. */
           }
         },
       });
     } catch {
       /* Leave the original site property alone on unusual documents. */
     }
+  };
+  const guardPlayer = (value: unknown) => {
+    if (!record(value) || guardedPlayers.has(value)) return;
+    guardedPlayers.add(value);
+    for (const key of AD_FIELDS) watchProperty(value, key, undefined, true);
+  };
+  const guardEnvelope = (value: unknown) => {
+    if (!record(value) || guardedEnvelopes.has(value)) return;
+    guardedEnvelopes.add(value);
+    guardPlayer(value);
+    watchProperty(value, "playerResponse", guardPlayer);
+  };
+  for (const key of ["ytInitialPlayerResponse", "playerResponse"]) {
+    watchProperty(win, key, guardPlayer);
   }
+  watchProperty(win, "ytInitialData", guardEnvelope);
   const addStyle = () => {
     if (!enabled() || !isYouTubeUrl(pageUrl())) return;
     const parent = doc.head || doc.documentElement;
@@ -169,7 +231,10 @@ function jsonEndpoint(value: unknown) {
   return (
     !!url &&
     isYouTubeUrl(url.href) &&
-    /^\/youtubei\/v1\/(?:player|next|browse)\/?$/.test(url.pathname)
+    (/^\/youtubei\/v1\/(?:player|next|browse|get_watch)\/?$/.test(
+      url.pathname,
+    ) ||
+      /^\/(?:watch|playlist)\/?$/.test(url.pathname))
   );
 }
 function cancel(stream: ReadableStream) {
@@ -258,6 +323,12 @@ export function createYouTubeAdblockPlugin(
           if (isTopLevel) topPageUrl = () => client.url.href;
           try {
             installDocument(win, () => client.url.href, enabled);
+            if (typeof win.MutationObserver === "function")
+              installYouTubePlayerAdHandling(
+                win,
+                () => client.url.href,
+                enabled,
+              );
           } catch {
             /* Filtering never prevents the engine from initializing. */
           }
