@@ -17,6 +17,7 @@ export type Settings = {
   restore: boolean;
   history: boolean;
   autocomplete: boolean;
+  youtubeAdblock: boolean;
   title: string;
   tabPreset: TabPreset;
   tabIcon: string;
@@ -39,6 +40,7 @@ export const defaults: Settings = {
   restore: true,
   history: true,
   autocomplete: true,
+  youtubeAdblock: true,
   title: "",
   tabPreset: "atlas",
   tabIcon: "",
@@ -98,6 +100,7 @@ export function sanitizeSettings(value: any): Settings {
     "restore",
     "history",
     "autocomplete",
+    "youtubeAdblock",
   ] as const)
     if (typeof value[k] === "boolean") s[k] = value[k];
   if (themes.some((t) => t.id === value.theme)) s.theme = value.theme;

@@ -5,18 +5,72 @@ import { loadRuntimeConfig, watchRuntimeSession } from "./connection";
 import { watchFavicon } from "./favicon";
 import { matchesShortcut, normalizeShortcut } from "./panic-shortcut";
 import { installPageBridge } from "./page-bridge";
+import { attachFullscreenKeyboard } from "./fullscreen-keyboard";
+import { createDirectTabUrl } from "./direct-tab";
+import { createYouTubeAdblockPlugin } from "./youtube-adblock";
 const globals = window as any;
-const ticket = new URLSearchParams(location.hash.slice(1)).get("ticket") || "";
-const config = await loadRuntimeConfig(ticket);
-const relayQuery = ticket ? encodeURIComponent(ticket) + "/" : "";
+const launchParams = new URLSearchParams(location.hash.slice(1));
+const ticket = launchParams.get("ticket") || "";
+let youtubeAdblock = launchParams.get("adblock") !== "0";
 const standalone = parent === window;
+const config = await loadRuntimeConfig(ticket).catch((error) => {
+  if (standalone) {
+    const panel = document.createElement("main");
+    panel.className = "runtime-boot-error";
+    const heading = document.createElement("h1");
+    heading.textContent = "Connection unavailable";
+    const detail = document.createElement("p");
+    detail.textContent =
+      "Return to Atlas, reconnect, and open this page again.";
+    panel.append(heading, detail);
+    document.body.replaceChildren(panel);
+  }
+  throw error;
+});
+const relayQuery = ticket ? encodeURIComponent(ticket) + "/" : "";
+let standaloneExpired = false;
 const notify = (type: string, data: Record<string, unknown> = {}) => {
   if (standalone) {
     if (type === "title" && data.title)
       document.title = String(data.title) + " — Atlas";
     if (type === "navigation" && typeof data.url === "string") {
+      if (records.get(String(data.id))?.element.hidden) return;
       const field = document.querySelector<HTMLInputElement>("#popup-address");
       if (field) field.value = data.url;
+      // Keep reload/back-to-this-tab on its latest URL, without putting the
+      // browsing destination or bearer ticket in HTTP query strings/referrers.
+      try {
+        history.replaceState(
+          null,
+          "",
+          createDirectTabUrl(
+            location.origin,
+            data.url,
+            ticket || undefined,
+            youtubeAdblock,
+          ),
+        );
+      } catch {
+        // Transient about:blank popup documents have no destination to restore.
+      }
+    }
+    const status = document.querySelector<HTMLElement>("#popup-status");
+    if (status) {
+      if (type === "session-expired") {
+        standaloneExpired = true;
+        status.textContent = "Session expired. Return to Atlas and reconnect.";
+        document
+          .querySelectorAll<
+            HTMLInputElement | HTMLButtonElement
+          >("#popup-toolbar input, #popup-toolbar button")
+          .forEach((control) => {
+            control.disabled = true;
+          });
+      } else if (standaloneExpired) return;
+      else if (type === "error" || type === "slow")
+        status.textContent = String(data.message || "Page failed to load.");
+      else if (type === "loading") status.textContent = "Loading…";
+      else if (type === "loaded") status.textContent = "";
     }
     return;
   }
@@ -311,6 +365,7 @@ function createRecord(id: string, engine: string) {
     record.frame = controller.createFrame(element, {
       plugins: [
         pageBridgePlugin(id),
+        createYouTubeAdblockPlugin(globals, () => youtubeAdblock),
         new HttpCachePlugin(),
         new UrlWatcherPlugin((value: URL) =>
           notify("navigation", { id, url: String(value) }),
@@ -318,10 +373,12 @@ function createRecord(id: string, engine: string) {
         new CatchEscapedLinksPlugin(
           (value: URL) =>
             new URL(
-              "/?goto=" +
-                encodeURIComponent(String(value)) +
-                (ticket ? "#ticket=" + encodeURIComponent(ticket) : ""),
-              location.origin,
+              createDirectTabUrl(
+                location.origin,
+                String(value),
+                ticket || undefined,
+                youtubeAdblock,
+              ),
             ),
         ),
       ],
@@ -422,6 +479,8 @@ window.addEventListener("message", async (event) => {
   )
     return;
   const { type, id, url, engine } = event.data;
+  if (typeof event.data.youtubeAdblock === "boolean")
+    youtubeAdblock = event.data.youtubeAdblock;
   if (type === "ping") {
     notify("ready");
     return;
@@ -464,12 +523,18 @@ if (standalone) {
   bar.id = "popup-toolbar";
   bar.innerHTML =
     '<strong>Atlas</strong><button type="button" id="popup-back" aria-label="Go back">←</button><button type="button" id="popup-reload" aria-label="Reload">↻</button><input id="popup-address" type="url" aria-label="Website address" required><button>Go ↗</button><span id="popup-status" role="status"></span>';
+  const returnLink = document.createElement("a");
+  returnLink.href = config.appOrigin;
+  returnLink.textContent = "Return to Atlas";
+  returnLink.id = "popup-return";
+  bar.append(returnLink);
   document.body.prepend(bar);
   container.style.top = "52px";
   container.style.height = "calc(100% - 52px)";
   container.style.position = "absolute";
   const field = bar.querySelector<HTMLInputElement>("input")!;
   const go = async () => {
+    if (standaloneExpired) return;
     try {
       await navigate("popup", publicUrl(field.value), "scramjet");
     } catch (e) {
@@ -485,7 +550,29 @@ if (standalone) {
     records.get("popup")?.frame?.back();
   bar.querySelector<HTMLButtonElement>("#popup-reload")!.onclick = () =>
     records.get("popup")?.frame?.reload();
-  const initial = new URL(location.href).searchParams.get("goto");
+  let keyboardNotice = "";
+  attachFullscreenKeyboard(
+    document,
+    navigator,
+    () =>
+      [...records.values()].some(
+        (r) => r.element === document.fullscreenElement,
+      ),
+    (state) => {
+      keyboardNotice =
+        state === "locked"
+          ? ""
+          : "Keyboard capture unavailable. Esc may exit fullscreen.";
+    },
+  );
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement && keyboardNotice) {
+      bar.querySelector("#popup-status")!.textContent = keyboardNotice;
+      keyboardNotice = "";
+    }
+  });
+  const initial =
+    launchParams.get("goto") || new URL(location.href).searchParams.get("goto");
   if (initial) {
     field.value = initial;
     void go();

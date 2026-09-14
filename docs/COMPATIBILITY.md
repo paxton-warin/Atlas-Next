@@ -2,6 +2,28 @@
 
 Target: Chrome on an actual Chromebook. Desktop Chrome is the development harness, not Chromebook certification.
 
+## Fullscreen games and minimized mode — 2026-09-14
+
+Minimized/focus mode hides both horizontal and sidebar tabs while keeping the URL bar and **Exit focus mode** button. Escape dismisses Atlas menus/dialogs, but no longer exits focus mode.
+
+When a website inside the browsing runtime enters native fullscreen, the top-level Atlas page requests `navigator.keyboard.lock(["Escape"])`. Short Escape presses remain available to the focused game; other browser shortcuts are not captured by Atlas. Exiting fullscreen releases the lock. Atlas does not simulate key events, repeatedly force fullscreen, or modify the pinned runtime assets. In Chrome, hold Escape for about two seconds to use the browser's fullscreen escape hatch; the game's own exit-fullscreen control also works. [Chrome Keyboard Lock documentation](https://developer.chrome.com/docs/capabilities/web-apis/keyboard-lock).
+
+This applies to a website's **Fullscreen API** mode, not browser-window fullscreen entered with F11 or an OS shortcut. Browser support and browser/site policy still determine whether the lock succeeds; unsupported or rejected requests leave native fullscreen available and report that Escape may exit it. A panic shortcut explicitly configured to Escape still takes priority. Physical Chromebook input, long-hold Escape, and an authenticated GeForce NOW game require a deployed manual check; a loopback fixture is not that qualification.
+
+The **Pop out tab** button beside Focus mode (also available under **Connection → Open in new browser tab**) opens the current website in the assigned runtime's standalone page, using the existing node ticket and egress assignment. It does not allocate a new node or close the original Atlas tab. The destination and ticket are carried in the URL fragment, not an HTTP query string; treat the link as private and session-limited. The direct tab has its own address bar, reload/back controls and Return to Atlas link, and uses the same fullscreen Escape handling. When Main supplies egress through a paired runtime node, this retains Main's relay rather than silently changing IP.
+
+Opening directly loads a new page; it does not move a running game or copy unsaved page state. Browser storage partitioning can separate a top-level node tab's website cookies/storage from those of the embedded runtime, so signing in again may be necessary. Session expiry asks the user to return to Atlas and reconnect; an expired ticket is never silently replaced. Deploy the updated runtime bundle to attached nodes as well as the updated frontend on Main.
+
+## YouTube ad blocker — 2026-09-14
+
+**Setup wizard → Browser** and **Settings → Browser → Search & browsing** share the **YouTube ad blocker** switch. It defaults to on for new and existing settings; an explicit opt-out persists across reload, settings export/import, and Atlas's Pop out tab action. Reload existing YouTube tabs after changing it. Popped-out tabs retain the preference they launched with; reopen them from Atlas to pick up later changes.
+
+The Atlas runtime plugin removes known player ad arrays from initial player data and recognized JSON player responses, hides narrow ad-only card elements, and intercepts ad-only requests initiated by YouTube. Normal video stream hosts, player data, captions, account/sign-in endpoints, and unrelated websites are not blanket-blocked. Malformed, unfamiliar, oversized, or slow JSON responses pass through unchanged. The player ad-field selection is informed by the maintained [uAssets YouTube filters](https://github.com/uBlockOrigin/uAssets/blob/master/filters/filters.txt); Atlas implements its own bounded runtime hooks rather than loading remote scripts or modifying the pinned engine.
+
+This is targeted filtering, not a full browser-extension filter engine or SponsorBlock. Server-stitched ads and future YouTube changes may still show ads. Real YouTube playback/ad delivery has not been qualified by the local fixtures. Disable the switch and reload if a YouTube rollout causes playback trouble.
+
+Build and deploy both Main's frontend and each browsing node's runtime for this change. Updating Main alone does not update runtime JavaScript hosted by the other VPSs. No new server environment variable, public endpoint, subscription, or API key is required.
+
 ## Current selected runtime — 2026-09-12
 
 Atlas now uses https://github.com/paxton-warin/Scramjet-LS-Bypass at `4f452feec4d6804730b903294d0f9bec8002a635`. Eight shipped assets are hash-verified and copied unchanged; Atlas calls the shipped `loadRest` bootstrap with its HTTP transport. The routed prefix is `/~/app/`, globals use `$runtimekit`, and the worker is `/worker.js`. The old `/sw.js` becomes a transition wrapper. Atlas is Scramjet-only.

@@ -300,6 +300,12 @@ input[type="checkbox"] {
   background: var(--line);
   color: var(--text);
 }
+.popout-button {
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  color: var(--text);
+  text-decoration: none;
+}
 .workspace {
   height: calc(100% - 76px);
   display: flex;
@@ -2962,7 +2968,8 @@ pre {
   padding: 0;
 }
 .focus-mode .topbar,
-.focus-mode .sidebar {
+.focus-mode .sidebar,
+.focus-mode .horizontal-tabs {
   display: none;
 }
 .focus-mode .workspace {
@@ -4065,7 +4072,7 @@ pre {
   letter-spacing: 0.4px;
   padding: 7px 8px 5px;
 }
-.browsing-options-menu button {
+.browsing-options-menu :is(button, a[role="menuitem"]) {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4079,16 +4086,22 @@ pre {
   text-align: left;
   font: inherit;
   font-size: 12px;
+  text-decoration: none;
   cursor: pointer;
 }
-.browsing-options-menu button span {
+.browsing-options-menu :is(button, a[role="menuitem"]) span {
   flex: 1;
 }
-.browsing-options-menu button:hover,
-.browsing-options-menu button:focus-visible {
+.browsing-options-menu :is(button:not(:disabled), a[role="menuitem"]):hover,
+.browsing-options-menu
+  :is(button:not(:disabled), a[role="menuitem"]):focus-visible {
   background: color-mix(in srgb, var(--accent) 12%, var(--surface));
   outline: 1px solid var(--accent);
   outline-offset: -1px;
+}
+.browsing-options-menu button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .menu-node {
   margin-top: 5px;

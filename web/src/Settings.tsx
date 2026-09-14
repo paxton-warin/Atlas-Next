@@ -286,7 +286,7 @@ export function Settings({
             )}
           {show("Browser") &&
             (!query ||
-              /tab|browser|engine|search|restore|compact|autocomplete|suggestions/.test(
+              /tab|browser|engine|search|restore|compact|autocomplete|suggestions|youtube|adblock|ad blocker|ads/.test(
                 query.toLowerCase(),
               )) && (
               <>
@@ -358,6 +358,22 @@ export function Settings({
                       label="Search autocomplete"
                       on={s.autocomplete}
                       change={() => update({ autocomplete: !s.autocomplete })}
+                    />
+                  </div>
+                  <div className="setting-row">
+                    <div>
+                      <h3>YouTube ad blocker</h3>
+                      <p>
+                        Block supported YouTube ads. Reload YouTube tabs after
+                        changing this.
+                      </p>
+                    </div>
+                    <Toggle
+                      label="YouTube ad blocker"
+                      on={s.youtubeAdblock}
+                      change={() =>
+                        update({ youtubeAdblock: !s.youtubeAdblock })
+                      }
                     />
                   </div>
                   <label className="form-field">
@@ -562,7 +578,7 @@ export function Settings({
               </>
             )}
           {query &&
-            !/theme|appearance|color|background|wallpaper|motion|blur|dark|light|tab|browser|engine|search|restore|compact|autocomplete|suggestions|privacy|data|history|title|icon|preset|custom|google|gmail|drive|docs|sheets|classroom|export|import|clear|exit|panic/.test(
+            !/theme|appearance|color|background|wallpaper|motion|blur|dark|light|tab|browser|engine|search|restore|compact|autocomplete|suggestions|youtube|adblock|ad blocker|ads|privacy|data|history|title|icon|preset|custom|google|gmail|drive|docs|sheets|classroom|export|import|clear|exit|panic/.test(
               query.toLowerCase(),
             ) && (
               <div className="empty-state">

@@ -1,8 +1,50 @@
 // Explicit allowlist: never package databases, environment secrets, browser results, or node_modules.
-import { mkdirSync, existsSync, copyFileSync, readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  existsSync,
+  copyFileSync,
+  readFileSync,
+  lstatSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
+// Deployments can keep custom root Caddy/Compose files, including private site
+// details. Package only the six pristine templates uploaded with this release.
+// Validate the entire set before touching an existing public source archive.
+const deploymentFiles = [
+  "Caddyfile",
+  "Caddyfile.cloudfront",
+  "Caddyfile.node",
+  "compose.yaml",
+  "compose.cloudfront.yaml",
+  "compose.node.yaml",
+];
+const templates = resolve("deployment-templates");
+let templateStat;
+try {
+  templateStat = lstatSync(templates);
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+}
+if (templateStat) {
+  if (!templateStat.isDirectory())
+    throw Error(
+      "deployment-templates must be a directory of pristine release files.",
+    );
+  for (const name of deploymentFiles) {
+    let stat;
+    try {
+      stat = lstatSync(resolve(templates, name));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (!stat?.isFile())
+      throw Error(
+        `Missing regular deployment template: deployment-templates/${name}`,
+      );
+  }
+}
 const fork = JSON.parse(
   readFileSync(new URL("./runtime-fork.json", import.meta.url)),
 );
@@ -57,13 +99,7 @@ execFileSync("tar", [
   ".prettierignore",
   "Dockerfile",
   ".dockerignore",
-  "compose.yaml",
-  "compose.cloudfront.yaml",
-  "Caddyfile",
-  "Caddyfile.cloudfront",
-  "Caddyfile.node",
   "Dockerfile.node",
-  "compose.node.yaml",
   ".env.node.example",
   "LICENSE",
   "THIRD_PARTY.md",
@@ -72,5 +108,9 @@ execFileSync("tar", [
   "evidence/ORIGINAL-sw.js",
   "evidence/ui-refinement/original/server/index.mjs",
   "evidence/DIFF.patch",
+  // tar's positional -C keeps canonical archive paths without copying over the
+  // live files. Both BSD tar (macOS) and GNU tar support this form.
+  ...(templateStat ? ["-C", templates] : []),
+  ...deploymentFiles,
 ]);
 console.log("SOURCE_ARCHIVES_READY");

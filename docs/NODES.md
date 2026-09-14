@@ -73,3 +73,7 @@ On main, use `Caddyfile.cloudfront` in place of the direct-host Caddyfile. Keep 
 ## Verification boundary
 
 Local tests cover 100 frontend host aliases, pairing, owner/CSRF checks, weighted allocation, direct browser-to-node WebSockets, cookie continuity on the same node, draining, offline behavior and invalid tickets. The actual CloudFront distributions, deployed TLS/Caddy configuration, multi-VPS throughput and physical Chromebook have not been exercised from this workspace. No measured bandwidth increase or universal site compatibility is claimed.
+
+## Shared VPS 2 edge
+
+If Caddy also serves Atlas Link Dispenser, preserve its extra site block and shared Docker network. The dispenser upstream is its reachable container name on that network, not `127.0.0.1:3000` inside the edge container. Use [shared-edge recovery](VPS2-DISPENSER-RECOVERY.md) and the configuration-preserving upload helper. For routine Atlas node updates, rebuild/recreate only `node` with `--no-deps`; retain your complete Compose file stack when deliberately updating the edge.

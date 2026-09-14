@@ -23,7 +23,9 @@ Use **three distributions total**: one frontend plus two nodes. Add more fronten
 
 Keep one stable frontend distribution for owner access and node heartbeats. Visitor settings/admin sessions are not shared across different frontend URLs.
 
-**Existing installation?** Follow [Update to frontend relay](UPDATE-FRONTEND-RELAY.md) instead of overwriting `.env` or recreating node identities. Update both nodes before Main.
+**Routine application/runtime update?** Use [Update browsing controls](UPDATE-BROWSING-CONTROLS.md), which preserves the running Compose stack and leaves Caddy/dispenser untouched.
+
+**Initial relay migration on an existing installation?** Follow [Update to frontend relay](UPDATE-FRONTEND-RELAY.md) instead of overwriting `.env` or recreating node identities. Update both nodes before Main.
 
 ## 0. Prepare the current source
 
@@ -77,6 +79,8 @@ sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/atlas
 Use Docker's existing-install migration procedure instead if these machines already have conflicting Docker/containerd packages. [Official Ubuntu installation instructions](https://docs.docker.com/engine/install/ubuntu/).
 
 ## 2. Upload the correct worktree to each server
+
+**Fresh servers only.** The raw upload below installs standard Caddy/Compose files. For an existing server—especially VPS 2 with the dispenser—use `scripts/upload-update.sh` and [the update guide](UPDATE-FRONTEND-RELAY.md) instead; they preserve live routing and stage new templates separately.
 
 On your Mac, replace `deploy` with your actual SSH user:
 

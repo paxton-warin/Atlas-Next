@@ -54,6 +54,41 @@
       #popup-status {
         font-size: 12px;
       }
+      #popup-return {
+        color: inherit;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+      .runtime-boot-error {
+        max-width: 600px;
+        margin: 15vh auto;
+        padding: 24px;
+        font: 16px/1.5 system-ui;
+        color: #18251b;
+      }
+      @media (max-width: 600px) {
+        #popup-toolbar {
+          padding: 6px;
+          gap: 6px;
+        }
+        #popup-toolbar strong {
+          display: none;
+        }
+        #popup-toolbar button {
+          padding: 7px;
+        }
+        #popup-status:not(:empty) {
+          position: fixed;
+          bottom: 12px;
+          left: 12px;
+          right: 12px;
+          z-index: 1;
+          padding: 10px;
+          border-radius: 8px;
+          background: #132016;
+          color: #e5eddc;
+        }
+      }
     </style>
   </head>
   <body>

@@ -1,16 +1,18 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ChevronDown, Globe2, RefreshCw } from "lucide-react";
+import { ChevronDown, Globe2, RefreshCw, ExternalLink } from "lucide-react";
 
 export default function BrowsingOptions({
   node,
   reconnect,
   routing,
   problem,
+  directUrl,
 }: {
   node?: { name: string; online: boolean };
   reconnect: () => void;
   routing: boolean;
   problem: boolean;
+  directUrl?: string;
 }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null),
@@ -19,7 +21,9 @@ export default function BrowsingOptions({
   useEffect(() => {
     if (!open) return;
     root.current
-      ?.querySelector<HTMLButtonElement>('[role="menuitem"]')
+      ?.querySelector<HTMLElement>(
+        '[role="menuitem"]:not([disabled]):not([aria-disabled="true"])',
+      )
       ?.focus();
     const outside = (e: PointerEvent) => {
       if (!root.current?.contains(e.target as Node)) setOpen(false);
@@ -83,13 +87,11 @@ export default function BrowsingOptions({
               return;
             e.preventDefault();
             const items = Array.from(
-              e.currentTarget.querySelectorAll<HTMLButtonElement>(
-                'button[role^="menuitem"]',
+              e.currentTarget.querySelectorAll<HTMLElement>(
+                '[role^="menuitem"]:not([disabled]):not([aria-disabled="true"])',
               ),
             );
-            const index = items.indexOf(
-              document.activeElement as HTMLButtonElement,
-            );
+            const index = items.indexOf(document.activeElement as HTMLElement);
             items[
               e.key === "Home"
                 ? 0
@@ -136,6 +138,30 @@ export default function BrowsingOptions({
                 Reconnect node
               </button>
             </>
+          )}
+          {directUrl && !problem ? (
+            <a
+              href={directUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              role="menuitem"
+              tabIndex={-1}
+              onClick={close}
+            >
+              <ExternalLink size={14} />
+              Open in new browser tab
+            </a>
+          ) : (
+            <button
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              disabled
+              title="Open a website with an active connection first."
+            >
+              <ExternalLink size={14} />
+              Open in new browser tab
+            </button>
           )}
         </div>
       )}

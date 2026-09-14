@@ -1,5 +1,18 @@
 import { test, expect } from "@playwright/test";
 const origin = "http://localhost:4196";
+const mainSessions = new Set<string>();
+test.afterEach(async ({ request }) => {
+  // Browser teardown alone leaves sticky leases in the shared fixture pool.
+  for (const session of mainSessions) {
+    const response = await request.delete(origin + "/api/browse/session", {
+      headers: { origin },
+      data: { session },
+    });
+    expect(response.ok()).toBe(true);
+    mainSessions.delete(session);
+  }
+});
+
 const website = (page: any) =>
   page
     .frameLocator('iframe[title="Atlas isolated browsing runtime"]')
@@ -16,6 +29,7 @@ test("Main relay uses the current frontend URL, isolated frame, cookies and real
     });
     expect(r.ok()).toBeTruthy();
     lease = await r.json();
+    mainSessions.add(lease.session);
     if (lease.node.id === "local") break;
     await request.delete(origin + "/api/browse/session", {
       headers: { origin },

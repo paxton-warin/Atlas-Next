@@ -10,6 +10,8 @@ import {
 } from "react";
 import { matchesShortcut } from "../../runtime/panic-shortcut";
 import { isSearchShortcut } from "../../runtime/browser-shortcuts";
+import { createDirectTabUrl } from "../../runtime/direct-tab";
+import { attachFullscreenKeyboard } from "../../runtime/fullscreen-keyboard";
 import {
   ArrowLeft,
   ArrowRight,
@@ -218,6 +220,38 @@ export default function App() {
     live = useRef(new Set<string>()),
     tabsRef = useRef(tabs),
     activeRef = useRef(active);
+  const adblockRef = useRef(settings.youtubeAdblock);
+  adblockRef.current = settings.youtubeAdblock;
+  useEffect(() => {
+    let pendingNotice = "";
+    // A shell toast is outside the fullscreen iframe. Show failures once the
+    // player exits, rather than expiring an invisible message behind the game.
+    const showNotice = () => {
+      if (!document.fullscreenElement && pendingNotice) {
+        setNotice(pendingNotice);
+        pendingNotice = "";
+      }
+    };
+    const dispose = attachFullscreenKeyboard(
+      document,
+      navigator,
+      () => document.fullscreenElement === runtimeRef.current,
+      (state) => {
+        pendingNotice =
+          state === "locked"
+            ? ""
+            : state === "unavailable"
+              ? "This browser does not support fullscreen keyboard capture. Esc may exit fullscreen."
+              : "Fullscreen keyboard capture was not enabled. Esc may exit fullscreen; check your browser's site permissions.";
+        showNotice();
+      },
+    );
+    document.addEventListener("fullscreenchange", showNotice);
+    return () => {
+      document.removeEventListener("fullscreenchange", showNotice);
+      dispose();
+    };
+  }, []);
   tabsRef.current = tabs;
   activeRef.current = active;
   const current = tabs.find((t) => t.id === active);
@@ -225,6 +259,30 @@ export default function App() {
   const showingSite =
     !!current && ((page === "browse" && !isAi) || (page === "ai" && isAi));
   const browsingSection = ["home", "browse"].includes(page);
+  let directTabUrl: string | undefined;
+  if (
+    showingSite &&
+    !current?.local &&
+    config?.runtimeOrigin &&
+    !config.connectionError &&
+    !connectionExpired &&
+    config.node?.online !== false &&
+    (!config.expiresLocally || config.expiresLocally > Date.now()) &&
+    (!config.nodeRouting || config.ticket)
+  ) {
+    try {
+      if (new URL(current.url).origin !== location.origin)
+        directTabUrl = createDirectTabUrl(
+          config.runtimeOrigin,
+          current.url,
+          config.ticket || undefined,
+          settings.youtubeAdblock,
+        );
+    } catch {
+      // Internal pages, invalid URLs and unavailable leases have no live link.
+    }
+  }
+
   const visibleTabs = tabs.filter((t) =>
     page === "ai" ? t.workspace === "ai" : t.workspace !== "ai",
   );
@@ -327,7 +385,13 @@ export default function App() {
   function send(type: string, extra: Record<string, unknown> = {}) {
     if (config)
       runtimeRef.current?.contentWindow?.postMessage(
-        { atlas: 1, type, id: activeRef.current || "system", ...extra },
+        {
+          atlas: 1,
+          type,
+          id: activeRef.current || "system",
+          ...extra,
+          youtubeAdblock: adblockRef.current,
+        },
         config.runtimeOrigin,
       );
   }
@@ -606,6 +670,9 @@ export default function App() {
       send("panic-key", { key: wizard ? "" : settings.exitKey });
   }, [runtimeReady, settings.exitKey, wizard]);
   useEffect(() => {
+    if (runtimeReady) send("adblock");
+  }, [runtimeReady, settings.youtubeAdblock]);
+  useEffect(() => {
     if (!config || config.connectionError || connectionExpired || runtimeReady)
       return;
     const ping = () => send("ping", { id: "system" });
@@ -644,7 +711,6 @@ export default function App() {
         focusSearch();
       }
       if (e.key === "Escape") {
-        setFocusMode(false);
         setHistoryOpen(false);
         setShortcutForm(false);
       }
@@ -966,7 +1032,29 @@ export default function App() {
                 node={config?.node}
                 problem={connectionExpired || !!config?.connectionError}
                 reconnect={requestReconnect}
+                directUrl={directTabUrl}
               />
+              {directTabUrl ? (
+                <a
+                  className="icon-button popout-button"
+                  href={directTabUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Pop out tab"
+                  title="Pop out tab — open directly on this node"
+                >
+                  <ExternalLink size={16} />
+                </a>
+              ) : (
+                <button
+                  className="icon-button popout-button"
+                  disabled
+                  aria-label="Pop out tab"
+                  title="Open a website with an active connection to pop it out"
+                >
+                  <ExternalLink size={16} />
+                </button>
+              )}
               <button
                 className="icon-button"
                 aria-label={focusMode ? "Exit focus mode" : "Enter focus mode"}
@@ -987,6 +1075,7 @@ export default function App() {
                     node={config?.node}
                     problem={connectionExpired || !!config?.connectionError}
                     reconnect={requestReconnect}
+                    directUrl={directTabUrl}
                   />
                 </div>
                 <section className="home-hero">

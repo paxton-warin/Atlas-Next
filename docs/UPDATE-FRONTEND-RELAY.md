@@ -1,6 +1,10 @@
 # Update existing three-VPS installations
 
+**Only updating focus mode, fullscreen Escape, popout, or YouTube filtering?** Use [the routine browsing-controls update](UPDATE-BROWSING-CONTROLS.md). The migration below changes relay environment/routing and is not needed for those controls.
+
 This update lets **Main server use the visitor's current frontend CloudFront URL for website traffic**. Nodes 2 and 3 keep their own static CloudFront endpoints. Main's frame/static runtime is hosted on a pinned remote node, separate from Atlas's frontend/admin origin; its website transport uses VPS 1 directly. No fourth distribution is needed. AI chat also gains locally rendered LaTeX.
+
+**VPS 2 also hosts the dispenser?** Use [the shared-Caddy recovery guide](VPS2-DISPENSER-RECOVERY.md). Keep its combined Caddy configuration and update only the `node` service; do not recreate its edge with a stock configuration.
 
 These commands update an existing `/opt/atlas` installation, including one originally uploaded by rsync with no `.git` directory. They preserve live origin keys, owner/AI configuration and paired-node volumes. Use your actual SSH user and VPS hostnames. Run nodes first, Main last.
 
@@ -23,7 +27,19 @@ Replace `root` with `deploy` or your existing SSH user if needed. The script def
 SSH_USER=deploy MAIN_HOST=vps-main.internals.paxton.co bash scripts/upload-update.sh
 ```
 
-The upload does not restart anything. It excludes `.env`, `.env.*` backups, `.origin-key`, databases and live data directories, and explicitly uploads only the two non-secret example env files. Both nodes use this same source checkout, not a separate branch. Git alone does not transfer the prepared runtime/vendor assets; the build/upload steps above do.
+The upload does not restart anything. **Before copying source, it saves existing Caddy/Compose files and `caddy`/`caddy.d` directories under a private `backups/deployment-*/deployment.tar`. It leaves those live files unchanged and stages the six standard deployment files under `deployment-templates/` for review.** A failed backup stops that host’s upload before rsync. Staged templates, rather than live custom routing, are used in public source archives. It excludes `.env`, `.env.*` backups, `.origin-key`, databases and live data directories, and explicitly uploads only the two non-secret example env files. Both nodes use this same source checkout, not a separate branch. Git alone does not transfer the prepared runtime/vendor assets; the build/upload steps above do.
+
+### Review deployment changes separately
+
+Source upload no longer activates new deployment configuration. Compare staged files with your live files before applying a change:
+
+```sh
+cd /opt/atlas
+diff -u Caddyfile.cloudfront deployment-templates/Caddyfile.cloudfront || true
+diff -u compose.cloudfront.yaml deployment-templates/compose.cloudfront.yaml || true
+```
+
+On Main, merge the frontend `/relay/*`/`/wisp/*` routing into your actual Caddy configuration, keeping the origin-key check first. The staged standard file shows the complete route structure. Preserve custom site blocks, ports, external Docker networks and any Compose override files. Only an installation with **no custom deployment changes**, after backup and review, should copy the staged standard file wholesale. **Do not copy stock `Caddyfile.node` over the combined VPS 2 dispenser config.**
 
 ## 2. Update node 2, then node 3
 
@@ -33,16 +49,21 @@ SSH into that VPS and run:
 
 ```sh
 cd /opt/atlas
-sudo docker compose -p atlas-node -f compose.node.yaml config --quiet
+# Preserve the deployment's full Compose file stack. Add any other existing overrides.
+NODE_COMPOSE=(sudo docker compose -p atlas-node -f compose.node.yaml)
+if test -f compose.dispenser.yaml; then NODE_COMPOSE+=(-f compose.dispenser.yaml); fi
+"${NODE_COMPOSE[@]}" config --quiet
 # Retain the exact running image before replacing its build tag.
-CID=$(sudo docker compose -p atlas-node -f compose.node.yaml ps -q node)
+CID=$("${NODE_COMPOSE[@]}" ps -q node)
 OLD_IMAGE=$(sudo docker inspect -f '{{.Image}}' "$CID")
 sudo docker tag "$OLD_IMAGE" atlas-node:before-frontend-relay
-sudo docker compose -p atlas-node -f compose.node.yaml build node
-sudo docker compose -p atlas-node -f compose.node.yaml up -d --force-recreate node edge
-sudo docker compose -p atlas-node -f compose.node.yaml ps
-sudo docker compose -p atlas-node -f compose.node.yaml logs --tail=50 node edge
+"${NODE_COMPOSE[@]}" build node
+"${NODE_COMPOSE[@]}" up -d --no-deps --force-recreate node
+"${NODE_COMPOSE[@]}" ps
+"${NODE_COMPOSE[@]}" logs --tail=50 node
 ```
+
+The command intentionally leaves Caddy and the dispenser running. It does not apply staged routing changes or recreate `edge`.
 
 Wait for the node to show **Online**, then set it **Active** again. Repeat for the other VPS. Existing pairing is retained; do not delete `node-data`, named volumes, or reattach the nodes. The updated service advertises the `frontend-relay-v1` capability during authenticated heartbeat checks.
 
@@ -75,7 +96,8 @@ sudo docker run --rm --volumes-from "$CID":ro \
   -v "$PWD/$BACKUP:/backup" alpine \
   sh -c 'umask 077; tar -czf /backup/main-data.tgz -C /data .'
 
-# Recreate BOTH services so Caddy reloads the changed routes/environment.
+# MAIN ONLY: after reviewing/merging its staged routing changes above.
+# Recreate both Main services so its changed environment and routes take effect.
 sudo docker compose -p atlas-main -f compose.cloudfront.yaml up -d --force-recreate app edge
 sudo docker compose -p atlas-main -f compose.cloudfront.yaml ps
 sudo docker compose -p atlas-main -f compose.cloudfront.yaml logs --tail=70 app edge
@@ -124,7 +146,7 @@ If a frontend is stale after the new containers are running, reload it and inspe
 
 ## Rollback
 
-Keep the previous source/configuration as well as the tagged images. Before the upload, retain a copy of an older custom `Caddyfile.cloudfront` if you customized it. The env helper backs up the environment independently.
+Keep the previous source/configuration as well as the tagged images. The uploader now retains pre-upload Caddy/Compose snapshots in `backups/deployment-*/deployment.tar`. These snapshots preserve the state found at upload time; they do not reconstruct a configuration that an earlier upload already overwrote. The env helper backs up the environment independently.
 
 For the main database, this update adds a lease column. **An older image must be restored with the pre-update database snapshot**, not pointed at the migrated database. Stop the app, restore the entire backed-up data volume (including the master key), restore the previous deployment files/env and image, then restart using the same project name. Restore node images and their original data only while those nodes are stopped. The automated rollback rehearsal in local evidence uses disposable source/database fixtures; it does not restore production volumes.
 
