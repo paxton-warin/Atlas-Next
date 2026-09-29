@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 const fork = JSON.parse(
   await readFile(new URL("./runtime-fork.json", import.meta.url)),
 );
@@ -30,7 +31,20 @@ for (const [file, asset] of Object.entries(fork.assets)) {
   const target = join(root, asset.path);
   await mkdir(resolve(target, ".."), { recursive: true });
   await cp(join(fork.directory, "app/vendor", file), target);
-  hashes[asset.path] = hash(await readFile(target));
+  const bytes = await readFile(target);
+  hashes[asset.path] = hash(bytes);
+  // CloudFront's dynamic/no-cache behavior need not perform edge compression.
+  // Build variants once; do not compress on the browsing request's critical path.
+  // The pinned source asset and its recorded hash remain byte-for-byte unchanged.
+  for (const [suffix, compress] of [
+    [".br", brotliCompressSync],
+    [".gz", gzipSync],
+  ]) {
+    const compressed = bytes.length >= 1024 ? compress(bytes) : null;
+    if (compressed && compressed.length < bytes.length)
+      await writeFile(target + suffix, compressed);
+    else await rm(target + suffix, { force: true });
+  }
 }
 async function walk(dir) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {

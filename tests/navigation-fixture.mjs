@@ -2,6 +2,23 @@ export async function navigationFixture(req, res, url) {
   if (!url.pathname.startsWith("/navigation")) return false;
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
+  if (url.pathname === "/navigation/origin-headers") {
+    const headers = JSON.stringify({
+      method: req.method,
+      origin: req.headers.origin ?? null,
+      referer: req.headers.referer ?? null,
+    })
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;");
+    res.end(`<h1>Request headers</h1><pre id="headers">${headers}</pre>`);
+    return true;
+  }
+  if (url.pathname === "/navigation/origin-start") {
+    res.end(`<!doctype html><title>Origin fixture</title><h1>Origin fixture</h1>
+      <a href="/navigation/origin-headers">Navigate with GET</a>
+      <form method="POST" action="/navigation/origin-headers"><button>Navigate with POST</button></form>`);
+    return true;
+  }
   if (url.pathname === "/navigation/upload") {
     let body = "";
     for await (const chunk of req) body += chunk;

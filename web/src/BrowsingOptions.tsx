@@ -147,9 +147,10 @@ export default function BrowsingOptions({
               role="menuitem"
               tabIndex={-1}
               onClick={close}
+              title="Open the node directly. Separate website storage may require signing in again."
             >
               <ExternalLink size={14} />
-              Open in new browser tab
+              Open direct node tab
             </a>
           ) : (
             <button
@@ -160,7 +161,7 @@ export default function BrowsingOptions({
               title="Open a website with an active connection first."
             >
               <ExternalLink size={14} />
-              Open in new browser tab
+              Open direct node tab
             </button>
           )}
         </div>

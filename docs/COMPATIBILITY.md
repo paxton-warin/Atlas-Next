@@ -133,3 +133,48 @@ CloudFront mode supports a split Main assignment: the current frontend origin ca
 Controlled Chrome tests exercise a real Scramjet-rewritten fixture over this split route, POST/fetch, WebSocket echo, cookie continuity after reload/reopening a tab, and no host-node relay socket. Backend fixtures exercise multiple frontend aliases, balanced allocation, revocation, and draining/disabled frame hosts. A real local Caddy probe checks origin-key rejection, frontend/API routing and relay upgrades. Docker image deployment, public AWS configuration, authenticated websites and VPS throughput still need deployment verification.
 
 AI tests cover inline/display LaTeX, local KaTeX font loading, narrow-screen bounds and blocked trusted commands. Delimiter unit tests preserve Markdown code and incomplete streamed input. See [existing deployment update commands](UPDATE-FRONTEND-RELAY.md).
+
+## Session restoration and runtime compatibility — 2026-09-28
+
+### Fresh launch versus active browsing
+
+A fresh Atlas launch first resumes the saved node lease. If the server reports that the saved lease has expired (HTTP 409), Atlas requests a replacement once, saves it, and then restores the website tabs without a reconnect dialog. A valid lease remains pinned. Network errors, unavailable nodes and rate limits do not trigger automatic reassignment. Concurrent startup on the same frontend origin is serialized where Web Locks are available.
+
+An already-open browsing session still asks before reconnecting after expiry or revocation: it must not silently change the browsing IP. A fresh replacement may use a different node, and website cookies/storage remain tied to that runtime origin. Restoring saved URLs does not migrate website logins between nodes. Reconnecting a tab releases its own active lease, not a different lease recently written to storage by another tab.
+
+### Cookies, streaming and cold-load changes
+
+The pinned upstream HTTP cache rebuilt responses through the browser's native `Response`, which removes raw `Set-Cookie` headers. A Chrome probe reproduced lost authentication cookies, cached dynamic session responses and delayed stream delivery. Atlas now leaves the original network response intact and caches only bounded, explicitly public static assets. Documents, authentication, redirects, APIs, streams, media, credentialed requests and responses setting cookies bypass that cache.
+
+Node DNS resolution now coalesces concurrent lookups, briefly reuses validated addresses, bounds pending work and passes those same addresses to the socket. Private-address rejection remains intact. Runtime builds also generate lossless Brotli/gzip variants and preload independent startup scripts without changing their execution order. The eight pinned assets total 3,328,429 bytes uncompressed versus 1,032,915 bytes with Brotli (69.0% smaller); this is an asset-size measurement, not a measured production latency improvement. The first uncached DNS lookup and remote-site response time still apply.
+
+### Popouts and destination labels
+
+The outer popout tab is titled **Atlas**. New rewritten destination paths and popout fragments use a versioned URL-safe encoding; existing escaped paths and `#goto` links remain readable. The actual destination remains visible in Atlas's address field. This is not encryption or a claim of invisibility to extensions: page content and upstream initiator/referrer metadata can still contain destination names. Blind replacement of those fields would break origin, cookie and navigation behavior. The reported classifier is investigated below; its blocking behavior has not been verified as resolved.
+
+### Live results and update order
+
+On the supplied public frontend, ESPN returned an upstream CDN HTTP 403 through two assigned nodes. Instrumentation observed that 403 before rewriting, while a direct Mac control returned 200. This remains unresolved; the evidence does not establish whether the rejection depends on egress reputation, request characteristics or another CDN rule. Anonymous ChatGPT reached a challenge page; authenticated ChatGPT sign-in was not exercised. The local cookie fix is not certification of either site's live login/playback flow.
+
+Update **both browsing nodes first, then Main** so the runtimes understand the new popout fragment before the frontend generates it. Use the [routine update guide](UPDATE-BROWSING-CONTROLS.md), preserving existing Caddy/Compose overrides, pairing and data volumes. No CloudFront, origin-key, database or routing migration is required. Reload Atlas after the services are updated. Local verification and rollback evidence are in `evidence/compatibility-20260928/VERIFICATION.txt`; these changes have not been deployed by the local tests.
+
+### Follow-up: navigation, popouts and real browser storage
+
+Two additional integration defects were reproduced and corrected:
+
+- In a standalone popout, closing an internal sign-in window left its opener hidden. The opener is now restored with its draft, address and message callback intact. Back, Reload and address entry operate on the visible child instead of the hidden root frame. Embedded Atlas tab handling is unchanged.
+- The pinned engine added an `Origin` header to ordinary GET document navigation, unlike native Chrome. A narrowly scoped Atlas plugin removes that extra header for GET/HEAD navigation only. POST, CORS fetches, WebSocket requests, cookies and referrers are left intact. Native-versus-proxied GET/POST fixtures verify the behavior against the [Fetch Origin-header algorithm](https://fetch.spec.whatwg.org/#append-a-request-origin-header). This is not a general removal of origin checks.
+
+**A node lease is not a website-storage session.** Normal Chrome partitions a cross-site iframe's IndexedDB/localStorage by its top-level site. Atlas's virtual website cookies live in the runtime's IndexedDB. Consequently, a direct-node popout and the embedded runtime can have different website logins even with the same node/IP/ticket; a different frontend CloudFront alias can also create a different partition. Synthetic HTTPS CloudFront fixtures reproduced this separation without accessing real accounts. Same-site subdomain controls shared the expected partition.
+
+The toolbar's **Pop out tab** now opens `/popout` on the exact frontend origin the visitor is using. This thin shell embeds the same isolated runtime and resumes the specific existing lease, keeping the top-level storage partition stable. It has compact address/navigation controls and no sidebar or setup wizard. Opening it does not overwrite the original tab list or allocate a different node. Expired/missing leases show a return-to-Atlas action rather than silently switching IPs. Session handoffs remain in the URL fragment, not HTTP query strings; the API supplies the runtime origin and transport ticket, not a caller-controlled URL.
+
+**Connection → Open direct node tab** retains the previous behavior as a separate option. The thin wrapper also exposes this option, with a sign-in/storage caveat. A direct node tab still changes the top-level site and may require a separate login. Keeping the partition does not guarantee all provider logins work or synchronize arbitrary in-memory page state; the original page and its unsent draft are retained separately.
+
+Playwright 1.63 disables `ThirdPartyStoragePartitioning` in its default launch arguments. The follow-up probe removes only that override and compares both modes; the wrapper regression also enables native partitioning explicitly. Ordinary suite passes alone must not be interpreted as proof of production cross-context login continuity. No website credentials were transferred between partitions. This explains context-switching sign-in differences, not a verified explanation of ChatGPT or Twitter/X refreshing within one unchanged context. Real authenticated ChatGPT and Twitter/X journeys remain untested.
+
+**ESPN:** an identical ordinary Node TLS/HTTP request returned 200 directly from the Mac and 403 through Node 3's authenticated relay. The control website returned 200 through both paths. The relay test does not execute Scramjet's page rewriting. The remaining rejection therefore involves the node-side destination/network path; its precise CDN rule is unknown. Atlas does not silently change a session's IP on HTTP 403.
+
+**Classifier findings:** the user-supplied [extension snapshot](https://github.com/garrett-warin/hi-im-a-cat-and-i-love-lightspeed/tree/a8f1087bbcecda67d919137ee4b9d5a0107ca886) declares all-frame content scripts and examines DOM text, script/resource URLs and page structure. Top-level and subframe scoring/attribution differ, and positive verdicts can be cached. Generic paths/titles are not a verified fix for its content-based classification. The snapshot's version, installed policy and external block duration have not been matched to the affected device. No extension code was installed/executed, no filtering services were contacted, and the engine's origin/referrer metadata was not blindly removed.
+
+Follow-up evidence: `evidence/compatibility-followup-20260928/VERIFICATION.txt`, `espn-transport.json`, `storage-partition.json`, and `detector-findings.md`.

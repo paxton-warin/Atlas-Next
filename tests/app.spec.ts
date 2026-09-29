@@ -136,6 +136,11 @@ test("new tab keeps subtle borders and the hero without a wide sidebar", async (
 }) => {
   await page.clock.install({ time: new Date("2026-09-11T16:00:00Z") });
   await home(page);
+  await expect(page.getByLabel("Atlas version 0.1.1")).toHaveText("v0.1.1");
+  await expect(page.locator(".shortcut-target")).toHaveCount(4);
+  await expect(
+    page.locator(".shortcut-target").filter({ hasText: "Discord" }),
+  ).toHaveCount(0);
   await expect(page.locator(".home-hero h1")).toHaveCSS("font-size", "80px");
   await expect(page.locator(".main-panel")).toHaveCSS(
     "border-top-width",
@@ -199,6 +204,60 @@ test("new tab keeps subtle borders and the hero without a wide sidebar", async (
       .locator('iframe[title="Atlas isolated browsing runtime"]')
       .getAttribute("src"),
   ).toBe(source);
+});
+test("new tab retires the old built-in Discord shortcut but preserves custom shortcuts", async ({
+  page,
+}) => {
+  const custom = [
+    {
+      name: "My docs",
+      url: "https://docs.example.test/",
+      symbol: "D",
+      color: "#bce39b",
+    },
+    {
+      name: "Community",
+      url: "https://discord.com/channels/@me",
+      symbol: "C",
+      color: "#bce39b",
+    },
+  ];
+  await page.addInitScript((items) => {
+    if (window !== top || localStorage.getItem("atlas.shortcutSeed")) return;
+    localStorage.setItem("atlas.shortcutSeed", "true");
+    localStorage.setItem("atlas.onboarded", "true");
+    localStorage.setItem(
+      "atlas.shortcuts",
+      JSON.stringify([
+        {
+          name: "Discord",
+          url: "https://discord.com/app",
+          symbol: "◕",
+          color: "#c2b9f5",
+        },
+        ...items,
+      ]),
+    );
+  }, custom);
+  await page.goto("/");
+  await expect(page.getByLabel("Atlas version 0.1.1")).toHaveText("v0.1.1");
+  await expect(page.locator(".shortcut-target")).toHaveCount(2);
+  await expect(
+    page.locator(".shortcut-target").filter({ hasText: "My docs" }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".shortcut-target").filter({ hasText: "Community" }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => JSON.parse(localStorage.getItem("atlas.shortcuts")!)),
+    )
+    .toEqual(custom);
+  await page.reload();
+  await expect(page.locator(".shortcut-target")).toHaveCount(2);
+  await expect(
+    page.locator(".shortcut-target").filter({ hasText: "Discord" }),
+  ).toHaveCount(0);
 });
 
 test("new tab customization, light mode, small screens and reduced motion", async ({

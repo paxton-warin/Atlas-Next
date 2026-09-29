@@ -1,3 +1,4 @@
+import { directTabTarget } from "../runtime/direct-tab";
 import { test, expect, type Page } from "@playwright/test";
 const fixture = "http://127.0.0.1:4199/fixture";
 const mainSessions = new Set<string>();
@@ -23,7 +24,7 @@ const originalSite = (page: Page) =>
     .frameLocator('iframe[title="Proxied website"]');
 const directSite = (page: Page) =>
   page.frameLocator('iframe[title="Proxied website"]');
-const action = "Open in new browser tab";
+const action = "Open direct node tab";
 async function launch(page: Page, origin = "/") {
   await page.goto(origin);
   await page.getByLabel("Search the web").fill(fixture);
@@ -78,7 +79,9 @@ test("Connection opens current website in a real assigned-node browser tab witho
   const expected = new URL((await link.getAttribute("href"))!);
   expect(expected.origin).toBe("http://127.0.0.1:4181");
   expect(expected.search).toBe("");
-  expect(new URLSearchParams(expected.hash.slice(1)).get("goto")).toBe(fixture);
+  expect(directTabTarget(new URLSearchParams(expected.hash.slice(1)))).toBe(
+    fixture,
+  );
   expect(new URLSearchParams(expected.hash.slice(1)).get("adblock")).toBe("0");
   expect(
     new URLSearchParams(expected.hash.slice(1)).get("ticket"),
@@ -91,7 +94,10 @@ test("Connection opens current website in a real assigned-node browser tab witho
   await expect(link).toBeFocused();
   await page.keyboard.press("Escape");
   const popout = page.getByRole("link", { name: "Pop out tab", exact: true });
-  await expect(popout).toHaveAttribute("href", expected.href);
+  const wrapper = new URL((await popout.getAttribute("href"))!);
+  expect(wrapper.origin).toBe(new URL(page.url()).origin);
+  expect(wrapper.pathname).toBe("/popout");
+  expect(new URLSearchParams(wrapper.hash.slice(1)).has("ticket")).toBe(false);
   await expect(popout).toHaveAttribute("target", "_blank");
   await expect(popout).toHaveAttribute("rel", "noopener noreferrer");
   expect(
@@ -113,7 +119,8 @@ test("Connection opens current website in a real assigned-node browser tab witho
     }),
   ).toBe(true);
   const opened = context.waitForEvent("page");
-  await popout.click();
+  await page.getByRole("button", { name: "Connection options" }).click();
+  await page.getByRole("menuitem", { name: action }).click();
   const direct = await opened;
   await expect(
     directSite(direct).getByRole("heading", { name: "Proxy fixture ready" }),
@@ -144,7 +151,7 @@ test("Connection opens current website in a real assigned-node browser tab witho
   ).toHaveValue(nextUrl);
   await expect
     .poll(() =>
-      new URLSearchParams(new URL(direct.url()).hash.slice(1)).get("goto"),
+      directTabTarget(new URLSearchParams(new URL(direct.url()).hash.slice(1))),
     )
     .toBe(nextUrl);
   expect(new URL(direct.url()).search).toBe("");
@@ -295,4 +302,107 @@ test("Main assignment opens its isolated node directly but retains the current-f
       JSON.parse(localStorage.getItem("atlas.nodeSession")!),
     ),
   ).toBe(lease.session);
+});
+
+test("standalone sign-in popup reload and close keep the opener and restore its address", async ({
+  page,
+  context,
+}) => {
+  await setup(page);
+  await launch(page);
+  await page.getByLabel("Address bar").fill("http://127.0.0.1:4199/navigation");
+  await page.getByLabel("Address bar").press("Enter");
+  await expect(
+    originalSite(page).getByRole("heading", {
+      name: "Navigation fixture",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Pop out tab", exact: true }),
+  ).toHaveAttribute("href", /page=/);
+  const opened = context.waitForEvent("page");
+  await page.getByRole("button", { name: "Connection options" }).click();
+  await page.getByRole("menuitem", { name: action }).click();
+  const direct = await opened;
+  const activeSite = () =>
+    direct.frameLocator('iframe[title="Proxied website"]:not([hidden])');
+  await expect(
+    activeSite().getByRole("heading", {
+      name: "Navigation fixture",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await activeSite().getByLabel("Website search").fill("Unsaved opener draft");
+  await activeSite()
+    .getByRole("button", { name: "Open sign-in popup", exact: true })
+    .click();
+  await expect(
+    activeSite().getByRole("heading", { name: "Sign-in fixture", exact: true }),
+  ).toBeVisible();
+  await expect(direct.getByLabel("Website address")).toHaveValue(
+    "http://127.0.0.1:4199/navigation/popup",
+  );
+  const activeElement = await direct
+    .locator('iframe[title="Proxied website"]:not([hidden])')
+    .elementHandle();
+  const activeFrame = await activeElement!.contentFrame();
+  const reloaded = direct.waitForEvent("framenavigated", {
+    predicate: (frame) => frame.parentFrame() === direct.mainFrame(),
+  });
+  await direct.getByRole("button", { name: "Reload", exact: true }).click();
+  expect(await reloaded).toBe(activeFrame);
+  await expect(
+    activeSite().getByRole("heading", { name: "Sign-in fixture", exact: true }),
+  ).toBeVisible();
+  // Reload belongs to the visible popup, not its hidden parent with unsaved input.
+  await expect(
+    direct
+      .frameLocator('iframe[title="Proxied website"][hidden]')
+      .getByLabel("Website search"),
+  ).toHaveValue("Unsaved opener draft");
+  // Address entry and Back also operate on the visible child, not the opener.
+  await direct
+    .getByLabel("Website address")
+    .fill("http://127.0.0.1:4199/navigation/results?q=popup");
+  await direct.getByLabel("Website address").press("Enter");
+  await expect(
+    activeSite().getByRole("heading", { name: "Search results", exact: true }),
+  ).toBeVisible();
+  await expect(
+    direct
+      .frameLocator('iframe[title="Proxied website"][hidden]')
+      .getByLabel("Website search"),
+  ).toHaveValue("Unsaved opener draft");
+  await direct.getByRole("button", { name: "Go back", exact: true }).click();
+  await expect(
+    activeSite().getByRole("heading", { name: "Sign-in fixture", exact: true }),
+  ).toBeVisible();
+  await activeSite()
+    .getByRole("button", { name: "Finish sign-in fixture", exact: true })
+    .click();
+  await expect(
+    activeSite().getByRole("heading", {
+      name: "Navigation fixture",
+      exact: true,
+    }),
+  ).toBeVisible({ timeout: 3000 });
+  await expect(activeSite().locator("#popup-result")).toHaveText(
+    "Opener message received",
+  );
+  await expect(activeSite().locator("#closed-result")).toHaveText(
+    "Popup closed",
+  );
+  await expect(activeSite().getByLabel("Website search")).toHaveValue(
+    "Unsaved opener draft",
+  );
+  await expect(direct.getByLabel("Website address")).toHaveValue(
+    "http://127.0.0.1:4199/navigation",
+  );
+  await expect(direct.locator('iframe[title="Proxied website"]')).toHaveCount(
+    1,
+  );
+  expect(
+    directTabTarget(new URLSearchParams(new URL(direct.url()).hash.slice(1))),
+  ).toBe("http://127.0.0.1:4199/navigation");
 });

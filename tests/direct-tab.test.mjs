@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDirectTabUrl } from "../runtime/direct-tab.ts";
+import { createDirectTabUrl, directTabTarget } from "../runtime/direct-tab.ts";
 
 test("direct browsing URL uses assigned node root and keeps target/ticket only in its fragment", () => {
   const target = "https://play.example/game?q=hello world&return=%2Fhome#saved";
@@ -12,7 +12,7 @@ test("direct browsing URL uses assigned node root and keeps target/ticket only i
   assert.equal(url.pathname, "/");
   assert.equal(url.search, "");
   const fragment = new URLSearchParams(url.hash.slice(1));
-  assert.equal(fragment.get("goto"), new URL(target).href);
+  assert.equal(directTabTarget(fragment), new URL(target).href);
   assert.equal(fragment.get("ticket"), ticket);
   assert.equal(url.href.split("#")[0], "https://node.example/");
 });

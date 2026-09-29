@@ -27,11 +27,9 @@ for (const width of [1440, 390]) {
     await launch(page, width);
     const popout = page.getByRole("link", { name: "Pop out tab", exact: true });
     const focus = page.getByRole("button", { name: "Enter focus mode" });
-    await page
-      .locator(".browser-toolbar")
-      .screenshot({
-        path: `evidence/popout-style/${stage}-buttons-${width}.png`,
-      });
+    await page.locator(".browser-toolbar").screenshot({
+      path: `evidence/popout-style/${stage}-buttons-${width}.png`,
+    });
     const styles = await Promise.all(
       [popout, focus].map((control) =>
         control.evaluate((element) => {
@@ -77,7 +75,8 @@ for (const width of [1440, 390]) {
   }) => {
     await launch(page, width);
     const opened = context.waitForEvent("page");
-    await page.getByRole("link", { name: "Pop out tab", exact: true }).click();
+    await page.getByRole("button", { name: "Connection options" }).click();
+    await page.getByRole("menuitem", { name: "Open direct node tab" }).click();
     const direct = await opened;
     await direct.setViewportSize({ width, height: 850 });
     const site = direct.frameLocator('iframe[title="Proxied website"]');
@@ -115,9 +114,18 @@ for (const width of [1440, 390]) {
     await expect(
       site.getByRole("heading", { name: "Proxy fixture ready" }),
     ).toBeVisible();
-    await direct.locator("#popup-status").evaluate((element) => {
-      element.textContent = "Session expired. Return to Atlas and reconnect.";
+    // Exercise real expiry; assigning text manually races the reload's loaded event.
+    const session = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("atlas.nodeSession")!),
+    );
+    await page.request.delete("/api/browse/session", {
+      headers: { origin: "http://localhost:4180" },
+      data: { session },
     });
+    await direct.evaluate(() => window.dispatchEvent(new Event("online")));
+    await expect(direct.getByRole("status")).toHaveText(
+      "Session expired. Return to Atlas and reconnect.",
+    );
     const notice = (await direct.getByRole("status").boundingBox())!;
     expect(notice.y).toBeGreaterThan(bounds.height);
     expect((await bar.boundingBox())!.height).toBe(bounds.height);

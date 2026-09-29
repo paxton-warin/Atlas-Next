@@ -58,7 +58,7 @@ test("Connection menu keeps the pinned node and reconnects without losing tabs",
   await expect(menu).toContainText("Connection");
 });
 
-test("expired startup lease prompts immediately and reconnect failure stays actionable", async ({
+test("failed cold-start renewal and explicit reconnect failure stay actionable", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -68,28 +68,47 @@ test("expired startup lease prompts immediately and reconnect failure stays acti
         JSON.stringify("expired-fixture"),
       );
   });
+  let allocations = 0;
+  const sessions: string[] = [];
+  await page.route("**/api/browse/session", async (route) => {
+    if (route.request().method() === "POST") {
+      const session = route.request().postDataJSON().session;
+      sessions.push(session);
+      if (!session && allocations++ < 2)
+        return route.fulfill({
+          status: 503,
+          json: { error: "No browsing nodes are available." },
+        });
+    }
+    return route.continue();
+  });
   await home(page);
-  const dialog = page.getByRole("dialog", { name: "Browsing session expired" });
+  await expect.poll(() => sessions).toEqual(["expired-fixture", ""]);
+  // No website is live yet, but failed automatic renewal must not spin.
+  await page.getByLabel("Search the web").fill("http://127.0.0.1:4199/fixture");
+  await page.getByLabel("Search the web").press("Enter");
+  await expect(page.locator(".runtime-error")).toContainText(
+    "No browsing nodes are available.",
+  );
+  await page
+    .locator(".runtime-error")
+    .getByRole("button", { name: "Reconnect node" })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Reconnect browsing?" });
   await expect(dialog).toBeVisible();
   await expect(
     dialog.getByRole("button", { name: "Reconnect node" }),
   ).toBeFocused();
-  let allocations = 0;
-  await page.route("**/api/browse/session", async (route) => {
-    if (route.request().method() === "POST" && allocations++ === 0)
-      return route.fulfill({
-        status: 503,
-        json: { error: "No browsing nodes are available." },
-      });
-    return route.continue();
-  });
   await dialog.getByRole("button", { name: "Reconnect node" }).click();
   await expect(dialog.getByRole("alert")).toHaveText(
     "No browsing nodes are available.",
   );
   await dialog.getByRole("button", { name: "Reconnect node" }).click();
   await expect(dialog).not.toBeVisible();
-  await launch(page);
+  await expect(
+    site(page).getByRole("heading", { name: "Proxy fixture ready" }),
+  ).toBeVisible();
+  expect(sessions).toEqual(["expired-fixture", "", "", ""]);
 });
 
 test("open session detects revocation, never silently reallocates, and can reconnect after dismissal", async ({

@@ -1,4 +1,6 @@
-/** Keep the existing assignment ticket and target out of HTTP URLs/referrers. */
+import { encodeTarget, decodeTarget } from "./url-codec.ts";
+
+/** Keep assignment tickets out of HTTP URLs/referrers and literal targets out of wrapper URLs. */
 export function createDirectTabUrl(
   runtimeOrigin: string,
   target: string,
@@ -21,6 +23,7 @@ export function createDirectTabUrl(
     destination.username ||
     destination.password ||
     target.length > 8192 ||
+    destination.href.length > 8192 ||
     destination.origin === runtime.origin
   )
     throw Error("Use an external web URL.");
@@ -29,10 +32,21 @@ export function createDirectTabUrl(
     (typeof ticket !== "string" || !ticket || ticket.length > 32768)
   )
     throw Error("Use a valid browsing ticket.");
-  const fragment = new URLSearchParams({ goto: destination.href });
+  const fragment = new URLSearchParams({
+    page: encodeTarget(destination.href),
+  });
   if (ticket) fragment.set("ticket", ticket);
   if (!youtubeAdblock) fragment.set("adblock", "0");
   const result = new URL(runtime.origin + "/");
   result.hash = fragment.toString();
   return result.href;
+}
+
+export function directTabTarget(params: URLSearchParams): string | null {
+  const compact = params.get("page");
+  if (compact !== null) {
+    if (compact.length > 12000) throw Error("Invalid page address.");
+    return decodeTarget(compact);
+  }
+  return params.get("goto");
 }

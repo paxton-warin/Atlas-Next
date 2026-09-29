@@ -3,17 +3,11 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { server as wisp, logging } from "@mercuryworkshop/wisp-js/server";
 import { Socket } from "node:net";
-import { lookup } from "node:dns/promises";
-import ipaddr from "ipaddr.js";
+import { createDestinationResolver } from "./destination-resolver.mjs";
+export { isPublicIp } from "./destination-resolver.mjs";
 import { resolve } from "node:path";
-export function isPublicIp(address) {
-  try {
-    return ipaddr.process(address).range() === "unicast";
-  } catch {
-    return false;
-  }
-}
 export function guardedSocket({ fixture = false, blockedHosts = [] } = {}) {
+  const resolveDestination = createDestinationResolver();
   return class GuardedTcp {
     constructor(hostname, port) {
       this.hostname = hostname;
@@ -32,12 +26,9 @@ export function guardedSocket({ fixture = false, blockedHosts = [] } = {}) {
           ![80, 443].includes(this.port))
       )
         throw Error("Destination rejected");
-      const addresses = await lookup(this.hostname, { all: true });
-      if (
-        !addresses.length ||
-        (!allowedFixture && addresses.some((x) => !isPublicIp(x.address)))
-      )
-        throw Error("Destination rejected");
+      const addresses = await resolveDestination(this.hostname, {
+        allowPrivate: allowedFixture,
+      });
       await new Promise((ok, bad) => {
         const socket = (this.socket = new Socket());
         socket.setNoDelay(true);
@@ -228,10 +219,15 @@ export async function createRuntime({
           ? `frame-ancestors https:${process.env.NODE_ENV === "production" ? "" : " http:"}`
           : `frame-ancestors ${appOrigin}${baseline ? " " + runtimeOrigin : ""}`,
       );
-    if (req.url.endsWith("sw.js") || req.url.endsWith("worker.js"))
+  });
+  app.addHook("onSend", async (req, reply, payload) => {
+    // Static file headers are applied after onRequest, so worker revalidation
+    // belongs here (also covering query strings and negotiated compression).
+    if (/(?:sw|worker)\.js(?:\.(?:br|gz))?$/.test(req.url.split("?")[0]))
       reply
         .header("Cache-Control", "no-cache")
         .header("Service-Worker-Allowed", "/");
+    return payload;
   });
   app.get("/runtime-config", (req, reply) => {
     reply.header("Cache-Control", "no-store");
@@ -254,7 +250,13 @@ export async function createRuntime({
   if (health) app.get("/node/health", health);
   app.decorate("connectionCount", () => sockets.size);
   app.get("/health", () => ({ status: "ok", wisp: "listening" }));
-  await app.register(fastifyStatic, { root: staticDir });
+  await app.register(fastifyStatic, {
+    root: staticDir,
+    preCompressed: true,
+    setHeaders(response) {
+      response.setHeader("Vary", "Accept-Encoding");
+    },
+  });
   app.setNotFoundHandler((req, reply) => {
     if (["/~/app/", "/~/sj/"].some((prefix) => req.url.startsWith(prefix)))
       return reply

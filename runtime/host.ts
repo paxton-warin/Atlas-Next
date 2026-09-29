@@ -6,7 +6,10 @@ import { watchFavicon } from "./favicon";
 import { matchesShortcut, normalizeShortcut } from "./panic-shortcut";
 import { installPageBridge } from "./page-bridge";
 import { attachFullscreenKeyboard } from "./fullscreen-keyboard";
-import { createDirectTabUrl } from "./direct-tab";
+import { createDirectTabUrl, directTabTarget } from "./direct-tab";
+import { encodeTarget, decodeTarget } from "./url-codec";
+import { createHttpCachePlugin } from "./http-cache";
+import { createRequestHeadersPlugin } from "./request-headers";
 import { createYouTubeAdblockPlugin } from "./youtube-adblock";
 const globals = window as any;
 const launchParams = new URLSearchParams(location.hash.slice(1));
@@ -31,8 +34,8 @@ const relayQuery = ticket ? encodeURIComponent(ticket) + "/" : "";
 let standaloneExpired = false;
 const notify = (type: string, data: Record<string, unknown> = {}) => {
   if (standalone) {
-    if (type === "title" && data.title)
-      document.title = String(data.title) + " — Atlas";
+    // Keep the real browser tab generic; site titles still belong to the site.
+    if (type === "title") document.title = "Atlas";
     if (type === "navigation" && typeof data.url === "string") {
       if (records.get(String(data.id))?.element.hidden) return;
       const field = document.querySelector<HTMLInputElement>("#popup-address");
@@ -83,6 +86,7 @@ const records = new Map<
     element: HTMLIFrameElement;
     frame: any;
     engine: string;
+    url?: string;
     timer?: ReturnType<typeof setTimeout>;
     disposeFavicon?: () => void;
   }
@@ -114,6 +118,7 @@ async function init() {
           runtimekitControllerInjectPath: "/controller/controller.inject.js",
           runtimekitControllerWorkerPath: "/controller/controller.worker.js",
         });
+  controller.config.codec = { encode: encodeTarget, decode: decodeTarget };
   await Promise.race([
     controller.wait(),
     new Promise((_, reject) =>
@@ -161,6 +166,24 @@ const popups = new Map<
   string,
   { opener: Window | null; openerId: string; name: string; baseUrl: string }
 >();
+function activeStandaloneId() {
+  return (
+    [...records].find(([, record]) => !record.element.hidden)?.[0] || "popup"
+  );
+}
+function activateStandalone(id: string) {
+  const next = records.has(id)
+    ? id
+    : records.has("popup")
+      ? "popup"
+      : records.keys().next().value;
+  if (!next) return;
+  for (const [key, record] of records) record.element.hidden = key !== next;
+  const record = records.get(next)!;
+  if (record.url) notify("navigation", { id: next, url: record.url });
+  notify("loaded", { id: next });
+  record.element.focus();
+}
 function attachPageBridge(
   id: string,
   win: Window & typeof globalThis,
@@ -218,11 +241,16 @@ function attachPageBridge(
       get: () => !records.has(id),
     });
     win.close = () => {
+      const wasVisible = !record.element.hidden;
       destroy(id);
+      // The embedded shell activates the opener in response to this event.
+      // A standalone runtime has no shell, so restore its visible context here.
+      if (standalone && wasVisible) activateStandalone(popup.openerId);
       notify("popup-closed", { id, openerId: popup.openerId });
     };
     win.focus = () => {
-      for (const [key, r] of records) r.element.hidden = key !== id;
+      if (standalone) activateStandalone(id);
+      else for (const [key, r] of records) r.element.hidden = key !== id;
       notify("popup-focus", { id });
     };
   }
@@ -360,16 +388,18 @@ function createRecord(id: string, engine: string) {
   records.set(id, record);
   container.append(element);
   {
-    const { HttpCachePlugin, UrlWatcherPlugin, CatchEscapedLinksPlugin } =
+    const { UrlWatcherPlugin, CatchEscapedLinksPlugin } =
       globals.$runtimekitUtils;
     record.frame = controller.createFrame(element, {
       plugins: [
         pageBridgePlugin(id),
         createYouTubeAdblockPlugin(globals, () => youtubeAdblock),
-        new HttpCachePlugin(),
-        new UrlWatcherPlugin((value: URL) =>
-          notify("navigation", { id, url: String(value) }),
-        ),
+        createRequestHeadersPlugin(globals),
+        createHttpCachePlugin(globals),
+        new UrlWatcherPlugin((value: URL) => {
+          record.url = String(value);
+          notify("navigation", { id, url: record.url });
+        }),
         new CatchEscapedLinksPlugin(
           (value: URL) =>
             new URL(
@@ -551,7 +581,7 @@ if (standalone) {
   const go = async () => {
     if (standaloneExpired) return;
     try {
-      await navigate("popup", publicUrl(field.value), "scramjet");
+      await navigate(activeStandaloneId(), publicUrl(field.value), "scramjet");
     } catch (e) {
       bar.querySelector("#popup-status")!.textContent =
         e instanceof Error ? e.message : "Page failed.";
@@ -562,9 +592,9 @@ if (standalone) {
     void go();
   };
   bar.querySelector<HTMLButtonElement>("#popup-back")!.onclick = () =>
-    records.get("popup")?.frame?.back();
+    records.get(activeStandaloneId())?.frame?.back();
   bar.querySelector<HTMLButtonElement>("#popup-reload")!.onclick = () =>
-    records.get("popup")?.frame?.reload();
+    records.get(activeStandaloneId())?.frame?.reload();
   let keyboardNotice = "";
   attachFullscreenKeyboard(
     document,
@@ -586,10 +616,16 @@ if (standalone) {
       keyboardNotice = "";
     }
   });
-  const initial =
-    launchParams.get("goto") || new URL(location.href).searchParams.get("goto");
-  if (initial) {
-    field.value = initial;
-    void go();
+  try {
+    const initial =
+      directTabTarget(launchParams) ||
+      new URL(location.href).searchParams.get("goto");
+    if (initial) {
+      field.value = initial;
+      void go();
+    }
+  } catch {
+    bar.querySelector("#popup-status")!.textContent =
+      "Invalid page address. Return to Atlas and open it again.";
   }
 } else notify("ready");

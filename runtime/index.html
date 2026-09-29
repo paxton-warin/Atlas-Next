@@ -3,7 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Atlas browsing runtime</title>
+    <title>Atlas</title>
+    <!-- Fetch independent assets in parallel; the pinned bootstrap still
+         executes them in dependency order. Never preload private config. -->
+    <link rel="preload" href="/runtime/runtimekit.js" as="script" />
+    <link rel="preload" href="/controller/controller.api.js" as="script" />
+    <link rel="preload" href="/runtime/runtimekit-utils.js" as="script" />
+    <link rel="preload" href="/clients/httpengine-client.js" as="script" />
     <style>
       html,
       body,

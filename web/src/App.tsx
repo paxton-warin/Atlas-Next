@@ -11,6 +11,11 @@ import {
 import { matchesShortcut } from "../../runtime/panic-shortcut";
 import { isSearchShortcut } from "../../runtime/browser-shortcuts";
 import { createDirectTabUrl } from "../../runtime/direct-tab";
+import { createPopoutUrl } from "./popout-link";
+import {
+  restoreBrowsingLeaseOnStartup,
+  browsingSessionToRelease,
+} from "./browsing-session";
 import { attachFullscreenKeyboard } from "../../runtime/fullscreen-keyboard";
 import {
   ArrowLeft,
@@ -89,12 +94,6 @@ const seedShortcuts = [
     symbol: "≋",
     color: "#90dcad",
   },
-  {
-    name: "Discord",
-    url: "https://discord.com/app",
-    symbol: "◕",
-    color: "#c2b9f5",
-  },
 ];
 function NewTabGreeting() {
   const [now, setNow] = useState(() => new Date());
@@ -154,6 +153,10 @@ export default function App() {
   );
   const [notice, setNotice] = useState("");
   const [config, setConfig] = useState<any>(null);
+  const startup = useRef<{
+    config: Promise<any>;
+    catalog: Promise<Game[]>;
+  } | null>(null);
   const [connectionExpired, setConnectionExpired] = useState(false);
   const [reconnectReason, setReconnectReason] = useState<
     "expired" | "manual" | null
@@ -163,8 +166,9 @@ export default function App() {
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>(() => {
     const s = sanitizeSettings(readLocal("atlas.settings", defaults));
-    return s.restore
-      ? readLocal<Tab[]>("atlas.tabs", [])
+    const saved = readLocal<unknown>("atlas.tabs", []);
+    return s.restore && Array.isArray(saved)
+      ? saved
           .filter(
             (t) =>
               t &&
@@ -189,9 +193,21 @@ export default function App() {
     ),
     [shortcutForm, setShortcutForm] = useState(false),
     [shortcut, setShortcut] = useState({ name: "", url: "" });
-  const [shortcuts, setShortcuts] = useState(() =>
-      readLocal("atlas.shortcuts", seedShortcuts),
-    ),
+  const [shortcuts, setShortcuts] = useState(() => {
+      const saved = readLocal("atlas.shortcuts", seedShortcuts);
+      // Retire only the former built-in shortcut. Keep custom names, URLs,
+      // symbols and colors, including user-created community shortcuts.
+      return (Array.isArray(saved) ? saved : seedShortcuts).filter(
+        (shortcut) =>
+          shortcut &&
+          !(
+            shortcut.name === "Discord" &&
+            shortcut.url === "https://discord.com/app" &&
+            shortcut.symbol === "◕" &&
+            shortcut.color === "#c2b9f5"
+          ),
+      );
+    }),
     [games, setGames] = useState<Game[]>([]);
   const [aiOpened, setAiOpened] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
@@ -260,6 +276,7 @@ export default function App() {
     !!current && ((page === "browse" && !isAi) || (page === "ai" && isAi));
   const browsingSection = ["home", "browse"].includes(page);
   let directTabUrl: string | undefined;
+  let popoutUrl: string | undefined;
   if (
     showingSite &&
     !current?.local &&
@@ -271,13 +288,21 @@ export default function App() {
     (!config.nodeRouting || config.ticket)
   ) {
     try {
-      if (new URL(current.url).origin !== location.origin)
+      if (new URL(current.url).origin !== location.origin) {
         directTabUrl = createDirectTabUrl(
           config.runtimeOrigin,
           current.url,
           config.ticket || undefined,
           settings.youtubeAdblock,
         );
+        if (!config.nodeRouting || config.session)
+          popoutUrl = createPopoutUrl(
+            location.origin,
+            current.url,
+            config.nodeRouting ? config.session : undefined,
+            settings.youtubeAdblock,
+          );
+      }
     } catch {
       // Internal pages, invalid URLs and unavailable leases have no live link.
     }
@@ -297,38 +322,68 @@ export default function App() {
     });
   }
   useEffect(() => {
-    api("/config")
-      .then(async (config) => {
-        if (!config.nodeRouting) return setConfig(config);
+    let mounted = true;
+    // StrictMode replays effects in development. Share the network work and
+    // ignore callbacks from the cleaned-up effect, rather than allocating twice.
+    startup.current ||= {
+      config: api("/config").then(async (config) => {
+        if (!config.nodeRouting) return config;
         try {
-          const lease = await api("/browse/session", {
-            method: "POST",
-            body: JSON.stringify({
-              session: readLocal("atlas.nodeSession", ""),
-            }),
-          });
-          writeLocal("atlas.nodeSession", lease.session);
-          setConfig({
+          const lease = await restoreBrowsingLeaseOnStartup(
+            () => readLocal("atlas.nodeSession", ""),
+            (session) =>
+              api("/browse/session", {
+                method: "POST",
+                body: JSON.stringify({ session }),
+              }),
+            (session) => {
+              writeLocal("atlas.nodeSession", session);
+            },
+            navigator.locks,
+          );
+          return {
             ...config,
             ...lease,
             expiresLocally: lease.expiresAt
               ? Date.now() + lease.expiresAt - lease.serverTime
               : undefined,
-          });
+          };
         } catch (error) {
-          setConfig({ ...config, connectionError: (error as Error).message });
-          if ((error as Error & { status?: number }).status === 409)
-            expireConnection();
+          return {
+            ...config,
+            connectionError: (error as Error).message,
+            connectionErrorStatus: (error as { status?: number }).status,
+          };
         }
+      }),
+      catalog: api<Game[]>("/catalog"),
+    };
+    startup.current.config
+      .then((config) => {
+        if (!mounted) return;
+        setConfig(config);
+        if (config.connectionErrorStatus === 409) expireConnection();
       })
-      .catch((e) => toast(e.message));
-    api<Game[]>("/catalog")
-      .then(setGames)
-      .catch((e) => toast(e.message));
+      .catch((e) => {
+        if (mounted) toast(e.message);
+      });
+    startup.current.catalog
+      .then((games) => {
+        if (mounted) setGames(games);
+      })
+      .catch((e) => {
+        if (mounted) toast(e.message);
+      });
+    return () => {
+      mounted = false;
+    };
   }, []);
   useEffect(() => {
     writeLocal("atlas.sidebarCollapsed", collapsed);
   }, [collapsed]);
+  useEffect(() => {
+    writeLocal("atlas.shortcuts", shortcuts);
+  }, [shortcuts]);
   useEffect(() => {
     writeLocal("atlas.settings", settings);
   }, [settings]);
@@ -410,13 +465,17 @@ export default function App() {
     setReconnecting(true);
     setReconnectError("");
     try {
-      const old = readLocal("atlas.nodeSession", "");
+      const old = browsingSessionToRelease(
+        config?.session,
+        readLocal("atlas.nodeSession", ""),
+      );
       if (old)
         await api("/browse/session", {
           method: "DELETE",
           body: JSON.stringify({ session: old }),
         });
-      writeLocal("atlas.nodeSession", "");
+      if (readLocal("atlas.nodeSession", "") === old)
+        writeLocal("atlas.nodeSession", "");
       setConnectionExpired(true);
       setRuntimeReady(false);
       const lease = await api("/browse/session", {
@@ -1034,14 +1093,14 @@ export default function App() {
                 reconnect={requestReconnect}
                 directUrl={directTabUrl}
               />
-              {directTabUrl ? (
+              {popoutUrl ? (
                 <a
                   className="icon-button toolbar-view-button popout-button"
-                  href={directTabUrl}
+                  href={popoutUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="Pop out tab"
-                  title="Pop out tab — open directly on this node"
+                  title="Pop out tab — keep this Atlas connection and website storage"
                 >
                   <ExternalLink size={16} />
                 </a>

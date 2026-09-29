@@ -17,7 +17,8 @@ async function popout(page: Page, context: BrowserContext) {
       .getByRole("heading", { name: "Proxy fixture ready" }),
   ).toBeVisible();
   const opened = context.waitForEvent("page");
-  await page.getByRole("link", { name: "Pop out tab", exact: true }).click();
+  await page.getByRole("button", { name: "Connection options" }).click();
+  await page.getByRole("menuitem", { name: "Open direct node tab" }).click();
   const direct = await opened;
   await expect(
     site(direct).getByRole("heading", { name: "Proxy fixture ready" }),

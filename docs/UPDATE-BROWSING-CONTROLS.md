@@ -6,9 +6,10 @@ The release includes:
 
 - Focus mode hides both top and sidebar tabs while retaining the address bar.
 - Fullscreen games request Escape-only keyboard capture where the browser supports it; Escape no longer exits Atlas focus mode.
-- **Pop out tab** appears beside the focus control and opens the existing assigned runtime directly.
+- **Pop out tab** appears beside the focus control and opens a thin `/popout` shell on the current frontend origin, keeping the assigned runtime's storage partition. **Connection → Open direct node tab** remains available separately and may need a separate website login.
 - **YouTube ad blocker** defaults on in the shared wizard and Settings Browser section; saved opt-outs are respected.
 - Source uploads back up and preserve server-owned Caddy/Compose files, including the combined dispenser configuration on VPS 2.
+- The compatibility update also fixes raw authentication-cookie preservation, standalone sign-in popup return and GET navigation headers; fresh expired saved sessions renew before restoring tabs, while live sessions still require explicit reconnection. Runtime asset compression/preloading and bounded DNS reuse reduce avoidable startup work.
 
 ## 1. Prepare and upload from your Mac
 
@@ -65,9 +66,17 @@ These commands use the established `atlas-node/node` and `atlas-main/app` projec
 - VPS 2's dispenser URL still responds. Its Caddy container should not have been recreated by this procedure.
 - Refresh the Atlas frontend and reopen existing runtime/popout pages so they load the new bundles.
 - Check focus mode in both tab layouts, the popout button beside focus, and **Settings → Browser → YouTube ad blocker**.
+- Confirm the popout stays on the frontend `/popout` URL, the assigned node is unchanged, and opening/reloading it leaves the original tab and draft intact. Test **Open direct node tab** separately: it intentionally uses the node URL and a different top-level storage context.
+- Check real ChatGPT/X sign-in in the affected browser. Local cookie and popup tests are not a live provider-login qualification. Record the node and whether failure happens embedded, in the frontend popout, or in the separate direct-node tab; do not export authentication cookies or tokens.
 - Toggle the blocker and reload existing YouTube tabs. Reopen older popped-out pages from Atlas to inherit a changed preference.
 - Check an actual GeForce NOW session and live YouTube playback. The release's automated checks use controlled fixtures, not authenticated live services.
 
 No additional domain, CloudFront behavior, environment variable, API key, or node reattachment is required by these controls. Do not use `docker compose down -v`. Retain the image tag printed by the helper and the pre-upload deployment backup until you have checked the update.
+
+### Remaining site-specific checks
+
+On September 29, direct IPv4 HTTPS requests from all three VPSs received ESPN's own CloudFront **403 Request blocked**, including requests made outside Atlas. DNS and certificate validation succeeded. IPv6 requests had no working connection on those VPSs. The integration update does not resolve this upstream rejection; changing Atlas's viewer domains or disabling its origin key is not a demonstrated fix.
+
+The supplied content-filter snapshot reads rendered text and page structure in addition to URLs. The generic Atlas title and encoded paths are not a guarantee against content classification. Verify the actual affected browser/version separately.
 
 The helper uses the documented [Compose file-stack options](https://docs.docker.com/reference/cli/docker/compose/) and [service-specific `up --no-deps`](https://docs.docker.com/reference/cli/docker/compose/up/). Selecting only the app/node service avoids recreating the shared edge as part of this routine update.
