@@ -1,4 +1,5 @@
 import CompatibilityPanel from "./CompatibilityPanel";
+import BrowsingOptions from "./BrowsingOptions";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowLeft,
@@ -30,6 +31,7 @@ import {
 import "./popout.css";
 
 type Connection = {
+  node?: { name: string; online: boolean };
   runtimeOrigin: string;
   nodeRouting?: boolean;
   session?: string;
@@ -523,16 +525,29 @@ export default function Popout() {
             <ArrowUpRight size={16} />
           </button>
         </form>
-        <CompatibilityPanel
-          ready={ready}
-          frame={runtime.current?.contentWindow}
-          runtimeOrigin={connection?.runtimeOrigin}
-          id={active.current}
-          url={pages.current.get(active.current)?.url}
-          fixture={
-            (connection as any)?.fixture === true ||
-            location.hostname === "localhost"
+        <BrowsingOptions
+          routing={!!connection?.nodeRouting}
+          node={connection?.node}
+          problem={expired || !!error}
+          hideDirectOption
+          pageOptionsAvailable={
+            !!connection?.runtimeOrigin &&
+            !!pages.current.get(active.current)?.url
           }
+          pageOptions={(controls) => (
+            <CompatibilityPanel
+              {...controls}
+              ready={ready}
+              frame={runtime.current?.contentWindow}
+              runtimeOrigin={connection?.runtimeOrigin}
+              id={active.current}
+              url={pages.current.get(active.current)?.url}
+              fixture={
+                (connection as any)?.fixture === true ||
+                location.hostname === "localhost"
+              }
+            />
+          )}
         />
         {popupActive && (
           <button

@@ -24,6 +24,11 @@ import { installOpaqueRenderer, type OpaqueResource } from "./opaque-renderer";
 import { createHttpCachePlugin } from "./http-cache";
 import { createRequestHeadersPlugin } from "./request-headers";
 import { createYouTubeAdblockPlugin } from "./youtube-adblock";
+import {
+  installDocumentSurface,
+  type DocumentSurface,
+} from "./document-surface";
+import { SURFACE_PREFERENCE_KEY } from "./compatibility-policy";
 const globals = window as any;
 const opaqueRequests = new WeakMap<
   object,
@@ -148,6 +153,12 @@ const launchParams = new URLSearchParams(location.hash.slice(1));
 const ticket = launchParams.get("ticket") || "";
 let youtubeAdblock = launchParams.get("adblock") !== "0";
 let siteModes: SiteModes = {};
+let surfaceModes: SiteModes = {};
+try {
+  surfaceModes = sanitizeSiteModes(
+    JSON.parse(localStorage.getItem(SURFACE_PREFERENCE_KEY) || "{}"),
+  );
+} catch {}
 const diagnosticModes = new Map<string, boolean>();
 const standalone = parent === window;
 if (standalone) {
@@ -203,6 +214,13 @@ const notify = (type: string, data: Record<string, unknown> = {}) => {
         metadata.disabled = !ruleFor(data.url, config.fixture === true);
         metadata.checked = siteModes[new URL(data.url).origin] === true;
       }
+      const surface = document.querySelector<HTMLInputElement>(
+        "#popup-page-surface",
+      );
+      if (surface) {
+        surface.disabled = false;
+        surface.checked = surfaceModes[new URL(data.url).origin] === true;
+      }
       const field = document.querySelector<HTMLInputElement>("#popup-address");
       if (field) field.value = data.url;
       // Keep reload/back-to-this-tab on its latest URL, without putting the
@@ -255,6 +273,7 @@ const records = new Map<
     timer?: ReturnType<typeof setTimeout>;
     disposeFavicon?: () => void;
     guards?: Map<Document, DocumentGuard>;
+    surfaces?: Map<Document, { guard: DocumentSurface; origin: () => string }>;
     renderers?: Map<Document, () => void>;
     diagnostics?: DiagnosticLog;
   }
@@ -323,6 +342,7 @@ function destroy(id: string) {
   clearTimeout(record.timer);
   record.disposeFavicon?.();
   for (const guard of record.guards?.values() || []) guard.dispose();
+  for (const entry of record.surfaces?.values() || []) entry.guard.dispose();
   for (const dispose of record.renderers?.values() || []) dispose();
   diagnosticModes.delete(id);
   record.element.remove();
@@ -362,6 +382,18 @@ function attachPageBridge(
 ) {
   const record = records.get(id)!;
   if (!record || !client) return;
+  record.surfaces ??= new Map();
+  if (!record.surfaces.has(win.document)) {
+    const origin = () => new URL(client.url.href).origin;
+    record.surfaces.set(win.document, {
+      guard: installDocumentSurface(
+        win,
+        client,
+        surfaceModes[origin()] === true,
+      ),
+      origin,
+    });
+  }
   record.guards ??= new Map();
   if (!record.guards.has(win.document)) {
     while (record.guards.size >= 16) {
@@ -370,6 +402,8 @@ function attachPageBridge(
       record.renderers?.get(oldest[0])?.();
       record.renderers?.delete(oldest[0]);
       record.guards.delete(oldest[0]);
+      record.surfaces?.get(oldest[0])?.guard.dispose();
+      record.surfaces?.delete(oldest[0]);
     }
     const guard = installDocumentGuard(win, {
       id,
@@ -391,6 +425,8 @@ function attachPageBridge(
     win.addEventListener("pagehide", (event) => {
       if (!(event as PageTransitionEvent).persisted) {
         record.guards?.delete(guardDoc);
+        record.surfaces?.get(guardDoc)?.guard.dispose();
+        record.surfaces?.delete(guardDoc);
         record.renderers?.get(guardDoc)?.();
         record.renderers?.delete(guardDoc);
       }
@@ -840,7 +876,10 @@ window.addEventListener("message", async (event) => {
     if (typeof id !== "string" || id.length > 100) return;
     if (type === "compatibility-config") {
       siteModes = sanitizeSiteModes(event.data.sites);
+      surfaceModes = sanitizeSiteModes(event.data.surfaces);
       const r = records.get(id);
+      for (const entry of r?.surfaces?.values() || [])
+        entry.guard.update(surfaceModes[entry.origin()] === true);
       for (const [doc, guard] of r?.guards || []) {
         guard.update();
       }
@@ -921,12 +960,13 @@ if (standalone) {
   returnLink.title = "Return to Atlas";
   const pageOptions = document.createElement("details");
   pageOptions.style.cssText = "position:relative;font:12px system-ui";
-  pageOptions.innerHTML = `<summary>Page options</summary><div style="position:absolute;right:0;top:30px;width:270px;z-index:100;background:#18251c;color:#edf3e8;padding:12px;display:grid;gap:10px;border:1px solid #56715b;border-radius:8px">
+  pageOptions.innerHTML = `<summary>Connection</summary><div style="position:absolute;right:0;top:30px;width:270px;z-index:100;background:#18251c;color:#edf3e8;padding:12px;display:grid;gap:10px;border:1px solid #56715b;border-radius:8px"><details><summary>Page options</summary><div style="display:grid;gap:10px;padding-top:10px">
     <label><input type="checkbox" id="popup-page-metadata" disabled> Adjust site metadata for this origin</label>
     <button type="button" id="popup-page-restore">Restore page defaults</button>
+    <label><input type="checkbox" id="popup-page-surface" disabled> Isolate page structure (experimental)</label>
     <label><input type="checkbox" id="popup-page-diagnostics">Record local diagnostics (5 minutes)</label>
     <button type="button" id="popup-page-export">Export local diagnostics</button>
-    <p id="popup-page-notice" role="status"></p><small>Site content may still be classified. Metadata changes do not hide gameplay.</small></div>`;
+    <p id="popup-page-notice" role="status"></p><small>Site content may still be classified. Structural isolation can affect website behavior.</small></div></details></div>`;
   bar.append(pageOptions);
   const setMetadata = (enabled: boolean) => {
     const r = records.get(activeStandaloneId());
@@ -941,6 +981,24 @@ if (standalone) {
     document.querySelector<HTMLInputElement>("#popup-page-metadata")!.checked =
       enabled;
   };
+  const setSurface = (enabled: boolean) => {
+    const r = records.get(activeStandaloneId());
+    if (!r?.url) return;
+    const origin = new URL(r.url).origin;
+    if (enabled) surfaceModes[origin] = true;
+    else delete surfaceModes[origin];
+    try {
+      localStorage.setItem(
+        SURFACE_PREFERENCE_KEY,
+        JSON.stringify(surfaceModes),
+      );
+    } catch {}
+    for (const record of records.values())
+      for (const entry of record.surfaces?.values() || [])
+        entry.guard.update(surfaceModes[entry.origin()] === true);
+    document.querySelector<HTMLInputElement>("#popup-page-surface")!.checked =
+      enabled;
+  };
   pageOptions
     .querySelector("#popup-page-metadata")!
     .addEventListener("change", (event) =>
@@ -948,7 +1006,15 @@ if (standalone) {
     );
   pageOptions
     .querySelector("#popup-page-restore")!
-    .addEventListener("click", () => setMetadata(false));
+    .addEventListener("click", () => {
+      setMetadata(false);
+      setSurface(false);
+    });
+  pageOptions
+    .querySelector("#popup-page-surface")!
+    .addEventListener("change", (event) =>
+      setSurface((event.target as HTMLInputElement).checked),
+    );
   pageOptions
     .querySelector("#popup-page-diagnostics")!
     .addEventListener("change", (event) => {

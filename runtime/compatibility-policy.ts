@@ -1,5 +1,6 @@
 // Public client preference: exact origins, never wildcard destinations.
 export const SITE_PREFERENCE_KEY = "atlas.site-adjustments.v1";
+export const SURFACE_PREFERENCE_KEY = "atlas.document-surface.v1";
 export const REVIEWED_HOSTS = new Set([
   "poki.com",
   "www.poki.com",

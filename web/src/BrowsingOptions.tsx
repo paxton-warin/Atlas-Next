@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, Globe2, RefreshCw, ExternalLink } from "lucide-react";
 
 export default function BrowsingOptions({
@@ -7,32 +7,48 @@ export default function BrowsingOptions({
   routing,
   problem,
   directUrl,
+  pageOptions,
+  pageOptionsAvailable = false,
+  hideDirectOption = false,
 }: {
   node?: { name: string; online: boolean };
-  reconnect: () => void;
+  reconnect?: () => void;
   routing: boolean;
   problem: boolean;
   directUrl?: string;
+  pageOptions?: (controls: {
+    panelOpen: boolean;
+    onOpen: () => void;
+    onClose: () => void;
+  }) => ReactNode;
+  pageOptionsAvailable?: boolean;
+  hideDirectOption?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [pageOpen, setPageOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
   const id = useId();
   useEffect(() => {
-    if (!open) return;
-    root.current
-      ?.querySelector<HTMLElement>(
-        '[role="menuitem"]:not([disabled]):not([aria-disabled="true"])',
-      )
-      ?.focus();
+    if (!open && !pageOpen) return;
+    if (open)
+      root.current
+        ?.querySelector<HTMLElement>(
+          '[role="menuitem"]:not([disabled]):not([aria-disabled="true"])',
+        )
+        ?.focus();
     const outside = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
+      if (!root.current?.contains(e.target as Node)) {
+        setOpen(false);
+        setPageOpen(false);
+      }
     };
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
-  }, [open]);
+  }, [open, pageOpen]);
   function close() {
     setOpen(false);
+    setPageOpen(false);
     trigger.current?.focus();
   }
   return (
@@ -40,7 +56,10 @@ export default function BrowsingOptions({
       ref={root}
       className="browsing-options"
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
+        if (!e.currentTarget.contains(e.relatedTarget)) {
+          setOpen(false);
+          setPageOpen(false);
+        }
       }}
     >
       <button
@@ -52,7 +71,10 @@ export default function BrowsingOptions({
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         title="Connection status and node"
-        onClick={() => setOpen(!open)}
+        onClick={() => {
+          setPageOpen(false);
+          setOpen(!open);
+        }}
         onKeyDown={(e) => {
           if (["ArrowDown", "ArrowUp"].includes(e.key)) {
             e.preventDefault();
@@ -125,47 +147,73 @@ export default function BrowsingOptions({
                   {node ? "Session pinned" : "Waiting for assignment"}
                 </small>
               </div>
-              <button
-                type="button"
-                role="menuitem"
-                tabIndex={-1}
-                onClick={() => {
-                  close();
-                  reconnect();
-                }}
-              >
-                <RefreshCw size={14} />
-                Reconnect node
-              </button>
+              {reconnect && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  onClick={() => {
+                    close();
+                    reconnect();
+                  }}
+                >
+                  <RefreshCw size={14} />
+                  Reconnect node
+                </button>
+              )}
             </>
           )}
-          {directUrl && !problem ? (
-            <a
-              href={directUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              role="menuitem"
-              tabIndex={-1}
-              onClick={close}
-              title="Open the node directly. Separate website storage may require signing in again."
-            >
-              <ExternalLink size={14} />
-              Open direct node tab
-            </a>
-          ) : (
+          {pageOptions && pageOptionsAvailable && (
             <button
               type="button"
               role="menuitem"
               tabIndex={-1}
-              disabled
-              title="Open a website with an active connection first."
+              aria-haspopup="dialog"
+              disabled={problem}
+              onClick={() => {
+                setOpen(false);
+                setPageOpen(true);
+              }}
             >
-              <ExternalLink size={14} />
-              Open direct node tab
+              Page options
             </button>
           )}
+          {!hideDirectOption &&
+            (directUrl && !problem ? (
+              <a
+                href={directUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                role="menuitem"
+                tabIndex={-1}
+                onClick={close}
+                title="Open the node directly. Separate website storage may require signing in again."
+              >
+                <ExternalLink size={14} />
+                Open direct node tab
+              </a>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                disabled
+                title="Open a website with an active connection first."
+              >
+                <ExternalLink size={14} />
+                Open direct node tab
+              </button>
+            ))}
         </div>
       )}
+      {pageOptions?.({
+        panelOpen: pageOpen,
+        onOpen: () => {
+          setOpen(false);
+          setPageOpen(true);
+        },
+        onClose: close,
+      })}
     </div>
   );
 }

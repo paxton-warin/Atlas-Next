@@ -34,7 +34,10 @@ test("metadata default off, opt-in is live, game controls and storage remain; re
     .toBe("Fixture game title");
   await site(page).getByLabel("Game draft").fill("unsaved");
   await page
-    .getByRole("button", { name: "Page compatibility", exact: true })
+    .getByRole("button", { name: "Connection options", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Page options", exact: true })
     .click();
   const toggle = page.getByRole("checkbox", {
     name: "Adjust site metadata for this origin",
@@ -73,6 +76,12 @@ test("metadata default off, opt-in is live, game controls and storage remain; re
         .evaluate(() => document.title),
     )
     .toBe("Website");
+  await page
+    .getByRole("button", { name: "Connection options", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Page options", exact: true })
+    .click();
   await page.getByRole("button", { name: "Restore page defaults" }).click();
   await expect
     .poll(() =>
@@ -108,7 +117,10 @@ test("same-frontend popout shares the opt-in; spoofed messages are ignored; diag
 }) => {
   await launch(page);
   await page
-    .getByRole("button", { name: "Page compatibility", exact: true })
+    .getByRole("button", { name: "Connection options", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Page options", exact: true })
     .click();
   await page
     .getByRole("checkbox", { name: "Adjust site metadata for this origin" })
@@ -120,6 +132,12 @@ test("same-frontend popout shares the opt-in; spoofed messages are ignored; diag
   await expect(
     site(page).getByRole("heading", { name: "Game fixture" }),
   ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Connection options", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Page options", exact: true })
+    .click();
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export local diagnostics" }).click();
   const artifact = await download;
@@ -168,7 +186,10 @@ test("same-frontend popout shares the opt-in; spoofed messages are ignored; diag
     )
     .toBe("Website");
   await popup
-    .getByRole("button", { name: "Page compatibility", exact: true })
+    .getByRole("button", { name: "Connection options", exact: true })
+    .click();
+  await popup
+    .getByRole("menuitem", { name: "Page options", exact: true })
     .click();
   await popup.getByRole("button", { name: "Restore page defaults" }).click();
   await expect

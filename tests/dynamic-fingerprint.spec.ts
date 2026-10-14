@@ -75,7 +75,10 @@ test("all 345 patterns inspect real dynamic documents, with content and utility 
   ).toBeVisible();
   const before = await capture(page, "default-off");
   await page
-    .getByRole("button", { name: "Page compatibility", exact: true })
+    .getByRole("button", { name: "Connection options", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Page options", exact: true })
     .click();
   await page
     .getByRole("checkbox", { name: "Adjust site metadata for this origin" })

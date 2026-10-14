@@ -1123,22 +1123,32 @@ export default function App() {
                 enabled={settings.autocomplete}
                 submit={(value) => navigate(value, false, current?.engine)}
               />
-              <CompatibilityPanel
-                ready={runtimeReady}
-                frame={runtimeRef.current?.contentWindow}
-                runtimeOrigin={config?.runtimeOrigin}
-                id={active}
-                url={current?.local ? undefined : current?.url}
-                fixture={
-                  config?.fixture === true || location.hostname === "localhost"
-                }
-              />
               <BrowsingOptions
                 routing={!!config?.nodeRouting}
                 node={config?.node}
                 problem={connectionExpired || !!config?.connectionError}
                 reconnect={requestReconnect}
                 directUrl={directTabUrl}
+                pageOptionsAvailable={
+                  !!active &&
+                  !current?.local &&
+                  !!current?.url &&
+                  !!config?.runtimeOrigin
+                }
+                pageOptions={(controls) => (
+                  <CompatibilityPanel
+                    {...controls}
+                    ready={runtimeReady}
+                    frame={runtimeRef.current?.contentWindow}
+                    runtimeOrigin={config?.runtimeOrigin}
+                    id={active}
+                    url={current?.local ? undefined : current?.url}
+                    fixture={
+                      config?.fixture === true ||
+                      location.hostname === "localhost"
+                    }
+                  />
+                )}
               />
               {popoutUrl ? (
                 <a

@@ -39,6 +39,7 @@ export function compatibilityFixture(req, res, url) {
       res.end(
         JSON.stringify({
           method: req.method,
+          ...(url.search ? { query: url.search } : {}),
           body: Buffer.concat(chunks).toString(),
           header: req.headers["x-fixture"] || "",
           cookie:
@@ -190,13 +191,34 @@ export function compatibilityFixture(req, res, url) {
     return true;
   }
   if (url.pathname !== "/compatibility-fixture") return false;
+  const surface = url.searchParams.get("surface");
+  const titles = [
+    "2048",
+    "Cookie Clicker",
+    "Slope",
+    "Run 3",
+    "BitLife",
+    "Geometry Dash",
+    "Subway Surfers",
+    "Minecraft",
+    "Tetris",
+    "Retro Bowl",
+    "Among Us",
+    "Happy Wheels",
+    "Drift Hunters",
+    "Five Nights at Freddys",
+  ];
+  const catalog = surface
+    ? `<section id="catalog"><h2>Popular Games</h2><nav><a>Action</a><a>Arcade</a><a>Puzzle</a><a>Strategy</a><a>Sports</a><a>Racing</a></nav><div id="game-grid" class="game-grid" style="display:grid;grid-template-columns:repeat(4,120px)">${Array.from({ length: 64 }, (_, i) => `<button style="width:120px" data-title="${titles[i % titles.length]}">${titles[i % titles.length]}</button>`).join("")}</div></section>${surface === "1" ? '<iframe id="initial-child" src="/compatibility-fixture?surface=child"></iframe>' : ""}`
+    : "";
   res.setHeader("content-type", "text/html; charset=utf-8");
   res.setHeader("cache-control", "no-store");
-  res.end(`<!doctype html><title>Fixture game title</title><meta name="description" content="Game description unchanged by default"><h1>Game fixture</h1><p>Game controls and gameplay instructions stay visible.</p><input id="draft" aria-label="Game draft"><canvas id="game" width="40" height="40"></canvas><button id="move">Move</button><output id="score">0</output><button id="dynamic">Change metadata</button><button id="full">Fullscreen</button><button id="wasm">Run WASM</button><output id="wasm-result"></output><button id="worker">Run worker</button><output id="worker-result"></output><script>
+  res.end(`<!doctype html><title>Fixture game title</title><meta name="description" content="Game description unchanged by default"><h1>Game fixture</h1><p>Game controls and gameplay instructions stay visible.</p><input id="draft" aria-label="Game draft"><canvas id="game" width="40" height="40"></canvas><button id="move">Move</button><output id="score">0</output><button id="dynamic">Change metadata</button><button id="full">Fullscreen</button><button id="wasm">Run WASM</button><output id="wasm-result"></output><button id="worker">Run worker</button><output id="worker-result"></output>${catalog}<script>
  let score=0;move.onclick=()=>{document.querySelector('#score').textContent=String(++score)};dynamic.onclick=()=>{document.title='Dynamic game title';document.querySelector('meta[name=description]').content='Dynamic description'};full.onclick=()=>document.documentElement.requestFullscreen();document.querySelector('#game').getContext('2d').fillRect(0,0,20,20);
  document.querySelector('#wasm').onclick=async()=>{await WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0]));document.querySelector('#wasm-result').textContent='WASM ready'};
  document.querySelector('#worker').onclick=()=>{const worker=new Worker('/compatibility-worker.js');worker.onmessage=e=>{document.querySelector('#worker-result').textContent=e.data;worker.terminate()};worker.postMessage('start')};
  document.cookie='compat_fixture=retained; Path=/';localStorage.setItem('game-progress','retained');
+ ${surface ? "document.addEventListener('DOMContentLoaded',()=>{window.__surfaceReady={text:document.body.innerText.length,grid:!!document.getElementById('game-grid'),body:document.querySelector('body')===document.body};});" : ""}
  </script>`);
   return true;
 }

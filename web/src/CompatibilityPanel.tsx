@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   SITE_PREFERENCE_KEY,
+  SURFACE_PREFERENCE_KEY,
   sanitizeSiteModes,
   ruleFor,
   validStatus,
@@ -116,6 +117,9 @@ export default function CompatibilityPanel({
   url,
   fixture = false,
   ready = false,
+  panelOpen,
+  onOpen,
+  onClose,
 }: {
   frame: Window | null | undefined;
   runtimeOrigin?: string;
@@ -123,14 +127,32 @@ export default function CompatibilityPanel({
   url?: string;
   fixture?: boolean;
   ready?: boolean;
+  panelOpen?: boolean;
+  onOpen?: () => void;
+  onClose?: () => void;
 }) {
   const [sites, setSites] = useState(load);
+  const [surfaces, setSurfaces] = useState<SiteModes>(() => {
+    try {
+      return sanitizeSiteModes(
+        JSON.parse(localStorage.getItem(SURFACE_PREFERENCE_KEY) || "{}"),
+      );
+    } catch {
+      return {};
+    }
+  });
   const [diagnostics, setDiagnostics] = useState(false);
   const [status, setStatus] = useState<CompatibilityStatus>();
   const [open, setOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [hidden, setHidden] = useState(!!document.fullscreenElement);
   const seen = useRef(new Set<string>());
+  const panel = useRef<HTMLElement>(null);
+  const visible = panelOpen ?? open;
+  useEffect(() => {
+    if (panelOpen && !hidden)
+      panel.current?.querySelector<HTMLElement>("button,input")?.focus();
+  }, [panelOpen, hidden]);
   let origin = "";
   try {
     origin = new URL(url || "").origin;
@@ -145,7 +167,7 @@ export default function CompatibilityPanel({
     setNotice("");
   }, [id, origin]);
   useEffect(() => {
-    send("compatibility-config", { sites, diagnostics });
+    send("compatibility-config", { sites, surfaces, diagnostics });
     // A runtime may be creating its record asynchronously; resend after ready/navigation.
     const listener = (event: MessageEvent) => {
       if (
@@ -156,7 +178,7 @@ export default function CompatibilityPanel({
         return;
       const data = event.data;
       if (["ready", "navigation", "loaded"].includes(data.type))
-        send("compatibility-config", { sites, diagnostics });
+        send("compatibility-config", { sites, surfaces, diagnostics });
       if (data.id !== id) return;
       if (
         data.type === "runtime-compatibility" &&
@@ -209,11 +231,16 @@ export default function CompatibilityPanel({
     };
     window.addEventListener("message", listener);
     return () => window.removeEventListener("message", listener);
-  }, [frame, runtimeOrigin, id, origin, sites, diagnostics, ready]);
+  }, [frame, runtimeOrigin, id, origin, sites, surfaces, diagnostics, ready]);
   useEffect(() => {
     const fullscreen = () => setHidden(!!document.fullscreenElement);
     const storage = (event: StorageEvent) => {
       if (event.key === SITE_PREFERENCE_KEY) setSites(load());
+      if (event.key === SURFACE_PREFERENCE_KEY) {
+        try {
+          setSurfaces(sanitizeSiteModes(JSON.parse(event.newValue || "{}")));
+        } catch {}
+      }
     };
     document.addEventListener("fullscreenchange", fullscreen);
     window.addEventListener("storage", storage);
@@ -235,24 +262,62 @@ export default function CompatibilityPanel({
     }
     setSites(sanitizeSiteModes(next));
   }
+  function toggleSurface(enabled: boolean) {
+    const next = { ...surfaces };
+    if (enabled) next[origin] = true;
+    else delete next[origin];
+    try {
+      localStorage.setItem(SURFACE_PREFERENCE_KEY, JSON.stringify(next));
+    } catch {
+      setNotice(
+        "Device storage is full; this choice applies to this window only.",
+      );
+    }
+    setSurfaces(sanitizeSiteModes(next));
+  }
   if (!url || !id || !runtimeOrigin) return null;
   return (
     <div className="site-options">
-      <button
-        type="button"
-        className="browsing-options-trigger"
-        aria-label="Page compatibility"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        Page options
-      </button>
-      {open && !hidden && (
-        <section
-          className="site-options-panel"
-          aria-label="Page compatibility options"
+      {panelOpen === undefined && (
+        <button
+          type="button"
+          className="browsing-options-trigger"
+          aria-label="Page compatibility"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
         >
-          <strong>Page compatibility</strong>
+          Page options
+        </button>
+      )}
+      {visible && !hidden && (
+        <section
+          ref={panel}
+          role={panelOpen === undefined ? undefined : "dialog"}
+          className="site-options-panel"
+          aria-label={
+            panelOpen === undefined
+              ? "Page compatibility options"
+              : "Page options"
+          }
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              setOpen(false);
+              onClose?.();
+            }
+          }}
+        >
+          <strong>Page options</strong>
+          {onClose && (
+            <button
+              type="button"
+              aria-label="Close page options"
+              onClick={onClose}
+            >
+              Close
+            </button>
+          )}
           <p>
             Runtime adjustments are automatic. Actual site content may still be
             classified.
@@ -269,9 +334,24 @@ export default function CompatibilityPanel({
           {!supported && (
             <small>No reviewed metadata rule for this site.</small>
           )}
-          <button type="button" onClick={() => toggle(false)}>
+          <button
+            type="button"
+            onClick={() => {
+              toggle(false);
+              toggleSurface(false);
+            }}
+          >
             Restore page defaults
           </button>
+          <label>
+            <input
+              type="checkbox"
+              checked={!!surfaces[origin]}
+              disabled={!origin}
+              onChange={(event) => toggleSurface(event.target.checked)}
+            />{" "}
+            Isolate page structure (experimental)
+          </label>
           {status && (
             <small>
               {status.applied} metadata adjustments
@@ -302,7 +382,13 @@ export default function CompatibilityPanel({
       {notice && !hidden && (
         <div className="site-options-notice" role="status">
           <span>{notice}</span>
-          <button type="button" onClick={() => setOpen(true)}>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(true);
+              onOpen?.();
+            }}
+          >
             Details
           </button>
           <button

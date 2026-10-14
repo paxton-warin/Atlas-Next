@@ -86,9 +86,13 @@ test("Connection opens current website in a real assigned-node browser tab witho
   expect(
     new URLSearchParams(expected.hash.slice(1)).get("ticket"),
   ).toBeTruthy();
-  // Arrow navigation now includes the native anchor after Reconnect.
+  // Page options stays under Connection, before the native direct-tab anchor.
   await expect(
     page.getByRole("menuitem", { name: "Reconnect node" }),
+  ).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(
+    page.getByRole("menuitem", { name: "Page options", exact: true }),
   ).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(link).toBeFocused();
