@@ -24,8 +24,14 @@ export async function createRelayController(
     new Promise<void>((resolve, reject) => {
       const script = document.createElement("script");
       script.src = src;
-      script.onload = () => resolve();
-      script.onerror = () => reject(Error("Browsing asset failed to load."));
+      script.onload = () => {
+        script.remove();
+        resolve();
+      };
+      script.onerror = () => {
+        script.remove();
+        reject(Error("Browsing asset failed to load."));
+      };
       document.head.appendChild(script);
     });
   for (const src of [

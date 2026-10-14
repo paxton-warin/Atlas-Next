@@ -123,6 +123,18 @@ const composeCalls = (f) =>
   f.state().calls.filter((args) => args[0] === "compose");
 const did = (f, command) =>
   composeCalls(f).some((args) => args.includes(command));
+test("build-only tags the original image and never recreates or logs the running service", (t) => {
+  const f = fixture(t);
+  const result = f.run([f.project, f.service, "--build-only"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(did(f, "build"), true);
+  assert.equal(did(f, "up"), false);
+  assert.equal(did(f, "logs"), false);
+  assert.match(
+    result.stdout,
+    /BUILD_ONLY=atlas-node\/node; RUNNING_CONTAINER_UNCHANGED=fixture-container/,
+  );
+});
 
 for (const project of ["atlas-node", "atlas-main"]) {
   test(`updater preserves ${project}'s full file stack and files, tags first, recreates only its application`, (t) => {

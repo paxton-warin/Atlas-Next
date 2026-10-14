@@ -4,6 +4,7 @@ import {
   restoreBrowsingLease,
   restoreBrowsingLeaseOnStartup,
   browsingSessionToRelease,
+  selectBrowsingLeaseForOwner,
 } from "../web/src/browsing-session.ts";
 
 test("valid stored session is reused without reallocating", async () => {
@@ -180,4 +181,38 @@ test("reconnect uses the active pin even when persistence failed or another wind
   );
   assert.equal(browsingSessionToRelease(undefined, {}), "");
   assert.equal(browsingSessionToRelease(undefined, "x".repeat(101)), "");
+});
+
+test("owner selection uses the active client pin, locks persistence and remembers only a successful replacement", async () => {
+  let saved = "peer-saved-pin";
+  const calls = [],
+    locks = lockFixture();
+  const result = await selectBrowsingLeaseForOwner(
+    "active-own-pin",
+    () => saved,
+    async (session) => {
+      calls.push(session);
+      return { session: "selected-pin" };
+    },
+    (session) => {
+      saved = session;
+    },
+    locks,
+  );
+  assert.deepEqual(calls, ["active-own-pin"]);
+  assert.equal(result.session, "selected-pin");
+  assert.equal(saved, "selected-pin");
+  await assert.rejects(
+    selectBrowsingLeaseForOwner(
+      result.session,
+      () => saved,
+      async () => {
+        throw Error("selected node offline");
+      },
+      () => assert.fail("must not replace saved state after a failure"),
+      locks,
+    ),
+    /offline/,
+  );
+  assert.equal(saved, "selected-pin");
 });

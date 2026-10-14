@@ -72,6 +72,8 @@ if (sourceHash !== fork.archiveSha256)
 copyFileSync("LICENSE", resolve(out, "LICENSE.txt"));
 copyFileSync("THIRD_PARTY.md", resolve(out, "THIRD_PARTY.txt"));
 execFileSync("tar", [
+  "--exclude=__pycache__",
+  "--exclude=*.pyc",
   "--exclude=web/public/source",
   "--exclude=runtime/public/vendor",
   "--exclude=runtime/public/manifest.json",

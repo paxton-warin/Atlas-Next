@@ -13,10 +13,11 @@ import {
   Plus,
 } from "lucide-react";
 import NodeSettings from "./NodeSettings";
+import type { BrowsingNodeSelectionProps } from "./NodeSettings";
 import RequestLimitSettings from "./RequestLimitSettings";
 import AiProviderSettings from "./AiProviderSettings";
 import { api, type Game } from "./model";
-export default function Admin() {
+export default function Admin(browsing: BrowsingNodeSelectionProps) {
   const [initialized, setInitialized] = useState<boolean | null>(null),
     [csrf, setCsrf] = useState(""),
     [error, setError] = useState(""),
@@ -599,7 +600,9 @@ export default function Admin() {
               <RequestLimitSettings csrf={csrf} />
             )}
             {section === "AI provider" && <AiProviderSettings csrf={csrf} />}
-            {section === "Browsing nodes" && <NodeSettings csrf={csrf} />}
+            {section === "Browsing nodes" && (
+              <NodeSettings csrf={csrf} {...browsing} />
+            )}
             {section === "Health & audit" && (
               <>
                 <section className="setting-card">

@@ -164,7 +164,7 @@ test("full wizard shares appearance, browser, tab presets, panic and data settin
     compact: false,
     restore: true,
     autocomplete: false,
-    engine: "scramjet",
+    engine: "runtime",
     search: "https://duckduckgo.com/?q=%s",
     tabPreset: "custom",
     title: "Study desk",

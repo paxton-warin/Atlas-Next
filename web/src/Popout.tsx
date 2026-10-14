@@ -1,3 +1,4 @@
+import CompatibilityPanel from "./CompatibilityPanel";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowLeft,
@@ -81,9 +82,13 @@ export default function Popout() {
     new Map<string, Page>([[ROOT_PAGE, { url: launch.value?.target || "" }]]),
   );
   const isExpired = useRef(false);
+  const runtimeLoaded = useRef(false);
+  useEffect(() => {
+    runtimeLoaded.current = false;
+  }, [connection?.runtimeOrigin, connection?.ticket]);
 
   function send(type: string, extra: Record<string, unknown> = {}) {
-    if (!connection || isExpired.current) return;
+    if (!connection || isExpired.current || !runtimeLoaded.current) return;
     runtime.current?.contentWindow?.postMessage(
       {
         atlas: 1,
@@ -258,7 +263,7 @@ export default function Popout() {
           send("navigate", {
             id: ROOT_PAGE,
             url: launch.value!.target,
-            engine: "scramjet",
+            engine: "runtime",
           });
         }
         return;
@@ -326,7 +331,7 @@ export default function Popout() {
         const id = "popout-" + crypto.randomUUID();
         pages.current.set(id, { url: data.url, openerId: active.current });
         showPage(id);
-        send("navigate", { id, url: data.url, engine: "scramjet" });
+        send("navigate", { id, url: data.url, engine: "runtime" });
         setLoading(true);
         return;
       }
@@ -491,7 +496,7 @@ export default function Popout() {
               pages.current.get(active.current)!.url = url;
               showPage(active.current);
               setLoading(true);
-              send("navigate", { url, engine: "scramjet" });
+              send("navigate", { url, engine: "runtime" });
               addressInput.current?.blur();
             } catch (reason) {
               setMessage((reason as Error).message);
@@ -518,6 +523,17 @@ export default function Popout() {
             <ArrowUpRight size={16} />
           </button>
         </form>
+        <CompatibilityPanel
+          ready={ready}
+          frame={runtime.current?.contentWindow}
+          runtimeOrigin={connection?.runtimeOrigin}
+          id={active.current}
+          url={pages.current.get(active.current)?.url}
+          fixture={
+            (connection as any)?.fixture === true ||
+            location.hostname === "localhost"
+          }
+        />
         {popupActive && (
           <button
             type="button"
@@ -574,7 +590,10 @@ export default function Popout() {
                 ? "#ticket=" + encodeURIComponent(connection.ticket)
                 : "")
             }
-            onLoad={() => send("ping", { id: "system" })}
+            onLoad={() => {
+              runtimeLoaded.current = true;
+              send("ping", { id: "system" });
+            }}
             allow="autoplay; encrypted-media; fullscreen; clipboard-write; camera; microphone"
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-pointer-lock allow-presentation"
           />

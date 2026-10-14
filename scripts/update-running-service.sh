@@ -6,9 +6,10 @@
 set -euo pipefail
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-[[ $# -eq 2 ]] || fail "Usage: $0 atlas-node node | atlas-main app"
+[[ $# -eq 2 || ( $# -eq 3 && "$3" == --build-only ) ]] || fail "Usage: $0 atlas-node node | atlas-main app [--build-only]"
 project=$1
 service=$2
+build_only=${3:-}
 case "$project/$service" in
   atlas-node/node|atlas-main/app) ;;
   *) fail "Expected atlas-node node or atlas-main app." ;;
@@ -67,6 +68,12 @@ docker tag "$old_image" "$rollback_image"
 printf 'ROLLBACK_IMAGE=%s\n' "$rollback_image"
 
 "${compose[@]}" build "$service"
+if [[ "$build_only" == --build-only ]]; then
+  [[ "$(docker inspect --format '{{.State.Running}}' "$cid")" == true ]] || fail "The original container stopped during the build."
+  [[ "$(docker inspect --format '{{.Image}}' "$cid")" == "$old_image" ]] || fail "The original container image changed during the build."
+  printf 'BUILD_ONLY=%s/%s; RUNNING_CONTAINER_UNCHANGED=%s; ROLLBACK_IMAGE=%s\n' "$project" "$service" "$cid" "$rollback_image"
+  exit 0
+fi
 "${compose[@]}" up -d --no-deps --force-recreate --no-build --pull never --wait --wait-timeout 120 "$service"
 "${compose[@]}" ps "$service"
 "${compose[@]}" logs --tail=50 "$service"

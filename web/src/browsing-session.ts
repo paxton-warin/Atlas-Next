@@ -38,3 +38,20 @@ export function browsingSessionToRelease(active: unknown, saved: unknown) {
   const session = typeof active === "string" && active ? active : saved;
   return typeof session === "string" && session.length <= 100 ? session : "";
 }
+
+// Explicit owner action: use this window's live pin, not a peer's newer storage
+// value, and share the startup lock until the replacement has been remembered.
+export function selectBrowsingLeaseForOwner<T extends { session: string }>(
+  active: unknown,
+  readSaved: () => unknown,
+  select: (session: string) => Promise<T>,
+  remember: (session: string) => void,
+  locks?: Pick<LockManager, "request">,
+): Promise<T> {
+  const change = async () => {
+    const lease = await select(browsingSessionToRelease(active, readSaved()));
+    remember(lease.session);
+    return lease;
+  };
+  return locks ? locks.request("atlas-browsing-session", change) : change();
+}

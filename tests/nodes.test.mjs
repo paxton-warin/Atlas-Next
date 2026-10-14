@@ -505,3 +505,347 @@ test("a pinned Main runtime host drains without moving IP/storage and disables e
     await f.done();
   }
 });
+
+function ownerHeaders(app) {
+  const raw = "owner-node-selector-fixture",
+    csrf = "selector-csrf-fixture",
+    now = Date.now();
+  app.store.db
+    .prepare("INSERT OR REPLACE INTO sessions VALUES (?,?,?,?)")
+    .run(digest(raw), csrf, now, now);
+  return {
+    host: "main.example",
+    origin,
+    cookie: "atlas-admin=" + raw,
+    "x-atlas-csrf": csrf,
+  };
+}
+
+test("owner node selection requires owner session, CSRF and same-origin; visitors cannot select draining nodes", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.node("Active node", "AABBCC"),
+      b = await f.node("Canary node", "DDEEFF");
+    f.app.nodePool.update("local", { state: "disabled", weight: 1 });
+    f.app.nodePool.update(b.id, { state: "draining", weight: 5 });
+    const headers = ownerHeaders(f.app),
+      payload = { session: "", node: b.id };
+    for (const [h, status] of [
+      [{ host: "main.example", origin }, 401],
+      [{ ...headers, "x-atlas-csrf": "wrong" }, 403],
+      [{ ...headers, origin: "http://another.example" }, 403],
+    ])
+      assert.equal(
+        (
+          await f.app.inject({
+            method: "POST",
+            url: "/api/admin/nodes/select",
+            headers: h,
+            payload,
+          })
+        ).statusCode,
+        status,
+      );
+    const visitor = await f.app.inject({
+      method: "POST",
+      url: "/api/browse/session",
+      headers: { host: "main.example", origin },
+      payload,
+    });
+    assert.equal(visitor.statusCode, 200);
+    assert.equal(visitor.json().node.id, a.id);
+    const selected = await f.app.inject({
+      method: "POST",
+      url: "/api/admin/nodes/select",
+      headers,
+      payload: { session: visitor.json().session, node: b.id },
+    });
+    assert.equal(selected.statusCode, 200);
+    assert.equal(selected.json().node.id, b.id);
+    assert.equal(selected.json().runtimeOrigin, b.endpoint);
+    assert.equal(selected.json().node.online, true);
+    assert.ok(!selected.body.includes(b.credentials.secret));
+    assert.equal(
+      (
+        await fetch(b.endpoint + "/runtime-config", {
+          headers: { authorization: "Bearer " + selected.json().ticket },
+        })
+      ).status,
+      200,
+    );
+  } finally {
+    await f.done();
+  }
+});
+
+test("owner selection replaces only the supplied client's lease and preserves sticky peers and pool settings", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.node("Default node", "AABBCC"),
+      b = await f.node("Canary node", "DDEEFF");
+    f.app.nodePool.update("local", { state: "disabled", weight: 1 });
+    f.app.nodePool.update(b.id, { state: "draining", weight: 5 });
+    const own = await f.app.nodePool.allocate(
+        "",
+        origin,
+        "http://runtime.example",
+      ),
+      peer = await f.app.nodePool.allocate(
+        "",
+        origin,
+        "http://runtime.example",
+      );
+    const before = f.app.store.db
+      .prepare(
+        "SELECT id,endpoint,credential,state,weight FROM nodes ORDER BY id",
+      )
+      .all();
+    const selected = await f.app.nodePool.select(
+      own.session,
+      origin,
+      "http://runtime.example",
+      b.id,
+    );
+    assert.equal(selected.node.id, b.id);
+    assert.notEqual(selected.session, own.session);
+    await assert.rejects(
+      f.app.nodePool.allocate(own.session, origin, "http://runtime.example"),
+      /expired/,
+    );
+    assert.equal(
+      (
+        await f.app.nodePool.allocate(
+          peer.session,
+          origin,
+          "http://runtime.example",
+        )
+      ).node.id,
+      a.id,
+    );
+    assert.equal(
+      (
+        await f.app.nodePool.allocate(
+          selected.session,
+          origin,
+          "http://runtime.example",
+        )
+      ).node.id,
+      b.id,
+    );
+    assert.deepEqual(
+      f.app.store.db
+        .prepare(
+          "SELECT id,endpoint,credential,state,weight FROM nodes ORDER BY id",
+        )
+        .all(),
+      before,
+    );
+    const automatic = await f.app.nodePool.select(
+      selected.session,
+      origin,
+      "http://runtime.example",
+      "",
+    );
+    assert.equal(automatic.node.id, a.id);
+    assert.equal(
+      f.app.store.db.prepare("SELECT count(*) n FROM browse_leases").get().n,
+      2,
+    );
+  } finally {
+    await f.done();
+  }
+});
+
+test("failed owner selection keeps the original client and removes the new reservation; foreign-origin pins are rejected", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.node("Existing node", "AABBCC"),
+      b = await f.node("Failing node", "DDEEFF");
+    f.app.nodePool.update("local", { state: "disabled", weight: 1 });
+    f.app.nodePool.update(b.id, { state: "draining", weight: 1 });
+    const own = await f.app.nodePool.allocate(
+      "",
+      origin,
+      "http://runtime.example",
+    );
+    await assert.rejects(
+      f.app.nodePool.select(
+        own.session,
+        "http://another.example",
+        "http://runtime.example",
+        b.id,
+      ),
+      /session/,
+    );
+    for (const id of ["missing", {}, "x".repeat(101)])
+      await assert.rejects(
+        f.app.nodePool.select(
+          own.session,
+          origin,
+          "http://runtime.example",
+          id,
+        ),
+      );
+    f.app.nodePool.update(b.id, { state: "disabled", weight: 1 });
+    await assert.rejects(
+      f.app.nodePool.select(
+        own.session,
+        origin,
+        "http://runtime.example",
+        b.id,
+      ),
+      /unavailable/,
+    );
+    f.app.nodePool.update(b.id, { state: "draining", weight: 1 });
+    await b.service.close();
+    await assert.rejects(
+      f.app.nodePool.select(
+        own.session,
+        origin,
+        "http://runtime.example",
+        b.id,
+      ),
+      /unreachable/,
+    );
+    assert.equal(
+      f.app.store.db.prepare("SELECT count(*) n FROM browse_leases").get().n,
+      1,
+    );
+    assert.equal(
+      (
+        await f.app.nodePool.allocate(
+          own.session,
+          origin,
+          "http://runtime.example",
+        )
+      ).node.id,
+      a.id,
+    );
+  } finally {
+    await f.done();
+  }
+});
+
+test("explicit Main selection retains frontend-relay separation and selects a capable isolated host", async () => {
+  const f = await fixture({
+    runtimeOrigin: "https://runtime.invalid",
+    localRelayMode: "frontend",
+  });
+  try {
+    const a = await f.node("Runtime host", "AABBCC");
+    f.app.nodePool.update("local", { state: "draining", weight: 1 });
+    const own = await f.app.nodePool.allocate(
+      "",
+      origin,
+      "https://runtime.invalid",
+    );
+    assert.equal(own.node.id, a.id);
+    const main = await f.app.nodePool.select(
+      own.session,
+      origin,
+      "https://runtime.invalid",
+      "local",
+    );
+    assert.equal(main.node.id, "local");
+    assert.equal(main.runtimeHost.id, a.id);
+    assert.equal(main.relayOrigin, origin);
+    assert.equal(main.runtimeOrigin, a.endpoint);
+    const config = await fetch(a.endpoint + "/runtime-config", {
+      headers: { authorization: "Bearer " + main.ticket },
+    });
+    assert.equal(config.status, 200);
+    assert.equal((await config.json()).relayOrigin, origin);
+    assert.equal(
+      (
+        await f.app.nodePool.allocate(
+          main.session,
+          origin,
+          "https://runtime.invalid",
+        )
+      ).node.id,
+      "local",
+    );
+  } finally {
+    await f.done();
+  }
+});
+
+test("concurrent owner changes serialize per pin and a late-disabled target rolls back only the reservation", async () => {
+  const f = await fixture(),
+    realFetch = globalThis.fetch;
+  let unblock;
+  try {
+    const a = await f.node("Existing node", "AABBCC"),
+      b = await f.node("Selected node", "DDEEFF");
+    f.app.nodePool.update("local", { state: "disabled", weight: 1 });
+    f.app.nodePool.update(b.id, { state: "draining", weight: 1 });
+    const own = await f.app.nodePool.allocate(
+      "",
+      origin,
+      "http://runtime.example",
+    );
+    let announce;
+    const started = new Promise((resolve) => {
+      announce = resolve;
+    });
+    const wait = new Promise((resolve) => {
+      unblock = resolve;
+    });
+    globalThis.fetch = async (url, options) => {
+      if (url === b.endpoint + "/node/control") {
+        announce();
+        await wait;
+      }
+      return realFetch(url, options);
+    };
+    const changing = f.app.nodePool.select(
+      own.session,
+      origin,
+      "http://runtime.example",
+      b.id,
+    );
+    await started;
+    await assert.rejects(
+      f.app.nodePool.select(
+        own.session,
+        origin,
+        "http://runtime.example",
+        b.id,
+      ),
+      /already changing/,
+    );
+    f.app.nodePool.update(b.id, { state: "disabled", weight: 1 });
+    unblock();
+    await assert.rejects(changing, /unavailable/);
+    assert.equal(
+      f.app.store.db.prepare("SELECT count(*) n FROM browse_leases").get().n,
+      1,
+    );
+    assert.equal(
+      (
+        await f.app.nodePool.allocate(
+          own.session,
+          origin,
+          "http://runtime.example",
+        )
+      ).node.id,
+      a.id,
+    );
+    f.app.nodePool.update(b.id, { state: "draining", weight: 1 });
+    assert.equal(
+      (
+        await f.app.nodePool.select(
+          own.session,
+          origin,
+          "http://runtime.example",
+          b.id,
+        )
+      ).node.id,
+      b.id,
+    );
+  } finally {
+    unblock?.();
+    globalThis.fetch = realFetch;
+    await f.done();
+  }
+});

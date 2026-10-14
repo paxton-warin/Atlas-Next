@@ -1,19 +1,19 @@
 {
   "source": "https://github.com/paxton-warin/Scramjet-LS-Bypass",
-  "commit": "4f452feec4d6804730b903294d0f9bec8002a635",
+  "commit": "23f410dd46d6bfc66cef5cf51e98bb550251d265",
   "directory": "upstream/scramjet-ls-bypass",
   "assets": {
     "bootstrap-client.js": {
       "path": "bootstrap/bootstrap-client.js",
-      "sha256": "70dbf41d73602eb3e14e7583d024874f8c0435b492d4a84a3f32e6c9c841ff4d"
+      "sha256": "92e9034d714987d8e4ce6060b69b94774be9d72714ed0502df79c306b14d2154"
     },
     "runtimekit.js": {
       "path": "runtime/runtimekit.js",
-      "sha256": "021ec22ab7970b605cfb4771eb3177498846b61591c24d8abe0ee19095db7510"
+      "sha256": "cc87e1fd09550a2dc7a9b89f28ed8da84cf7d2be0fa9cdecdd20f3ed44619ca1"
     },
     "runtimekit.wasm": {
       "path": "runtime/runtimekit.wasm",
-      "sha256": "ab66f90ecb60b6923655d47c2a4b95c5066819a2e5caf0d6798a00f55a148ef7"
+      "sha256": "70445fc746f539eee672f99c534b217f4d71c95cfd5422fbb9b7be7e40d4815f"
     },
     "runtimekit-utils.js": {
       "path": "runtime/runtimekit-utils.js",
@@ -36,5 +36,7 @@
       "sha256": "f2a17fa85d71f8a82990650dcf16ba952a86cb90dec1acb1c07413f11d0a94e4"
     }
   },
-  "archiveSha256": "0c9a7e27d34891c6d9e6adb7421772367457a1e827985bc146bb6f8f39f6e57f"
+  "archiveSha256": "161cf6f40a8f8c421289618a9f8e491e90d2a623d6bd52a91bb028d3249ae052",
+  "bundle": "scripts/audit-data/runtime-fork.bundle",
+  "bundleSha256": "08534b0441ea83a6873490a7471c379dfd5bf36a63dc773cbd8093a784b41f76"
 }

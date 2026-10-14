@@ -553,6 +553,15 @@ export async function createApp(options = {}) {
     session(req);
     return pool.list();
   });
+  app.post("/api/admin/nodes/select", (req) => {
+    session(req, true);
+    return pool.select(
+      req.body?.session,
+      originFor(req),
+      config.runtimeOrigin,
+      req.body?.node,
+    );
+  });
   app.post("/api/admin/nodes", (req) => {
     session(req, true);
     return pool.attach(req.body, originFor(req));

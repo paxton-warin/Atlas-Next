@@ -1,3 +1,4 @@
+import CompatibilityPanel from "./CompatibilityPanel";
 import Catalog from "./Catalog";
 import { version as appVersion } from "../../package.json";
 import {
@@ -179,7 +180,7 @@ export default function App() {
           .slice(0, 20)
           .map((t) => ({
             ...t,
-            engine: "scramjet" as const,
+            engine: "runtime" as const,
             favicon: undefined,
             status: "ready",
           }))
@@ -437,8 +438,17 @@ export default function App() {
         : [],
     );
   }, [tabs, settings.restore]);
+  const runtimeLoaded = useRef(false);
+  useEffect(() => {
+    runtimeLoaded.current = false;
+  }, [
+    config?.runtimeOrigin,
+    config?.ticket,
+    runtimeAttempt,
+    connectionExpired,
+  ]);
   function send(type: string, extra: Record<string, unknown> = {}) {
-    if (config)
+    if (config && runtimeLoaded.current)
       runtimeRef.current?.contentWindow?.postMessage(
         {
           atlas: 1,
@@ -525,7 +535,7 @@ export default function App() {
   ) {
     try {
       const url = destination(value, settings.search),
-        chosen: Engine = "scramjet";
+        chosen: Engine = "runtime";
       let id = activeRef.current;
       if (newTab || !id || !tabsRef.current.some((t) => t.id === id))
         id = crypto.randomUUID();
@@ -596,7 +606,7 @@ export default function App() {
           id: d.id,
           url: d.url,
           title: d.url === "about:blank" ? "New tab" : new URL(d.url).hostname,
-          engine: "scramjet",
+          engine: "runtime",
           status: "loading",
           workspace: "browser",
         };
@@ -874,7 +884,34 @@ export default function App() {
         <Suspense
           fallback={<div className="empty-state">Opening control room…</div>}
         >
-          <Admin />
+          <Admin
+            browsingSession={config?.session}
+            browsingNode={config?.node}
+            onLeaseSelected={(lease, persisted) => {
+              window.history.replaceState(null, "", "/");
+              setConfig((current: any) => ({
+                ...current,
+                ...lease,
+                nodeRouting: true,
+                connectionError: "",
+                expiresLocally: lease.expiresAt
+                  ? Date.now() + lease.expiresAt - lease.serverTime
+                  : undefined,
+              }));
+              setConnectionExpired(false);
+              setReconnectReason(null);
+              setReconnectError("");
+              setPage(tabs.length ? "browser" : "home");
+              restartRuntime();
+              toast(
+                persisted
+                  ? "This browser's connection changed to " +
+                      lease.node.name +
+                      "."
+                  : "Connection changed for this window. Device storage is unavailable; reload may select another connection.",
+              );
+            }}
+          />
         </Suspense>
       </div>
     );
@@ -1086,6 +1123,16 @@ export default function App() {
                 enabled={settings.autocomplete}
                 submit={(value) => navigate(value, false, current?.engine)}
               />
+              <CompatibilityPanel
+                ready={runtimeReady}
+                frame={runtimeRef.current?.contentWindow}
+                runtimeOrigin={config?.runtimeOrigin}
+                id={active}
+                url={current?.local ? undefined : current?.url}
+                fixture={
+                  config?.fixture === true || location.hostname === "localhost"
+                }
+              />
               <BrowsingOptions
                 routing={!!config?.nodeRouting}
                 node={config?.node}
@@ -1262,7 +1309,10 @@ export default function App() {
                     ? "#ticket=" + encodeURIComponent(config.ticket)
                     : "")
                 }
-                onLoad={() => send("ping", { id: "system" })}
+                onLoad={() => {
+                  runtimeLoaded.current = true;
+                  send("ping", { id: "system" });
+                }}
                 allow="autoplay; encrypted-media; fullscreen; clipboard-write; camera; microphone"
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-pointer-lock allow-presentation"
                 hidden={!!current?.local}

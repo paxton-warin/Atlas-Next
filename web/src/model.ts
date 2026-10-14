@@ -1,6 +1,6 @@
-import { tabPresets, validCustomIcon, type TabPreset } from "./tab-presets";
-import { normalizeShortcut } from "../../runtime/panic-shortcut";
-export type Engine = "scramjet";
+import { tabPresets, validCustomIcon, type TabPreset } from "./tab-presets.ts";
+import { normalizeShortcut } from "../../runtime/panic-shortcut.ts";
+export type Engine = "runtime";
 export type Settings = {
   theme: string;
   mode: "dark" | "light" | "system";
@@ -36,7 +36,7 @@ export const defaults: Settings = {
   compact: true,
   motion: true,
   search: "https://www.google.com/search?q=%s",
-  engine: "scramjet",
+  engine: "runtime",
   restore: true,
   history: true,
   autocomplete: true,
@@ -118,7 +118,7 @@ export function sanitizeSettings(value: any): Settings {
     if (Number.isFinite(value[k]))
       s[k] = Math.max(0, Math.min(k === "blur" ? 30 : 85, value[k]));
   if (["sidebar", "top"].includes(value.tabs)) s.tabs = value.tabs;
-  s.engine = "scramjet"; // Normalize saved preferences and imports.
+  s.engine = "runtime"; // Normalize saved preferences and imports.
   if (
     typeof value.search === "string" &&
     value.search.startsWith("https://") &&

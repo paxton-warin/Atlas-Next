@@ -1,3 +1,4 @@
+import { compatibilityFixture } from "./compatibility-fixture.mjs";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -52,6 +53,7 @@ const fixture = createServer(
   },
   async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1:4199");
+    if (compatibilityFixture(req,res,url)) return;
     if (await navigationFixture(req, res, url)) return;
     res.setHeader("Cache-Control", "no-store");
     // Test-only fixture server: independent browser cases share one loopback IP.

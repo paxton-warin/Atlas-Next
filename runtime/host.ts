@@ -1,3 +1,15 @@
+import {
+  installDocumentGuard,
+  originalDocumentTitle,
+  type DocumentGuard,
+} from "./site-compatibility";
+import {
+  sanitizeSiteModes,
+  ruleFor,
+  SITE_PREFERENCE_KEY,
+  type SiteModes,
+} from "./compatibility-policy";
+import { DiagnosticLog, requestCategory } from "./diagnostics";
 // Pinned fork bootstrap/transport; Atlas adds its frame bridge and upgrade handling.
 import { createRelayController } from "./relay-controller";
 import { migrateCookies, activateWorker } from "./runtime-migration";
@@ -8,14 +20,143 @@ import { installPageBridge } from "./page-bridge";
 import { attachFullscreenKeyboard } from "./fullscreen-keyboard";
 import { createDirectTabUrl, directTabTarget } from "./direct-tab";
 import { encodeTarget, decodeTarget } from "./url-codec";
+import { installOpaqueRenderer, type OpaqueResource } from "./opaque-renderer";
 import { createHttpCachePlugin } from "./http-cache";
 import { createRequestHeadersPlugin } from "./request-headers";
 import { createYouTubeAdblockPlugin } from "./youtube-adblock";
 const globals = window as any;
+const opaqueRequests = new WeakMap<
+  object,
+  {
+    policies: string[];
+    kind: "document" | "module";
+    allowOrigin?: string;
+    allowCredentials?: string;
+  }
+>();
+async function opaqueResource(
+  record: any,
+  client: any,
+  url: URL,
+  credentials: "include" | "omit" = "include",
+  kind: "document" | "module" = "document",
+): Promise<OpaqueResource> {
+  const meta = {
+    origin: new URL(client.url.href),
+    base: new URL(client.url.href),
+  };
+  const rawClientUrl = new URL(
+    globals.$runtimekit.transformUrl(
+      client.url.href,
+      record.frame.context,
+      meta,
+    ),
+  );
+  const request = {
+    rawUrl: new URL(
+      globals.$runtimekit.transformUrl(url.href, record.frame.context, meta, {
+        mode: "no-cors",
+        credentials,
+      }),
+    ),
+    rawClientUrl,
+    rawReferrer: rawClientUrl.href,
+    referrer: rawClientUrl.href,
+    // Empty destination returns original bytes, not injected/re-written JS.
+    rawDestination: "",
+    mode: "no-cors",
+    method: "GET",
+    body: null,
+    cache: "no-store",
+    clientId: record.frame.id + "-opaque",
+    initialHeaders: globals.$runtimekit.RuntimeKitHeaders.fromRawHeaders([]),
+  };
+  const capture = {
+    policies: [] as string[],
+    kind,
+    allowOrigin: undefined as string | undefined,
+    allowCredentials: undefined as string | undefined,
+  };
+  opaqueRequests.set(request, capture);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let expired = false;
+  try {
+    return await Promise.race([
+      (async () => {
+        const response = await record.frame.fetchHandler.handleFetch(request);
+        reader = new Response(response.body).body!.getReader();
+        if (expired) {
+          await reader.cancel().catch(() => {});
+          throw Error("renderer_resource_timeout");
+        }
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        let text = "",
+          size = 0;
+        try {
+          for (;;) {
+            if (expired) throw Error("renderer_resource_timeout");
+            const next = await reader.read();
+            if (next.done) break;
+            size += next.value.byteLength;
+            if (size > 1024000) throw Error("renderer_resource_size");
+            text += decoder.decode(next.value, { stream: true });
+          }
+          text += decoder.decode();
+        } finally {
+          await reader.cancel().catch(() => {});
+        }
+        return {
+          status: response.status,
+          type: (response.headers.get("content-type") || "")
+            .split(";")[0]
+            .trim()
+            .toLowerCase(),
+          text,
+          policies: capture.policies,
+          allowOrigin: capture.allowOrigin,
+          allowCredentials: capture.allowCredentials,
+        };
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          expired = true;
+          void reader?.cancel().catch(() => {});
+          reject(Error("renderer_resource_timeout"));
+        }, 15000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    opaqueRequests.delete(request);
+  }
+}
+declare const __RUNTIME_REVISION__: string;
+function startDiagnostics(
+  record: { diagnostics?: DiagnosticLog },
+  enabled: boolean,
+) {
+  record.diagnostics?.enable(enabled);
+  if (enabled)
+    record.diagnostics?.record("worker", {
+      revision: __RUNTIME_REVISION__,
+      state: navigator.serviceWorker.controller?.state || "missing",
+      context: standalone ? "top-level" : "embedded",
+    });
+}
 const launchParams = new URLSearchParams(location.hash.slice(1));
 const ticket = launchParams.get("ticket") || "";
 let youtubeAdblock = launchParams.get("adblock") !== "0";
+let siteModes: SiteModes = {};
+const diagnosticModes = new Map<string, boolean>();
 const standalone = parent === window;
+if (standalone) {
+  try {
+    siteModes = sanitizeSiteModes(
+      JSON.parse(localStorage.getItem(SITE_PREFERENCE_KEY) || "{}"),
+    );
+  } catch {}
+}
 const config = await loadRuntimeConfig(ticket).catch((error) => {
   if (standalone) {
     const panel = document.createElement("main");
@@ -34,10 +175,34 @@ const relayQuery = ticket ? encodeURIComponent(ticket) + "/" : "";
 let standaloneExpired = false;
 const notify = (type: string, data: Record<string, unknown> = {}) => {
   if (standalone) {
+    if (type === "runtime-compatibility") {
+      const status = document.getElementById("popup-page-notice");
+      if (status)
+        status.textContent =
+          data.state === "applied"
+            ? "Compatibility adjustments applied."
+            : "The isolated response renderer did not load. Reload this page to retry.";
+    }
+    if (type === "compatibility-status") {
+      const status = document.getElementById("popup-page-notice");
+      if (status)
+        status.textContent = data.applied
+          ? "Compatibility adjustments applied."
+          : data.risk
+            ? "This site may still be classified based on its content."
+            : "";
+    }
     // Keep the real browser tab generic; site titles still belong to the site.
     if (type === "title") document.title = "Atlas";
     if (type === "navigation" && typeof data.url === "string") {
       if (records.get(String(data.id))?.element.hidden) return;
+      const metadata = document.querySelector<HTMLInputElement>(
+        "#popup-page-metadata",
+      );
+      if (metadata) {
+        metadata.disabled = !ruleFor(data.url, config.fixture === true);
+        metadata.checked = siteModes[new URL(data.url).origin] === true;
+      }
       const field = document.querySelector<HTMLInputElement>("#popup-address");
       if (field) field.value = data.url;
       // Keep reload/back-to-this-tab on its latest URL, without putting the
@@ -89,6 +254,9 @@ const records = new Map<
     url?: string;
     timer?: ReturnType<typeof setTimeout>;
     disposeFavicon?: () => void;
+    guards?: Map<Document, DocumentGuard>;
+    renderers?: Map<Document, () => void>;
+    diagnostics?: DiagnosticLog;
   }
 >();
 let panicKey = "";
@@ -154,6 +322,9 @@ function destroy(id: string) {
   if (!record) return;
   clearTimeout(record.timer);
   record.disposeFavicon?.();
+  for (const guard of record.guards?.values() || []) guard.dispose();
+  for (const dispose of record.renderers?.values() || []) dispose();
+  diagnosticModes.delete(id);
   record.element.remove();
   if (record.frame && controller) {
     const i = controller.frames.indexOf(record.frame);
@@ -190,6 +361,66 @@ function attachPageBridge(
   client?: any,
 ) {
   const record = records.get(id)!;
+  if (!record || !client) return;
+  record.guards ??= new Map();
+  if (!record.guards.has(win.document)) {
+    while (record.guards.size >= 16) {
+      const oldest = record.guards.entries().next().value!;
+      oldest[1].dispose();
+      record.renderers?.get(oldest[0])?.();
+      record.renderers?.delete(oldest[0]);
+      record.guards.delete(oldest[0]);
+    }
+    const guard = installDocumentGuard(win, {
+      id,
+      pageUrl: () => client.url.href,
+      fixture: config.fixture === true,
+      enabled: () => siteModes[new URL(client.url.href).origin] === true,
+      onTitle: (title) => {
+        if (win === record.element.contentWindow)
+          notify("title", { id, title });
+      },
+      report: (value) => {
+        // Child documents keep independent policies; only the active root reports.
+        if (win === record.element.contentWindow)
+          notify("compatibility-status", value);
+      },
+    });
+    const guardDoc = win.document;
+    record.guards.set(guardDoc, guard);
+    win.addEventListener("pagehide", (event) => {
+      if (!(event as PageTransitionEvent).persisted) {
+        record.guards?.delete(guardDoc);
+        record.renderers?.get(guardDoc)?.();
+        record.renderers?.delete(guardDoc);
+      }
+    });
+  }
+  record.diagnostics?.record("document", {
+    origin: client.url.origin,
+    context: standalone ? "top-level" : "embedded",
+  });
+  const disposeRenderer = installOpaqueRenderer(win, client, {
+    fixture: config.fixture === true,
+    fetchResource: (url, credentials, kind) =>
+      opaqueResource(record, client, url, credentials, kind),
+    report: (state, resources) => {
+      record.diagnostics?.record(state === "error" ? "error" : "document", {
+        origin: client.url.origin,
+      });
+      notify("runtime-compatibility", {
+        id,
+        origin: client.url.origin,
+        rule: "opaque-renderer-v14",
+        state,
+        resources,
+      });
+    },
+  });
+  if (disposeRenderer) {
+    record.renderers ??= new Map();
+    record.renderers.set(win.document, disposeRenderer);
+  }
   const popup = popups.get(id);
   if (popup && win === record.element.contentWindow) {
     // A website frame is sandboxed from navigating a sibling iframe directly.
@@ -370,8 +601,90 @@ function pageBridgePlugin(id: string) {
     }
     install(frame: any) {
       super.install(frame);
+      this.tap(frame.hooks.init.pre, ({ client }: any) => {
+        // Retain the native srcdoc setter before document runtime hooks install.
+        void client.descriptors.store["HTMLIFrameElement.prototype.srcdoc"];
+      });
       this.tap(frame.hooks.init.post, ({ window, client }: any) =>
         attachPageBridge(id, window, client),
+      );
+    }
+  })();
+}
+function diagnosticsPlugin(id: string) {
+  const { ManagedPlugin } = globals.$runtimekitController;
+  return new (class extends ManagedPlugin {
+    constructor() {
+      super("atlas-local-diagnostics", []);
+    }
+    install(frame: any) {
+      super.install(frame);
+      const log = records.get(id)?.diagnostics;
+      const fields = (ctx: any) => ({
+        origin: ctx.parsed.url.origin,
+        category: requestCategory(ctx.parsed.url.href),
+        method: ctx.request.method,
+        destination: ctx.parsed.destination,
+      });
+      this.tap(
+        frame.fetchHandler.hooks.fetch.request,
+        (ctx: any, props: any) => {
+          const opaque = opaqueRequests.get(ctx.request);
+          if (opaque && props.init?.headers) {
+            props.init.headers = props.init.headers.filter(
+              ([name]: [string, string]) =>
+                !["origin", "sec-fetch-dest", "sec-fetch-mode"].includes(
+                  name.toLowerCase(),
+                ),
+            );
+            props.init.headers.push([
+              "Sec-Fetch-Dest",
+              opaque.kind === "module" ? "script" : "iframe",
+            ]);
+            props.init.headers.push([
+              "Sec-Fetch-Mode",
+              opaque.kind === "module" ? "cors" : "navigate",
+            ]);
+            if (opaque.kind === "module")
+              props.init.headers.push(["Origin", "null"]);
+          }
+          const headers: [string, string][] = props.init?.headers || [];
+          log?.record("request", {
+            ...fields(ctx),
+            credentialed: headers.some(([n]) =>
+              ["cookie", "authorization"].includes(n.toLowerCase()),
+            ),
+          });
+        },
+      );
+      this.tap(
+        frame.fetchHandler.hooks.fetch.preresponse,
+        (ctx: any, props: any) => {
+          const capture = opaqueRequests.get(ctx.request);
+          if (capture) {
+            capture.policies = props.response.rawHeaders
+              .filter(
+                ([name]: [string, string]) =>
+                  name.toLowerCase() === "content-security-policy",
+              )
+              .map(([, value]: [string, string]) => value);
+            capture.allowOrigin = props.response.rawHeaders.find(
+              ([name]: [string, string]) =>
+                name.toLowerCase() === "access-control-allow-origin",
+            )?.[1];
+            capture.allowCredentials = props.response.rawHeaders.find(
+              ([name]: [string, string]) =>
+                name.toLowerCase() === "access-control-allow-credentials",
+            )?.[1];
+          }
+          log?.record("response", {
+            ...fields(ctx),
+            status: props.response.status,
+            cookies: (props.response.rawHeaders || []).filter(
+              ([n]: [string, string]) => n.toLowerCase() === "set-cookie",
+            ).length,
+          });
+        },
       );
     }
   })();
@@ -384,7 +697,9 @@ function createRecord(id: string, engine: string) {
   const record = { element, engine, frame: null } as NonNullable<
     ReturnType<typeof records.get>
   >;
-  element.name = "atlas-frame-" + id;
+  element.name = "view-" + id;
+  record.diagnostics = new DiagnosticLog();
+  startDiagnostics(record, diagnosticModes.get(id) === true);
   records.set(id, record);
   container.append(element);
   {
@@ -393,11 +708,13 @@ function createRecord(id: string, engine: string) {
     record.frame = controller.createFrame(element, {
       plugins: [
         pageBridgePlugin(id),
+        diagnosticsPlugin(id),
         createYouTubeAdblockPlugin(globals, () => youtubeAdblock),
         createRequestHeadersPlugin(globals),
         createHttpCachePlugin(globals),
         new UrlWatcherPlugin((value: URL) => {
           record.url = String(value);
+          record.diagnostics?.record("navigation", { origin: String(value) });
           notify("navigation", { id, url: record.url });
         }),
         new CatchEscapedLinksPlugin(
@@ -422,7 +739,10 @@ function createRecord(id: string, engine: string) {
     notify("loaded", { id });
     try {
       const doc = element.contentDocument;
-      notify("title", { id, title: doc?.title?.slice(0, 160) || "" });
+      notify("title", {
+        id,
+        title: doc ? originalDocumentTitle(doc).slice(0, 160) : "",
+      });
       if (doc && doc.URL !== "about:blank") {
         if (!panicDocuments.has(doc)) {
           panicDocuments.add(doc);
@@ -474,7 +794,7 @@ function createRecord(id: string, engine: string) {
 }
 
 async function navigate(id: string, url: string, engine: string) {
-  engine = "scramjet";
+  engine = "runtime";
   await (initialization ??= init().catch((error) => {
     initialization = undefined;
     throw error;
@@ -498,6 +818,7 @@ async function navigate(id: string, url: string, engine: string) {
       }),
     30000,
   );
+  record.diagnostics?.record("navigation", { origin: new URL(url).origin });
   notify("loading", { id });
   await record.frame.go(url);
 }
@@ -517,11 +838,37 @@ window.addEventListener("message", async (event) => {
   }
   try {
     if (typeof id !== "string" || id.length > 100) return;
+    if (type === "compatibility-config") {
+      siteModes = sanitizeSiteModes(event.data.sites);
+      const r = records.get(id);
+      for (const [doc, guard] of r?.guards || []) {
+        guard.update();
+      }
+      if (typeof event.data.diagnostics === "boolean") {
+        const next = event.data.diagnostics;
+        if (diagnosticModes.get(id) !== next) {
+          diagnosticModes.set(id, next);
+          if (r) startDiagnostics(r, next);
+        }
+      }
+      return;
+    }
+    if (type === "compatibility-export") {
+      notify("compatibility-diagnostics", {
+        id,
+        report: records.get(id)?.diagnostics?.snapshot() || {
+          version: 1,
+          active: false,
+          entries: [],
+        },
+      });
+      return;
+    }
     if (type === "panic-key") {
       panicKey = normalizeShortcut(event.data.key);
       return;
     }
-    if (type === "navigate") await navigate(id, publicUrl(url), "scramjet");
+    if (type === "navigate") await navigate(id, publicUrl(url), "runtime");
     else if (type === "activate")
       for (const [key, r] of records) r.element.hidden = key !== id;
     else if (type === "close") destroy(id);
@@ -572,6 +919,59 @@ if (standalone) {
   returnLink.href = config.appOrigin;
   returnLink.setAttribute("aria-label", "Return to Atlas");
   returnLink.title = "Return to Atlas";
+  const pageOptions = document.createElement("details");
+  pageOptions.style.cssText = "position:relative;font:12px system-ui";
+  pageOptions.innerHTML = `<summary>Page options</summary><div style="position:absolute;right:0;top:30px;width:270px;z-index:100;background:#18251c;color:#edf3e8;padding:12px;display:grid;gap:10px;border:1px solid #56715b;border-radius:8px">
+    <label><input type="checkbox" id="popup-page-metadata" disabled> Adjust site metadata for this origin</label>
+    <button type="button" id="popup-page-restore">Restore page defaults</button>
+    <label><input type="checkbox" id="popup-page-diagnostics">Record local diagnostics (5 minutes)</label>
+    <button type="button" id="popup-page-export">Export local diagnostics</button>
+    <p id="popup-page-notice" role="status"></p><small>Site content may still be classified. Metadata changes do not hide gameplay.</small></div>`;
+  bar.append(pageOptions);
+  const setMetadata = (enabled: boolean) => {
+    const r = records.get(activeStandaloneId());
+    if (!r?.url || !ruleFor(r.url, config.fixture === true)) return;
+    const origin = new URL(r.url).origin;
+    if (enabled) siteModes[origin] = true;
+    else delete siteModes[origin];
+    try {
+      localStorage.setItem(SITE_PREFERENCE_KEY, JSON.stringify(siteModes));
+    } catch {}
+    for (const guard of r.guards?.values() || []) guard.update();
+    document.querySelector<HTMLInputElement>("#popup-page-metadata")!.checked =
+      enabled;
+  };
+  pageOptions
+    .querySelector("#popup-page-metadata")!
+    .addEventListener("change", (event) =>
+      setMetadata((event.target as HTMLInputElement).checked),
+    );
+  pageOptions
+    .querySelector("#popup-page-restore")!
+    .addEventListener("click", () => setMetadata(false));
+  pageOptions
+    .querySelector("#popup-page-diagnostics")!
+    .addEventListener("change", (event) => {
+      const record = records.get(activeStandaloneId());
+      if (record)
+        startDiagnostics(record, (event.target as HTMLInputElement).checked);
+    });
+  pageOptions
+    .querySelector("#popup-page-export")!
+    .addEventListener("click", () => {
+      const report = records.get(activeStandaloneId())?.diagnostics?.snapshot();
+      if (!report) return;
+      const href = URL.createObjectURL(
+        new Blob([JSON.stringify(report, null, 2)], {
+          type: "application/json",
+        }),
+      );
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = "atlas-local-diagnostics.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(href), 1000);
+    });
   returnLink.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 9v12"/></svg><span class="popup-return-label">Return to Atlas</span>`;
   returnLink.id = "popup-return";
   bar.append(returnLink);
@@ -581,7 +981,7 @@ if (standalone) {
   const go = async () => {
     if (standaloneExpired) return;
     try {
-      await navigate(activeStandaloneId(), publicUrl(field.value), "scramjet");
+      await navigate(activeStandaloneId(), publicUrl(field.value), "runtime");
     } catch (e) {
       bar.querySelector("#popup-status")!.textContent =
         e instanceof Error ? e.message : "Page failed.";

@@ -746,6 +746,75 @@ test("single admin enrollment, verified ticket reply, catalog, logout and recove
       headers: { origin: "http://localhost:4180", "x-atlas-csrf": state.csrf },
       data: { state: stateName, weight: 1 },
     });
+  // The owner may target a draining canary without changing anyone else's pin.
+  expect((await updateNode(attached.id, "draining")).ok()).toBeTruthy();
+  await page.evaluate(() => localStorage.setItem("atlas.onboarded", "true"));
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Browsing nodes", exact: true })
+    .click();
+  const oldSession = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("atlas.nodeSession")!),
+  );
+  const savedTabs = await page.evaluate(() =>
+    localStorage.getItem("atlas.tabs"),
+  );
+  const peer = await (
+    await page.request.post("/api/browse/session", {
+      headers: { origin: "http://localhost:4180" },
+      data: { session: "" },
+    })
+  ).json();
+  const poolBefore = (
+    await (await page.request.get("/api/admin/nodes")).json()
+  ).map(({ id, state, weight }: any) => ({ id, state, weight }));
+  await expect(
+    page
+      .getByLabel("Assign this browser to")
+      .locator(`option[value="${attached.id}"]`),
+  ).toBeEnabled();
+  await page.getByLabel("Assign this browser to").selectOption(attached.id);
+  await page
+    .getByRole("button", { name: "Apply to this browser", exact: true })
+    .click();
+  await expect(page).toHaveURL("http://localhost:4180/");
+  await page.getByRole("button", { name: "Connection options" }).click();
+  await expect(page.getByRole("menu")).toContainText("Fixture node");
+  await page.keyboard.press("Escape");
+  const selectedSession = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("atlas.nodeSession")!),
+  );
+  expect(selectedSession).not.toBe(oldSession);
+  expect(await page.evaluate(() => localStorage.getItem("atlas.tabs"))).toBe(
+    savedTabs,
+  );
+  const resume = (session: string) =>
+    page.request.post("/api/browse/session", {
+      headers: { origin: "http://localhost:4180" },
+      data: { session },
+    });
+  expect((await resume(oldSession)).status()).toBe(409);
+  expect((await (await resume(peer.session)).json()).node.id).toBe(
+    peer.node.id,
+  );
+  expect((await (await resume(selectedSession)).json()).node.id).toBe(
+    attached.id,
+  );
+  expect(
+    (await (await page.request.get("/api/admin/nodes")).json()).map(
+      ({ id, state, weight }: any) => ({ id, state, weight }),
+    ),
+  ).toEqual(poolBefore);
+  expect(
+    (
+      await page.request.delete("/api/browse/session", {
+        headers: { origin: "http://localhost:4180" },
+        data: { session: peer.session },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  // Retain the original direct-runtime journey below, now with a verified pin.
+  expect((await updateNode(attached.id, "active")).ok()).toBeTruthy();
   expect((await updateNode("local", "disabled")).ok()).toBeTruthy();
   await page.evaluate(() => localStorage.removeItem("atlas.nodeSession"));
   const sockets: string[] = [],
@@ -755,7 +824,7 @@ test("single admin enrollment, verified ticket reply, catalog, logout and recove
     if (new URL(req.url()).pathname.startsWith("/api/"))
       apiOrigins.push(new URL(req.url()).origin);
   });
-  await home(page);
+  await page.goto("/");
   await page.getByRole("button", { name: "Connection options" }).click();
   await expect(page.getByRole("menu")).toContainText("Fixture node");
   await page.keyboard.press("Escape");

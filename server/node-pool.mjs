@@ -229,6 +229,17 @@ export function createNodePool(
     );
   }
   async function allocate(raw, origin, runtimeOrigin) {
+    return allocateLease(raw, origin, runtimeOrigin);
+  }
+  // Preferred-node reservations are private to the owner selection operation.
+  // The public allocation route never receives or forwards a preference.
+  async function allocateLease(
+    raw,
+    origin,
+    runtimeOrigin,
+    preferredNode = "",
+    replacementSession = "",
+  ) {
     prune();
     let hash, lease;
     if (raw) {
@@ -243,7 +254,11 @@ export function createNodePool(
         );
     } else {
       // Synchronous SQLite allocation reserves a lease before the next request.
-      const candidates = list().filter((n) => n.state === "active" && n.online);
+      const candidates = list().filter((n) =>
+        preferredNode
+          ? n.id === preferredNode && n.state !== "disabled" && n.online
+          : n.state === "active" && n.online,
+      );
       const order = store.get("nodeAssignmentOrder") || {};
       candidates.sort(
         (a, b) =>
@@ -254,7 +269,7 @@ export function createNodePool(
       );
       if (!candidates.length)
         throw fail("No browsing nodes are available.", 503);
-      raw = token();
+      raw = replacementSession || token();
       hash = digest(raw);
       lease = {
         hash,
@@ -400,6 +415,103 @@ export function createNodePool(
           ),
     };
   }
+  const selecting = new Set();
+  async function select(raw, origin, runtimeOrigin, requestedNode) {
+    if (
+      typeof requestedNode !== "string" ||
+      requestedNode.length > 100 ||
+      (raw != null && (typeof raw !== "string" || raw.length > 100))
+    )
+      throw fail("Invalid browser node selection.");
+    prune();
+    const previousHash = raw ? digest(raw) : "";
+    const previous = previousHash
+      ? db.prepare("SELECT * FROM browse_leases WHERE hash=?").get(previousHash)
+      : null;
+    if (previousHash && (!previous || previous.origin !== origin))
+      throw fail(
+        "Browsing session expired. Reload Atlas before selecting a node.",
+        409,
+      );
+    if (requestedNode) {
+      const selected = node(requestedNode);
+      if (!available(selected))
+        throw fail("Selected browsing node is unavailable.", 503);
+      if (
+        selected.id !== "local" &&
+        new URL(selected.endpoint).hostname === new URL(origin).hostname
+      )
+        throw fail("Select a node with a separate browsing hostname.");
+    }
+    if (previousHash && selecting.has(previousHash))
+      throw fail(
+        "This browser is already changing connections. Try again after it finishes.",
+        409,
+      );
+    if (previousHash) selecting.add(previousHash);
+    const replacement = token(),
+      replacementHash = digest(replacement);
+    try {
+      // Keep the old pin usable until the new node has accepted its reservation.
+      const result = await allocateLease(
+        "",
+        origin,
+        runtimeOrigin,
+        requestedNode,
+        replacement,
+      );
+      const lease = db
+        .prepare("SELECT * FROM browse_leases WHERE hash=?")
+        .get(replacementHash);
+      const selected = node(result.node.id);
+      const host = lease?.runtime_node ? node(lease.runtime_node) : selected;
+      if (
+        !lease ||
+        !selected ||
+        selected.state === "disabled" ||
+        !(lease.runtime_node
+          ? available(host) && hostCapable(host)
+          : available(selected))
+      )
+        throw fail("Selected browsing node is unavailable.", 503);
+      if (
+        previousHash &&
+        db
+          .prepare("SELECT origin FROM browse_leases WHERE hash=?")
+          .get(previousHash)?.origin !== origin
+      )
+        throw fail(
+          "This browser's connection changed. Reload Atlas before selecting a node.",
+          409,
+        );
+      db.exec("BEGIN");
+      try {
+        if (previousHash)
+          db.prepare("DELETE FROM browse_leases WHERE hash=? AND origin=?").run(
+            previousHash,
+            origin,
+          );
+        audit("node.select", result.node.id);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return result;
+    } catch (error) {
+      db.prepare("DELETE FROM browse_leases WHERE hash=? AND origin=?").run(
+        replacementHash,
+        origin,
+      );
+      if (error.statusCode) throw error;
+      throw fail(
+        "Selected browsing node is unreachable. Your original connection is unchanged.",
+        503,
+      );
+    } finally {
+      if (previousHash) selecting.delete(previousHash);
+    }
+  }
   function resolve(ticket, runtimeOrigin, purpose = "runtime") {
     let t;
     try {
@@ -481,6 +593,7 @@ export function createNodePool(
     authenticate,
     heartbeat,
     allocate,
+    select,
     resolve,
     release,
     nodeState,

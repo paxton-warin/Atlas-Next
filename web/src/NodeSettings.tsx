@@ -1,12 +1,25 @@
 import { useEffect, useState } from "react";
-import { api } from "./model";
-export default function NodeSettings({ csrf }: { csrf: string }) {
+import { api, readLocal, writeLocal } from "./model";
+import { selectBrowsingLeaseForOwner } from "./browsing-session";
+export type BrowsingNodeSelectionProps = {
+  browsingSession?: string;
+  browsingNode?: { id: string; name: string };
+  onLeaseSelected: (lease: any, persisted: boolean) => void;
+};
+export default function NodeSettings({
+  csrf,
+  browsingSession,
+  browsingNode,
+  onLeaseSelected,
+}: { csrf: string } & BrowsingNodeSelectionProps) {
   const [nodes, setNodes] = useState<any[]>([]),
     [name, setName] = useState(""),
     [endpoint, setEndpoint] = useState(""),
     [error, setError] = useState(""),
     [code, setCode] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [selectedNode, setSelectedNode] = useState(""),
+    [changingConnection, setChangingConnection] = useState(false);
   const request = (path = "", options: RequestInit = {}) =>
     api("/admin/nodes" + path, {
       ...options,
@@ -45,6 +58,82 @@ export default function NodeSettings({ csrf }: { csrf: string }) {
           {error}
         </p>
       )}
+      <form
+        className="setting-card"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (changingConnection) return;
+          setChangingConnection(true);
+          setError("");
+          try {
+            let persisted = false;
+            const lease = await selectBrowsingLeaseForOwner(
+              browsingSession,
+              () => readLocal("atlas.nodeSession", ""),
+              (session) =>
+                request("/select", {
+                  method: "POST",
+                  body: JSON.stringify({ session, node: selectedNode }),
+                }),
+              (session) => {
+                persisted = writeLocal("atlas.nodeSession", session);
+              },
+              navigator.locks,
+            );
+            onLeaseSelected(lease, persisted);
+          } catch (error) {
+            setError((error as Error).message);
+          } finally {
+            setChangingConnection(false);
+          }
+        }}
+      >
+        <h3>This browser's connection</h3>
+        <p className="small">
+          Current node: {browsingNode?.name || "No active connection"}.
+        </p>
+        <p className="small">
+          Changes only this browser's connection, not other clients or node
+          weights. Saved tabs stay intact; websites may require signing in again
+          on a different node. Online draining nodes are available for owner
+          tests.
+        </p>
+        <label className="form-field">
+          Assign this browser to
+          <select
+            aria-label="Assign this browser to"
+            value={selectedNode}
+            disabled={changingConnection}
+            onChange={(event) => setSelectedNode(event.target.value)}
+          >
+            <option value="">Automatic · active nodes</option>
+            {nodes.map((node) => (
+              <option
+                key={node.id}
+                value={node.id}
+                disabled={
+                  !node.online ||
+                  node.state === "disabled" ||
+                  node.setupRequired
+                }
+              >
+                {node.name}
+                {node.state === "draining" ? " · draining" : ""}
+                {!node.online
+                  ? " · offline"
+                  : node.state === "disabled"
+                    ? " · disabled"
+                    : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="button primary" disabled={changingConnection}>
+          {changingConnection
+            ? "Changing connection…"
+            : "Apply to this browser"}
+        </button>
+      </form>
       <div className="node-list">
         {nodes.map((node) => (
           <article className="node-card" key={node.id}>

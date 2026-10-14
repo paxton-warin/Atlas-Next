@@ -21,8 +21,22 @@ const passed = tests.filter(
 const known = tests.filter(
   (t) => t.expected === "failed" && t.actual === "failed",
 ).length;
-const unexpected = tests.filter((t) => t.status !== "expected").length;
-const output = `BROWSER_PASS=${passed}; KNOWN_UPSTREAM_FAILURE=${known}; UNEXPECTED_FAILURE=${unexpected}`;
+const skipped = tests.filter(
+  (t) =>
+    t.expected === "skipped" &&
+    t.actual === "skipped" &&
+    t.status === "skipped",
+).length;
+const unexpected = tests.filter(
+  (t) =>
+    t.status !== "expected" &&
+    !(
+      t.expected === "skipped" &&
+      t.actual === "skipped" &&
+      t.status === "skipped"
+    ),
+).length;
+const output = `BROWSER_PASS=${passed}; KNOWN_UPSTREAM_FAILURE=${known}; UNEXPECTED_FAILURE=${unexpected}${skipped ? "; EXPECTED_SKIP=" + skipped : ""}`;
 writeFileSync("evidence/browser-summary.txt", output + "\n");
 console.log(output);
 if (unexpected) process.exitCode = 1;

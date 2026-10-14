@@ -25,7 +25,12 @@ export function probeUpload(scriptFile, { failBackup = false } = {}) {
   };
   mkdirSync(bin);
   mkdirSync(remote);
-  const hosts = ["main.fixture", "node2.fixture", "node3.fixture"];
+  const hosts = [
+    "main.fixture",
+    "node2.fixture",
+    "node3.fixture",
+    "node4.fixture",
+  ];
   const customFiles = [
     "Caddyfile.node",
     "Caddyfile.cloudfront",
@@ -56,6 +61,9 @@ export function probeUpload(scriptFile, { failBackup = false } = {}) {
     ".env.before-update",
     "backups/old-secret",
     "deployment-templates/obsolete",
+    "scripts/__pycache__/local.pyc",
+    "scripts/local.pyc",
+    ".DS_Store",
   ])
     put(join(source, file), "local secret\n");
   for (const file of [
@@ -106,6 +114,7 @@ else { const dest=target(args.at(-1)); for(const file of args.slice(0,-1))cpSync
         MAIN_HOST: hosts[0],
         NODE2_HOST: hosts[1],
         NODE3_HOST: hosts[2],
+        NODE4_HOST: hosts[3],
         FIXTURE_REMOTE: remote,
         FIXTURE_TRACE: trace,
         FAIL_BACKUP: failBackup ? "1" : "0",
@@ -144,6 +153,12 @@ else { const dest=target(args.at(-1)); for(const file of args.slice(0,-1))cpSync
         "application update\n",
       );
       assert.equal(existsSync(join(target, ".origin-key")), false);
+      assert.equal(
+        existsSync(join(target, "scripts/__pycache__/local.pyc")),
+        false,
+      );
+      assert.equal(existsSync(join(target, "scripts/local.pyc")), false);
+      assert.equal(existsSync(join(target, ".DS_Store")), false);
       assert.equal(existsSync(join(target, ".env.before-update")), false);
       assert.equal(existsSync(join(target, "backups/old-secret")), false);
       for (const file of templates)

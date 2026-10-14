@@ -80,3 +80,61 @@ On September 29, direct IPv4 HTTPS requests from all three VPSs received ESPN's 
 The supplied content-filter snapshot reads rendered text and page structure in addition to URLs. The generic Atlas title and encoded paths are not a guarantee against content classification. Verify the actual affected browser/version separately.
 
 The helper uses the documented [Compose file-stack options](https://docs.docker.com/reference/cli/docker/compose/) and [service-specific `up --no-deps`](https://docs.docker.com/reference/cli/docker/compose/up/). Selecting only the app/node service avoids recreating the shared edge as part of this routine update.
+
+## Client compatibility canary — 2026-10-13
+
+This release adds Page compatibility controls, bounded local diagnostics, owned-loader cleanup and the prefix import-map fix. Read `docs/CLIENT-COMPATIBILITY-20261013.md` for measured limits and outstanding real-site checks.
+
+The uploader now includes VPS 4, stages templates without replacing live Caddy/Compose, uses rsync instead of the unavailable SFTP/scp subsystem, and accepts explicit target hosts. It uploads source only; it does not restart services. Default order is Nodes 2, 3, 4, then Main. **Explicit single-host selection** is preferred for a canary.
+
+1. In Atlas administration, set one healthy canary node to **Draining** and wait for active connections to finish. Keep pairing identities, `.env`, origin keys, volumes, and shared Caddy unchanged. Record the current deployed asset manifest.
+2. Upload only that node from the Mac, e.g. VPS 4:
+
+   ```sh
+   cd /Users/paxton/Repositories/Atlas-Next
+   pnpm runtime:fetch && pnpm build
+   SSH_USER=root bash scripts/upload-update.sh vps-4.internals.paxton.co
+   ```
+
+3. While the node drains, optionally build without restarting it:
+
+   ```sh
+   ssh root@vps-4.internals.paxton.co 'cd /opt/atlas && bash scripts/update-running-service.sh atlas-node node --build-only'
+   ```
+
+   The helper verifies the original container remains running on its original image. This prepares an image only; it does not activate or qualify it.
+
+   After connections reach zero and remain quiet across two heartbeats, update the application service using the existing Compose-stack-aware helper. It keeps the previous image under a unique rollback tag. Record the original image reference and Compose stack for image rollback. Save that output:
+
+   ```sh
+   ssh root@vps-4.internals.paxton.co
+   cd /opt/atlas
+   sudo bash scripts/update-running-service.sh atlas-node node
+   ```
+
+   Do not activate staged templates or recreate `edge`, the dispenser, or data services. If the established project/service differs, use the actual running labels rather than creating a new project.
+
+4. Compare the deployed runtime manifest's source commit/eight hashes with `scripts/runtime-fork.json`; verify `/health`, node heartbeat, game controls/fullscreen/storage, restore, popout, login/logout and streamed replies with the same frontend/node. Keep ESPN/ESPN+ checks separate. A different IP or a login page is not a pass.
+5. Restore **Active** only after qualification. Upload/update the remaining Nodes 2/3/4 one at a time, then Main last. On Main use the existing `atlas-main/app` helper command from the earlier steps; never restart shared Caddy or the dispenser as part of this runtime release.
+6. If canary acceptance fails, retag the retained previous image to the recorded service image reference, then recreate only `node` using the unchanged recorded Compose stack with `--no-deps --no-build --pull never --wait`. Keep identities/volumes and deployment files unchanged; compare health and manifest with the saved baseline. The separate local working-copy rollback package is at `evidence/client-compatibility-20261013/ROLLBACK.sh`; it rejects mismatched hashes rather than overwriting later edits. Do not use a local-working-copy rollback as a replacement for the server's image rollback.
+
+Package creation does not itself deploy. VPS 4 was subsequently activated after the operator authorized a forced application-service restart during the quiet period, despite live leases. Its identity and deployment files remained unchanged, and the edge was not restarted. The subsequent pin adds named-export rewriting and native SVG fragment fixes for the reported root-module reload loop and missing icons. The operator then confirmed fresh ChatGPT sign-in/visible streaming replies and ESPN sign-in/entitled ESPN+ video/audio on Node 4. The owner/admin client selector was implemented and tested after that runtime qualification, as requested. Fleet/Main deployment results and GitHub push receipts are recorded separately; the release procedure retains Main-last ordering and preserves shared routing/data services.
+
+## Owner-only selection for the current browser
+
+In the control room, open **Browsing nodes → This browser's connection**.
+Choose an online node (including a draining canary), then **Apply to this browser**.
+**Automatic** selects from active nodes using the usual load-balancing policy.
+The selection creates a new pin only for the supplied browser session; it does
+not change node state, weight, pairing identity, or other clients' assignments.
+Saved Atlas tabs remain available. Site sign-in state is node-local, so switching
+nodes may require signing into websites normally again.
+
+The owner endpoint `/api/admin/nodes/select` requires the administrator session,
+CSRF token and same-origin checks. The public allocation API ignores node
+preferences. A failed selection removes its new reservation and leaves the old
+pin in place; a successful replacement is persisted under the startup/session
+lock before the frontend applies it. When device persistence is unavailable,
+the selected pin remains active for that window and the UI explains that reload
+may select another connection. Draining nodes remain excluded from ordinary
+new-session allocation.
