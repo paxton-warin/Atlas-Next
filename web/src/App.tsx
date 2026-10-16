@@ -14,8 +14,19 @@ import { isSearchShortcut } from "../../runtime/browser-shortcuts";
 import { createDirectTabUrl } from "../../runtime/direct-tab";
 import { createPopoutUrl } from "./popout-link";
 import {
+  frontendRuntimeEnabled,
+  createFrontendWorkspace,
+  clearFrontendWebsiteData,
+} from "./frontend-runtime";
+import {
   restoreBrowsingLeaseOnStartup,
   browsingSessionToRelease,
+  selectBrowsingLeaseForOwner,
+  createBrowsingLeaseLifecycle,
+  normalizeBrowsingLease,
+  LEASE_STORAGE_KEY,
+  TERMINAL_LEASE_CODES,
+  retryBrowsingLeaseOperation,
 } from "./browsing-session";
 import { attachFullscreenKeyboard } from "../../runtime/fullscreen-keyboard";
 import {
@@ -154,6 +165,17 @@ export default function App() {
   );
   const [notice, setNotice] = useState("");
   const [config, setConfig] = useState<any>(null);
+  const configRef = useRef<any>(null);
+  const opaqueMode = frontendRuntimeEnabled(config);
+  const adminRoute = location.pathname.startsWith("/_control/");
+  const frontendArea = useRef<HTMLDivElement>(null);
+  const frontendWorkspace = useRef<ReturnType<
+    typeof createFrontendWorkspace
+  > | null>(null);
+  configRef.current = config;
+  const renewLease = useRef<() => void>(() => {});
+  const runtimeBootFailed = useRef(false);
+  const leaseEpoch = useRef(0);
   const startup = useRef<{
     config: Promise<any>;
     catalog: Promise<Game[]>;
@@ -252,7 +274,9 @@ export default function App() {
     const dispose = attachFullscreenKeyboard(
       document,
       navigator,
-      () => document.fullscreenElement === runtimeRef.current,
+      () =>
+        document.fullscreenElement ===
+        (frontendWorkspace.current?.frame ?? runtimeRef.current),
       (state) => {
         pendingNotice =
           state === "locked"
@@ -309,6 +333,23 @@ export default function App() {
     }
   }
 
+  if (opaqueMode) {
+    directTabUrl = undefined;
+    popoutUrl =
+      showingSite &&
+      current &&
+      !current.local &&
+      config?.session &&
+      !connectionExpired
+        ? createPopoutUrl(
+            location.origin,
+            current.url,
+            config.session,
+            settings.youtubeAdblock,
+          )
+        : undefined;
+  }
+
   const visibleTabs = tabs.filter((t) =>
     page === "ai" ? t.workspace === "ai" : t.workspace !== "ai",
   );
@@ -327,33 +368,42 @@ export default function App() {
     // StrictMode replays effects in development. Share the network work and
     // ignore callbacks from the cleaned-up effect, rather than allocating twice.
     startup.current ||= {
-      config: api("/config").then(async (config) => {
-        if (!config.nodeRouting) return config;
+      config: retryBrowsingLeaseOperation(() =>
+        api("/config", { signal: AbortSignal.timeout(12000) }),
+      ).then(async (config) => {
+        if (frontendRuntimeEnabled(config) || !config.nodeRouting)
+          return config;
         try {
           const lease = await restoreBrowsingLeaseOnStartup(
             () => readLocal("atlas.nodeSession", ""),
-            (session) =>
-              api("/browse/session", {
-                method: "POST",
-                body: JSON.stringify({ session }),
-              }),
+            (session, intent) =>
+              retryBrowsingLeaseOperation(
+                () =>
+                  api("/browse/session", {
+                    method: "POST",
+                    body: JSON.stringify({ session, intent }),
+                    signal: AbortSignal.timeout(12000),
+                  }),
+                {
+                  retrying: () =>
+                    setNotice("Reconnecting to the current browsing node…"),
+                },
+              ),
             (session) => {
               writeLocal("atlas.nodeSession", session);
             },
             navigator.locks,
           );
-          return {
-            ...config,
-            ...lease,
-            expiresLocally: lease.expiresAt
-              ? Date.now() + lease.expiresAt - lease.serverTime
-              : undefined,
-          };
+          const normalized = normalizeBrowsingLease(lease);
+          writeLocal(LEASE_STORAGE_KEY, normalized);
+          return { ...config, ...normalized };
         } catch (error) {
           return {
             ...config,
             connectionError: (error as Error).message,
             connectionErrorStatus: (error as { status?: number }).status,
+            connectionErrorCode: (error as { code?: string }).code,
+            session: readLocal("atlas.nodeSession", ""),
           };
         }
       }),
@@ -363,7 +413,8 @@ export default function App() {
       .then((config) => {
         if (!mounted) return;
         setConfig(config);
-        if (config.connectionErrorStatus === 409) expireConnection();
+        if (TERMINAL_LEASE_CODES.has(config.connectionErrorCode))
+          expireConnection();
       })
       .catch((e) => {
         if (mounted) toast(e.message);
@@ -379,6 +430,99 @@ export default function App() {
       mounted = false;
     };
   }, []);
+  useEffect(() => {
+    if (!opaqueMode || !frontendArea.current) return;
+    let mounted = true;
+    const workspace = createFrontendWorkspace({
+      container: frontendArea.current,
+      onAssignment(assignment) {
+        if (!mounted) return;
+        configRef.current = {
+          ...configRef.current,
+          ...assignment,
+          runtimeOrigin: location.origin,
+          node: { ...assignment.node, online: true },
+          nodeRouting: true,
+          connectionError: "",
+        };
+        setConfig(configRef.current);
+        setConnectionExpired(false);
+      },
+      onConnection(state) {
+        if (!mounted) return;
+        if (state.status === "revoked" || state.status === "invalid")
+          expireConnection();
+        else if (state.status === "retrying")
+          setNotice(
+            "Retrying the pinned browsing node; your page remains open…",
+          );
+        else if (state.status === "error")
+          setRuntimeError(
+            state.code || "The browsing connection did not start.",
+          );
+        else if (state.status === "ready") setRuntimeError("");
+      },
+      onEvent(event) {
+        if (!mounted) return;
+        if (event.type === "title") {
+          setTabs((old) =>
+            old.map((tab) =>
+              tab.id === event.id
+                ? { ...tab, title: event.title || new URL(tab.url).hostname }
+                : tab,
+            ),
+          );
+          return;
+        }
+        if (event.type === "navigation" && event.url) {
+          if (activeRef.current === event.id) setAddress(event.url);
+          setTabs((old) =>
+            old.map((tab) =>
+              tab.id === event.id
+                ? {
+                    ...tab,
+                    url: event.url!,
+                    title: new URL(event.url!).hostname,
+                  }
+                : tab,
+            ),
+          );
+        } else
+          setTabs((old) =>
+            old.map((tab) =>
+              tab.id === event.id
+                ? {
+                    ...tab,
+                    status:
+                      event.type === "loaded"
+                        ? "ready"
+                        : event.type === "error"
+                          ? "error"
+                          : "loading",
+                    message: event.type === "error" ? event.message : undefined,
+                  }
+                : tab,
+            ),
+          );
+      },
+    });
+    frontendWorkspace.current = workspace;
+    // This is trusted controller readiness, not website-content readiness.
+    setRuntimeReady(true);
+    void workspace.connect().catch((error) => {
+      if (mounted)
+        setRuntimeError(
+          error.message || "The browsing connection did not start.",
+        );
+    });
+    return () => {
+      mounted = false;
+      workspace.dispose();
+      if (frontendWorkspace.current === workspace)
+        frontendWorkspace.current = null;
+      live.current.clear();
+    };
+  }, [opaqueMode, runtimeAttempt, adminRoute]);
   useEffect(() => {
     writeLocal("atlas.sidebarCollapsed", collapsed);
   }, [collapsed]);
@@ -443,11 +587,23 @@ export default function App() {
     runtimeLoaded.current = false;
   }, [
     config?.runtimeOrigin,
-    config?.ticket,
+    config?.session,
+    config?.generation,
     runtimeAttempt,
     connectionExpired,
   ]);
   function send(type: string, extra: Record<string, unknown> = {}) {
+    if (frontendRuntimeEnabled(configRef.current)) {
+      if (
+        ["navigate", "activate", "close", "reload", "back", "forward"].includes(
+          type,
+        )
+      )
+        void frontendWorkspace.current
+          ?.command(type, { id: activeRef.current, ...extra })
+          .catch(() => {});
+      return;
+    }
     if (config && runtimeLoaded.current)
       runtimeRef.current?.contentWindow?.postMessage(
         {
@@ -473,34 +629,45 @@ export default function App() {
   async function reconnectNode() {
     if (reconnecting) return;
     setReconnecting(true);
+    leaseEpoch.current++;
     setReconnectError("");
     try {
+      if (opaqueMode) {
+        await frontendWorkspace.current!.reconnect();
+        setConnectionExpired(false);
+        setReconnectReason(null);
+        setRuntimeError("");
+        return;
+      }
       const old = browsingSessionToRelease(
         config?.session,
         readLocal("atlas.nodeSession", ""),
       );
-      if (old)
-        await api("/browse/session", {
-          method: "DELETE",
-          body: JSON.stringify({ session: old }),
-        });
-      if (readLocal("atlas.nodeSession", "") === old)
-        writeLocal("atlas.nodeSession", "");
-      setConnectionExpired(true);
-      setRuntimeReady(false);
-      const lease = await api("/browse/session", {
-        method: "POST",
-        body: JSON.stringify({ session: "" }),
-      });
-      writeLocal("atlas.nodeSession", lease.session);
-      setConfig({
-        ...config,
-        ...lease,
-        connectionError: "",
-        expiresLocally: lease.expiresAt
-          ? Date.now() + lease.expiresAt - lease.serverTime
-          : undefined,
-      });
+      // Reserve the replacement before releasing the old pin. An outage must
+      // leave the currently usable connection and its browser data intact.
+      const lease = await selectBrowsingLeaseForOwner(
+        old,
+        () => readLocal("atlas.nodeSession", ""),
+        (session) =>
+          api("/browse/session", {
+            method: "POST",
+            body: JSON.stringify({
+              intent: "new",
+              session,
+              generation: config?.generation,
+            }),
+            signal: AbortSignal.timeout(12000),
+          }),
+        (session) => {
+          writeLocal("atlas.nodeSession", session);
+        },
+        navigator.locks,
+      );
+      const normalized = normalizeBrowsingLease(lease);
+      writeLocal("atlas.nodeSession", normalized.session);
+      writeLocal(LEASE_STORAGE_KEY, normalized);
+      configRef.current = { ...config, ...normalized, connectionError: "" };
+      setConfig(configRef.current);
       setConnectionExpired(false);
       setReconnectReason(null);
       restartRuntime();
@@ -511,22 +678,94 @@ export default function App() {
     }
   }
   useEffect(() => {
-    if (!config?.expiresLocally || connectionExpired) return;
-    const check = () => {
-      if (Date.now() >= config.expiresLocally) expireConnection();
+    if (
+      opaqueMode ||
+      !config?.nodeRouting ||
+      !config.session ||
+      connectionExpired
+    )
+      return;
+    const lifecycle = createBrowsingLeaseLifecycle<any>({
+      current: () => configRef.current,
+      epoch: () => leaseEpoch.current,
+      visible: () => !document.hidden,
+      request: (lease, intent) =>
+        api("/browse/session", {
+          method: "POST",
+          body: JSON.stringify({
+            intent: lease.connectionError ? "restore" : intent,
+            session: lease.session,
+            generation: lease.generation,
+          }),
+          signal: AbortSignal.timeout(12000),
+        }),
+      locks: navigator.locks,
+      readRemembered: () => readLocal(LEASE_STORAGE_KEY, null),
+      remember: (lease) => {
+        writeLocal(LEASE_STORAGE_KEY, lease);
+        if (readLocal("atlas.nodeSession", "") === configRef.current?.session)
+          writeLocal("atlas.nodeSession", lease.session);
+      },
+      apply: (lease, previous) => {
+        const bootFailed = runtimeBootFailed.current;
+        if (bootFailed) lease = { ...lease, bootTicket: lease.ticket };
+        configRef.current = {
+          ...configRef.current,
+          ...lease,
+          connectionError: "",
+          connectionErrorCode: undefined,
+        };
+        setConfig(configRef.current);
+        if (
+          lease.session !== previous.session ||
+          lease.generation !== previous.generation ||
+          bootFailed
+        ) {
+          runtimeBootFailed.current = false;
+          restartRuntime();
+        } else {
+          send("session-update", {
+            sessionHash: lease.sessionHash,
+            generation: lease.generation,
+            ticket: lease.ticket,
+            relayTicket: lease.relayTicket,
+            relayOrigin: lease.relayOrigin,
+            ticketExpiresAt: lease.ticketExpiresAt,
+          });
+        }
+      },
+      terminal: () => expireConnection(),
+      retrying: () => {
+        // Keep the mounted website alive while the same pinned lease retries.
+        if (configRef.current?.connectionError)
+          setNotice("Reconnecting to the current browsing node…");
+      },
+    });
+    renewLease.current = () => {
+      void lifecycle.check(true);
     };
-    const timer = setTimeout(
-      check,
-      Math.max(0, config.expiresLocally - Date.now()),
-    );
+    const check = () => {
+      if (!document.hidden) void lifecycle.check();
+    };
+    lifecycle.start();
+    // Failed cold starts have not mounted a runtime yet; validate immediately.
+    if (config.connectionError) void lifecycle.check();
     document.addEventListener("visibilitychange", check);
     window.addEventListener("pageshow", check);
+    window.addEventListener("online", check);
     return () => {
-      clearTimeout(timer);
+      lifecycle.stop();
+      renewLease.current = () => {};
       document.removeEventListener("visibilitychange", check);
       window.removeEventListener("pageshow", check);
+      window.removeEventListener("online", check);
     };
-  }, [config?.expiresLocally, connectionExpired]);
+  }, [
+    config?.session,
+    config?.generation,
+    config?.nodeRouting,
+    connectionExpired,
+  ]);
   function navigate(
     value: string,
     newTab = false,
@@ -640,8 +879,9 @@ export default function App() {
         }
         return;
       }
-      if (d.type === "session-expired") {
-        expireConnection();
+      if (d.type === "session-expired" || d.type === "session-refresh-needed") {
+        if (d.boot === true) runtimeBootFailed.current = true;
+        renewLease.current();
         return;
       }
       if (
@@ -654,6 +894,7 @@ export default function App() {
         return;
       }
       if (d.type === "ready") {
+        runtimeBootFailed.current = false;
         setRuntimeReady(true);
         setRuntimeError("");
         return;
@@ -742,7 +983,13 @@ export default function App() {
     if (runtimeReady) send("adblock");
   }, [runtimeReady, settings.youtubeAdblock]);
   useEffect(() => {
-    if (!config || config.connectionError || connectionExpired || runtimeReady)
+    if (
+      opaqueMode ||
+      !config ||
+      config.connectionError ||
+      connectionExpired ||
+      runtimeReady
+    )
       return;
     const ping = () => send("ping", { id: "system" });
     ping();
@@ -863,6 +1110,21 @@ export default function App() {
     );
   }
   function clearWeb() {
+    if (opaqueMode) {
+      frontendWorkspace.current?.dispose();
+      frontendWorkspace.current = null;
+      setTabs([]);
+      setActive("");
+      setPage("home");
+      live.current.clear();
+      void clearFrontendWebsiteData(window)
+        .then(
+          () => toast("Website data cleared."),
+          (error) => toast(error.message),
+        )
+        .finally(() => setRuntimeAttempt((value) => value + 1));
+      return;
+    }
     pendingClear.current = true;
     setTabs([]);
     setActive("");
@@ -878,20 +1140,48 @@ export default function App() {
     "--wallpaper": settings.wallpaper ? `url("${settings.wallpaper}")` : "none",
     "--wallpaper-blur": settings.blur + "px",
   } as CSSProperties;
-  if (location.pathname.startsWith("/_control/"))
+  if (adminRoute)
     return (
       <div style={style} className="atlas">
+        {opaqueMode && (
+          <div ref={frontendArea} data-frontend-runtime="2" hidden />
+        )}
         <Suspense
           fallback={<div className="empty-state">Opening control room…</div>}
         >
           <Admin
             browsingSession={config?.session}
             browsingNode={config?.node}
+            selectBrowsingNode={
+              opaqueMode
+                ? (node, csrf) =>
+                    frontendWorkspace.current!.selectNode(node, csrf)
+                : undefined
+            }
             onLeaseSelected={(lease, persisted) => {
+              if (opaqueMode) {
+                window.history.replaceState(null, "", "/");
+                setReconnectReason(null);
+                setReconnectError("");
+                setPage(tabs.length ? "browse" : "home");
+                toast(
+                  "This browser's connection changed to " +
+                    lease.node.name +
+                    ".",
+                );
+                return;
+              }
+              leaseEpoch.current++;
+              configRef.current = {
+                ...configRef.current,
+                ...normalizeBrowsingLease(lease),
+                nodeRouting: true,
+                connectionError: "",
+              };
               window.history.replaceState(null, "", "/");
               setConfig((current: any) => ({
                 ...current,
-                ...lease,
+                ...normalizeBrowsingLease(lease),
                 nodeRouting: true,
                 connectionError: "",
                 expiresLocally: lease.expiresAt
@@ -1138,6 +1428,11 @@ export default function App() {
                 pageOptions={(controls) => (
                   <CompatibilityPanel
                     {...controls}
+                    control={
+                      opaqueMode
+                        ? frontendWorkspace.current?.pageControls(active)
+                        : undefined
+                    }
                     ready={runtimeReady}
                     frame={runtimeRef.current?.contentWindow}
                     runtimeOrigin={config?.runtimeOrigin}
@@ -1308,26 +1603,38 @@ export default function App() {
             )}
           </div>
           <div className="runtime-area" hidden={!showingSite}>
-            {config && !config.connectionError && !connectionExpired && (
-              <iframe
-                title="Atlas isolated browsing runtime"
-                ref={runtimeRef}
-                src={
-                  config.runtimeOrigin +
-                  (runtimeAttempt ? "?session=" + runtimeAttempt : "") +
-                  (config.ticket
-                    ? "#ticket=" + encodeURIComponent(config.ticket)
-                    : "")
-                }
-                onLoad={() => {
-                  runtimeLoaded.current = true;
-                  send("ping", { id: "system" });
-                }}
-                allow="autoplay; encrypted-media; fullscreen; clipboard-write; camera; microphone"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-pointer-lock allow-presentation"
+            {opaqueMode && (
+              <div
+                ref={frontendArea}
+                data-frontend-runtime="2"
                 hidden={!!current?.local}
+                style={{ position: "absolute", inset: 0 }}
               />
             )}
+            {!opaqueMode &&
+              config &&
+              !config.connectionError &&
+              !connectionExpired && (
+                <iframe
+                  title="Atlas isolated browsing runtime"
+                  ref={runtimeRef}
+                  src={
+                    config.runtimeOrigin +
+                    (runtimeAttempt ? "?session=" + runtimeAttempt : "") +
+                    ((config.bootTicket ?? config.ticket)
+                      ? "#ticket=" +
+                        encodeURIComponent(config.bootTicket ?? config.ticket)
+                      : "")
+                  }
+                  onLoad={() => {
+                    runtimeLoaded.current = true;
+                    send("ping", { id: "system" });
+                  }}
+                  allow="autoplay; encrypted-media; fullscreen; clipboard-write; camera; microphone"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-pointer-lock allow-presentation"
+                  hidden={!!current?.local}
+                />
+              )}
             {tabs
               .filter((t) => t.local)
               .map((t) => (

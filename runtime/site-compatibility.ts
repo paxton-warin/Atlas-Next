@@ -13,6 +13,8 @@ export function installDocumentGuard(
     pageUrl: () => string;
     enabled: () => boolean;
     fixture?: boolean;
+    /** Metadata-only opaque runtime does not resume body/category detection. */
+    sampleRisk?: boolean;
     report: (value: CompatibilityStatus) => void;
     onTitle?: (title: string) => void;
   },
@@ -53,7 +55,7 @@ export function installDocumentGuard(
     let risk = false;
     // Counts only; do not send website text or pixels to the frontend.
     let sample = "";
-    if (doc.body) {
+    if (options.sampleRisk !== false && doc.body) {
       const walker = doc.createTreeWalker(doc.body, win.NodeFilter.SHOW_TEXT);
       for (let n = 0; n < 256 && sample.length < 8192; n++) {
         const node = walker.nextNode();
@@ -64,9 +66,11 @@ export function installDocumentGuard(
       }
     }
     risk =
-      /\b(gameplay|play game|game controls|game instructions)\b/i.test(
+      options.sampleRisk !== false &&
+      (/\b(gameplay|play game|game controls|game instructions)\b/i.test(
         sample,
-      ) || !!doc.querySelector("canvas");
+      ) ||
+        !!doc.querySelector("canvas"));
     if (enabled && rule) {
       if (doc.title !== "Website") originalTitle = doc.title;
       if (!titleApplied && doc.title === "Website") originalTitle = "Website";

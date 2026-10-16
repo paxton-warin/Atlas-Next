@@ -1,5 +1,13 @@
 # Reference-filter rewriting investigation — 2026-10-13
 
+> Historical investigation, retired on 2026-10-15. The combined update removes
+> the experimental **Isolate page structure** control, its closed-shadow DOM
+> rewriting implementation and its preference handling. The measurements below
+> describe that earlier experiment, not an available feature or a guarantee about
+> the current runtime. Dynamic-detection work remains paused. Browser-origin
+> security sandboxing and the narrow ChatGPT response renderer are separate
+> mechanisms and are not removed by this retirement.
+
 ## Measured results, not universal invisibility
 
 The supplied CSV is byte-identical to the existing 345-expression inventory.
@@ -70,7 +78,7 @@ restoration. Delegation now retains `currentTarget`, the callback receiver,
 listener objects, `once` and abort behavior across repeated enable/restore.
 [MDN listener semantics](https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/addEventListener)
 
-## Chosen approach
+## Historical approach (removed)
 
 `runtime/document-surface.ts` installs document-owned rendering-tree handling
 through RuntimeKit's main-world `Proxy` and `Trap` APIs. It does **not** rename
@@ -128,14 +136,10 @@ getters alone does not change its native DOM view. The distinction is tested wit
 Chrome isolated contexts, rather than pretending a main-world getter override
 hides the shared DOM. [Chrome content-script isolation](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)
 
-## Reproduce the optional reference classifier checks
+## Historical evidence
 
-Provide the original pinned helper `content.js`, then run:
-
-```sh
-node scripts/prepare-filter-reference-fixture.mjs /path/to/content.js
-pnpm build
-pnpm exec playwright test tests/document-surface.spec.ts
-```
-
-The preparation script verifies SHA-256 before normalizing lookups and extracts only the detector factories. Atlas does not ship the helper or execute its extension entrypoint. Without that local fixture, the mechanical DOM/API checks still run, but no classifier qualification is recorded.
+The original measurements and verification receipts remain in the investigation
+evidence. The feature-specific browser tests and current-use instructions were
+removed with the experiment. The separate reference-fixture preparation utility
+is an offline analysis tool; Atlas does not ship the helper or execute its
+extension entrypoint.

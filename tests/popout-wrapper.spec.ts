@@ -83,7 +83,10 @@ test("toolbar popout keeps the frontend, pinned node and original tabs through n
       exact: true,
     }),
   ).toBeVisible();
-  expect(sessionRequests).toEqual([{ session }, { session }]);
+  expect(sessionRequests).toEqual([
+    { session, intent: "restore" },
+    { session, intent: "restore" },
+  ]);
   expect(await page.evaluate(() => localStorage.getItem("atlas.tabs"))).toBe(
     oldTabs,
   );
@@ -177,7 +180,7 @@ test("wrapper reuses virtual HttpOnly website cookies from the embedded runtime"
   await expect(site(popup).locator("#cookie")).toHaveText("Cookie retained");
 });
 
-test("expired popout handoff does not allocate another node or overwrite main storage", async ({
+test("revoked popout handoff does not allocate another node or overwrite main storage", async ({
   page,
 }) => {
   await launch(page);
@@ -203,7 +206,9 @@ test("expired popout handoff does not allocate another node or overwrite main st
   await expect(
     page.getByRole("link", { name: "Return to Atlas" }).last(),
   ).toHaveAttribute("href", "/");
-  expect(requests).toEqual([{ session: JSON.parse(saved!) }]);
+  expect(requests).toEqual([
+    { session: JSON.parse(saved!), intent: "restore" },
+  ]);
   expect(
     await page.evaluate(() => localStorage.getItem("atlas.nodeSession")),
   ).toBe(saved);

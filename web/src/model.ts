@@ -187,6 +187,19 @@ export async function api<T = any>(
   if (!response.ok)
     throw Object.assign(Error(data.error || "Request failed."), {
       status: response.status,
+      code: typeof data.code === "string" ? data.code : undefined,
+      retryable:
+        typeof data.retryable === "boolean" ? data.retryable : undefined,
+      retryAfter: (() => {
+        const value = response.headers.get("Retry-After");
+        if (!value) return undefined;
+        const seconds = Number(value);
+        if (Number.isFinite(seconds)) return seconds;
+        const date = Date.parse(value);
+        return Number.isFinite(date)
+          ? Math.max(0, (date - Date.now()) / 1000)
+          : undefined;
+      })(),
     });
   return data;
 }

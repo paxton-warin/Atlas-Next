@@ -130,7 +130,9 @@ async function fixtureContext(expired = false) {
           status: 409,
           json: {
             error:
-              "This browsing session expired. Return to Atlas and reconnect.",
+              "This browsing session was revoked. Return to Atlas and reconnect.",
+            code: "SESSION_REVOKED",
+            retryable: false,
           },
         });
       } else {
@@ -286,8 +288,8 @@ test("same-frontend popout preserves runtime storage partition and exact lease; 
     expect(await popout.title()).toBe("Atlas");
     expect(await popout.evaluate(() => window.opener)).toBeNull();
     expect(sessionRequests(requests).map((r) => [r.method, r.data])).toEqual([
-      ["POST", { session }],
-      ["POST", { session }],
+      ["POST", { session, intent: "restore" }],
+      ["POST", { session, intent: "restore" }],
     ]);
     expect(await app.evaluate(() => localStorage.getItem("atlas.tabs"))).toBe(
       tabsBefore,
@@ -343,7 +345,7 @@ test("same-frontend popout preserves runtime storage partition and exact lease; 
   }
 });
 
-test("expired popout lease reports failure without allocating, deleting, or mutating saved tabs", async () => {
+test("revoked popout lease reports failure without allocating, deleting, or mutating saved tabs", async () => {
   const { context, requests, unexpected } = await fixtureContext(true);
   try {
     const savedTabs = JSON.stringify([
@@ -376,7 +378,7 @@ test("expired popout lease reports failure without allocating, deleting, or muta
       0,
     );
     expect(sessionRequests(requests).map((r) => [r.method, r.data])).toEqual([
-      ["POST", { session }],
+      ["POST", { session, intent: "restore" }],
     ]);
     expect(await page.evaluate(() => localStorage.getItem("atlas.tabs"))).toBe(
       savedTabs,

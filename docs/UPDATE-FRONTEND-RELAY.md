@@ -1,5 +1,9 @@
 # Update existing three-VPS installations
 
+**Legacy update guide:** the unreleased
+[combined frontend-frame update](COMBINED-UPDATE-20261016.md) has its own single
+release gate. The commands below do not activate or qualify that held candidate.
+
 **Only updating focus mode, fullscreen Escape, popout, or YouTube filtering?** Use [the routine browsing-controls update](UPDATE-BROWSING-CONTROLS.md). The migration below changes relay environment/routing and is not needed for those controls.
 
 This update lets **Main server use the visitor's current frontend CloudFront URL for website traffic**. Nodes 2 and 3 keep their own static CloudFront endpoints. Main's frame/static runtime is hosted on a pinned remote node, separate from Atlas's frontend/admin origin; its website transport uses VPS 1 directly. No fourth distribution is needed. AI chat also gains locally rendered LaTeX.

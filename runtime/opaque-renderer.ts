@@ -219,6 +219,14 @@ export function installOpaqueRenderer(
   options: {
     fixture?: boolean;
     fetchResource: RendererFetch;
+    /** New opaque runtime prepares reviewed source in the TRUSTED frontend,
+     * not in RuntimeKit's hooked DOMParser realm. Legacy path is unchanged. */
+    prepareDocument?: (
+      url: URL,
+    ) => Promise<{ html: string; resources: number }>;
+    /** Opaque v2 uses an authenticated reserved native helper navigation; the
+     * callback receives the exact element so it can bind its native child slot. */
+    reserveNavigation?: (url:URL,element:HTMLIFrameElement)=>Promise<{helperURL:string;ready:Promise<{resources:number}>;cancel():void}>;
     report: (state: "applied" | "error", resources: number) => void;
   },
 ) {
@@ -237,11 +245,129 @@ export function installOpaqueRenderer(
     client.descriptors.store["HTMLIFrameElement.prototype.srcdoc"]?.set;
   if (!src?.set || !setSrcdoc) return;
   const original = new WeakMap<HTMLIFrameElement, string>();
+  const staged = new WeakMap<
+    HTMLIFrameElement,
+    { value: string; href: string }
+  >();
   const managedSrcdoc = new WeakSet<HTMLIFrameElement>();
   const declaredSandbox = new WeakMap<HTMLIFrameElement, string>();
   const failed = new WeakMap<HTMLIFrameElement, string>();
   const bound = new WeakSet<HTMLIFrameElement>();
   const pending = new Map<HTMLIFrameElement, number>();
+  const nativeLoadBindings = new WeakSet<HTMLIFrameElement>();
+  const completedNativeLoads = new WeakMap<
+    HTMLIFrameElement,
+    { src: string | null; srcdoc: string | null }
+  >();
+  const nativeLoadWaiters = new Map<
+    HTMLIFrameElement,
+    {
+      version: number;
+      src: string;
+      srcdoc: string | null;
+      resolve: () => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  const nativeAttribute = (
+    element: HTMLIFrameElement,
+    name: string,
+  ): string | null =>
+    client.natives.call("Element.prototype.getAttribute", element, name);
+  function cancelNativeLoad(element: HTMLIFrameElement, version?: number) {
+    const waiter = nativeLoadWaiters.get(element);
+    if (!waiter || (version !== undefined && waiter.version !== version))
+      return;
+    nativeLoadWaiters.delete(element);
+    clearTimeout(waiter.timer);
+    client.natives.call(
+      "EventTarget.prototype.removeEventListener",
+      element,
+      "load",
+      recordNativeLoad,
+    );
+    nativeLoadBindings.delete(element);
+    waiter.reject(Error("renderer_initial_navigation_cancelled"));
+  }
+  const recordNativeLoad = (event: Event) => {
+    const element = event.currentTarget;
+    if (!event.isTrusted || !isFrame(element)) return;
+    client.natives.call(
+      "EventTarget.prototype.removeEventListener",
+      element,
+      "load",
+      recordNativeLoad,
+    );
+    nativeLoadBindings.delete(element);
+    if (
+      !alive ||
+      !rendererTarget(sourceOf(element), client.url.href, options.fixture)
+    )
+      return;
+    const state = {
+      src: nativeAttribute(element, "src"),
+      srcdoc: nativeAttribute(element, "srcdoc"),
+    };
+    completedNativeLoads.set(element, state);
+    const waiter = nativeLoadWaiters.get(element);
+    if (waiter && waiter.src === state.src && waiter.srcdoc === state.srcdoc) {
+      nativeLoadWaiters.delete(element);
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+  };
+  function watchNativeLoad(element: HTMLIFrameElement) {
+    if (nativeLoadBindings.has(element)) return;
+    nativeLoadBindings.add(element);
+    client.natives.call(
+      "EventTarget.prototype.addEventListener",
+      element,
+      "load",
+      recordNativeLoad,
+    );
+  }
+  function settleInitialNativeLoad(
+    element: HTMLIFrameElement,
+    version: number,
+  ) {
+    const src = nativeAttribute(element, "src"),
+      srcdoc = nativeAttribute(element, "srcdoc");
+    // Initial about:blank is synchronously created. A previously installed
+    // managed srcdoc also has no outstanding native HTTP document to wait for.
+    if (!src || src === "about:blank" || managedSrcdoc.has(element))
+      return Promise.resolve();
+    const completed = completedNativeLoads.get(element);
+    if (completed && completed.src === src && completed.srcdoc === srcdoc)
+      return Promise.resolve();
+    // Chrome can commit an already-started HTTP error document after a srcdoc
+    // update, leaving a real srcdoc attribute on the old blank/error document.
+    // Let that initial navigation settle once; never reload or retry it.
+    watchNativeLoad(element);
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (nativeLoadWaiters.get(element)?.version !== version) return;
+        nativeLoadWaiters.delete(element);
+        client.natives.call(
+          "EventTarget.prototype.removeEventListener",
+          element,
+          "load",
+          recordNativeLoad,
+        );
+        nativeLoadBindings.delete(element);
+        reject(Error("renderer_initial_navigation_timeout"));
+      }, 15000);
+      nativeLoadWaiters.set(element, {
+        version,
+        src,
+        srcdoc,
+        resolve,
+        reject,
+        timer,
+      });
+    });
+  }
+
   let generation = 0,
     alive = true;
   let bypass = false;
@@ -262,6 +388,8 @@ export function installOpaqueRenderer(
     receive,
   );
   function normalSource(element: HTMLIFrameElement, value: string) {
+    if (nativeAttribute(element, "srcdoc") === null)
+      completedNativeLoads.delete(element);
     bypass = true;
     try {
       // Adopted parser nodes can retain a foreign prototype. Use this client's
@@ -271,9 +399,38 @@ export function installOpaqueRenderer(
       bypass = false;
     }
   }
+  function stageDetachedSource(element: HTMLIFrameElement, value: string) {
+    const target = rendererTarget(value, client.url.href, options.fixture);
+    if (!target || element.isConnected) return false;
+    // A src-first declaration has not chosen its sandbox yet. Publishing its
+    // native encoded src immediately starts an obsolete navigation on append,
+    // racing the isolated srcdoc prepared as soon as sandbox is declared.
+    // Keep normal reflected attributes immediately, but select the native
+    // route once this synchronous declaration finishes. Unknown destinations
+    // and connected-frame navigations never enter this path.
+    const intent = { value, href: target.href };
+    staged.set(element, intent);
+    client.natives.call(
+      "Element.prototype.setAttribute",
+      element,
+      "runtimekit-attr-src",
+      value,
+    );
+    if(options.reserveNavigation)client.natives.call("Element.prototype.removeAttribute",element,"src");
+    else client.natives.call("Element.prototype.setAttribute", element, "src", "");
+    queueMicrotask(() => {
+      if (!alive || staged.get(element) !== intent) return;
+      staged.delete(element);
+      if (element.getAttribute("src") !== value) return;
+      if (pending.has(element) || original.has(element)) return;
+      if (!load(element, value)) normalSource(element, value);
+    });
+    return true;
+  }
   function sourceOf(element: HTMLIFrameElement, actual = false): string {
     const value =
       (actual ? undefined : original.get(element)) ??
+      nativeAttribute(element,"runtimekit-attr-src") ??
       element.getAttribute("src") ??
       String(src.get!.call(element));
     // Parser-created frames can expose the physical encoded route.
@@ -326,7 +483,9 @@ export function installOpaqueRenderer(
   function load(element: HTMLIFrameElement, value: string) {
     const url = rendererTarget(value, client.url.href, options.fixture);
     if (!url || !alive) return false;
-    if (failed.get(element) === url.href) return false;
+    if (failed.get(element) === url.href) return !!options.reserveNavigation;
+    if(options.reserveNavigation && !element.isConnected)return false;
+    watchNativeLoad(element);
     if (!bound.has(element) && !(element instanceof win.HTMLIFrameElement)) {
       // Bind only the reviewed renderer element, not arbitrary website nodes.
       Object.defineProperty(
@@ -362,10 +521,40 @@ export function installOpaqueRenderer(
       !element.sandbox.contains("allow-same-origin");
     if (!opaque || pending.size >= 8) return false;
     const version = ++generation;
+    staged.delete(element);
     original.set(element, url.href);
     pending.set(element, version);
-    void prepareOpaqueDocument(win, url, options.fetchResource, options.fixture)
-      .then(({ html, resources }) => {
+    if(options.reserveNavigation) {
+      // Never publish RuntimeKit's obsolete encoded HTTP iframe src. The only
+      // native navigation is the controller-approved exact frontend helper.
+      client.natives.call("Element.prototype.removeAttribute",element,"src");
+      client.natives.call("Element.prototype.setAttribute",element,"runtimekit-attr-src",url.href);
+      if(!element.isConnected) {pending.delete(element);original.delete(element);return true;}
+      void options.reserveNavigation(url,element).then(async reservation=>{
+        if(!alive||pending.get(element)!==version||!element.isConnected||!element.sandbox.contains("allow-scripts")||element.sandbox.contains("allow-same-origin")){reservation.cancel();return;}
+        client.natives.call("Element.prototype.removeAttribute",element,"srcdoc");
+        if(element.contentWindow)client.nativeOpaqueWindows.add(element.contentWindow);
+        client.natives.call("Element.prototype.setAttribute",element,"src",reservation.helperURL);
+        const result=await reservation.ready;
+        if(!alive||pending.get(element)!==version||!element.isConnected)return;
+        if(element.contentWindow)client.nativeOpaqueWindows.add(element.contentWindow);
+        pending.delete(element);options.report("applied",result.resources);
+      }).catch(()=>{if(!alive||pending.get(element)!==version)return;pending.delete(element);failed.set(element,url.href);options.report("error",0)});
+      return true;
+    }
+    const initialLoad = settleInitialNativeLoad(element, version);
+    void Promise.all([
+      options.prepareDocument
+        ? options.prepareDocument(url)
+        : prepareOpaqueDocument(
+            win,
+            url,
+            options.fetchResource,
+            options.fixture,
+          ),
+      initialLoad,
+    ])
+      .then(([{ html, resources }]) => {
         if (!alive || pending.get(element) !== version) return;
         if (!element.isConnected) {
           pending.delete(element);
@@ -393,8 +582,9 @@ export function installOpaqueRenderer(
         pending.delete(element);
         options.report("applied", resources);
       })
-      .catch(() => {
+      .catch((error) => {
         if (!alive || pending.get(element) !== version) return;
+        cancelNativeLoad(element, version);
         pending.delete(element);
         original.delete(element);
         failed.set(element, url.href);
@@ -407,16 +597,21 @@ export function installOpaqueRenderer(
           managedSrcdoc.delete(element);
         }
         options.report("error", 0);
-        normalSource(element, value);
+        if (error?.message !== "renderer_initial_navigation_timeout")
+          normalSource(element, value);
       });
     return true;
   }
   Object.defineProperty(prototype, "src", {
     ...src,
     get() {
-      return original.get(this) ?? src.get!.call(this);
+      return (
+        original.get(this) ?? staged.get(this)?.href ?? src.get!.call(this)
+      );
     },
     set(value) {
+      cancelNativeLoad(this);
+      staged.delete(this);
       failed.delete(this);
       if (this.contentWindow)
         client.nativeOpaqueWindows.delete(this.contentWindow);
@@ -431,7 +626,8 @@ export function installOpaqueRenderer(
           );
           managedSrcdoc.delete(this);
         }
-        normalSource(this, String(value));
+        if (!stageDetachedSource(this, String(value)))
+          normalSource(this, String(value));
       }
     },
   });
@@ -462,6 +658,8 @@ export function installOpaqueRenderer(
       }
     }
     if (!bypass && isFrame(this) && String(name).toLowerCase() === "src") {
+      cancelNativeLoad(this);
+      staged.delete(this);
       if (this.contentWindow)
         client.nativeOpaqueWindows.delete(this.contentWindow);
       pending.delete(this);
@@ -476,6 +674,7 @@ export function installOpaqueRenderer(
         );
         managedSrcdoc.delete(this);
       }
+      if (stageDetachedSource(this, String(value))) return;
     }
     return nativeSetAttribute.call(this, name, value);
   };
@@ -509,8 +708,14 @@ export function installOpaqueRenderer(
   const observer = new win.MutationObserver((records) => {
     let budget = 64;
     for (const record of records.slice(0, 64)) {
-      if (record.type === "attributes" && isFrame(record.target))
+      if (record.type === "attributes" && isFrame(record.target)) {
+        if (
+          record.attributeName === "src" &&
+          record.oldValue !== nativeAttribute(record.target, "src")
+        )
+          completedNativeLoads.delete(record.target);
         inspect(record.target);
+      }
       for (const node of [...record.addedNodes].slice(0, 32)) {
         if (isFrame(node)) {
           if (budget-- > 0) inspect(node);
@@ -529,6 +734,7 @@ export function installOpaqueRenderer(
     childList: true,
     subtree: true,
     attributes: true,
+    attributeOldValue: true,
     attributeFilter: ["src", "sandbox"],
   });
   const scan = () => {
@@ -548,6 +754,7 @@ export function installOpaqueRenderer(
     if (!alive) return;
     alive = false;
     pending.clear();
+    for (const element of nativeLoadWaiters.keys()) cancelNativeLoad(element);
     observer.disconnect();
     clearTimeout(scanTimer);
     doc.removeEventListener("DOMContentLoaded", scan);

@@ -182,7 +182,7 @@ test("point-and-attach pairs once; direct nodes get weighted, sticky sessions; d
     f.app.nodePool.release(lease.session, origin);
     await assert.rejects(
       f.app.nodePool.allocate(lease.session, origin, "http://runtime.example"),
-      /expired/,
+      (error) => error.code === "SESSION_REVOKED",
     );
     assert.equal(
       (await f.app.nodePool.allocate("", origin, "http://runtime.example")).node
@@ -610,7 +610,7 @@ test("owner selection replaces only the supplied client's lease and preserves st
     assert.notEqual(selected.session, own.session);
     await assert.rejects(
       f.app.nodePool.allocate(own.session, origin, "http://runtime.example"),
-      /expired/,
+      (error) => error.code === "SESSION_REVOKED",
     );
     assert.equal(
       (

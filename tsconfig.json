@@ -11,5 +11,5 @@
     "allowImportingTsExtensions": true,
     "types": ["vite/client"]
   },
-  "include": ["web/src", "runtime/host.ts", "vite*.ts"]
+  "include": ["web/src", "runtime", "vite*.ts"]
 }

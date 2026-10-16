@@ -1,5 +1,9 @@
 # Compatibility acceptance register
 
+The [held combined frontend-frame candidate](COMBINED-UPDATE-20261016.md) has a
+separate current evidence register. Historical runtime/site results below do not
+automatically qualify its new opaque-frame implementation.
+
 Target: Chrome on an actual Chromebook. Desktop Chrome is the development harness, not Chromebook certification.
 
 ## Fullscreen games and minimized mode — 2026-09-14

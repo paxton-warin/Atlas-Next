@@ -56,6 +56,24 @@ const fixture = createServer(
     if (compatibilityFixture(req,res,url)) return;
     if (await navigationFixture(req, res, url)) return;
     res.setHeader("Cache-Control", "no-store");
+    // Disposable browser-test state only; exercise genuine lease expiry rather
+    // than treating invented tokens as evidence of ordinary idle expiration.
+    if (req.method === "POST" && url.pathname === "/__test/expire-browse-session") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      let session;
+      try { session = JSON.parse(body).session; } catch {}
+      if (typeof session !== "string" || !session || session.length > 100) {
+        res.writeHead(400); res.end("INVALID_FIXTURE_SESSION"); return;
+      }
+      const store = openStore(dir);
+      const result = store.db.prepare("UPDATE browse_leases SET seen=? WHERE hash=?")
+        .run(Date.now() - 43200001, digest(session));
+      store.db.close();
+      res.writeHead(result.changes ? 200 : 404);
+      res.end(result.changes ? "FIXTURE_LEASE_EXPIRED" : "FIXTURE_LEASE_NOT_FOUND");
+      return;
+    }
     // Test-only fixture server: independent browser cases share one loopback IP.
     // Keep the production limits intact, but reset their fixture counters between cases.
     if (
@@ -254,8 +272,7 @@ const mainTransport = await createRuntime({
   appOrigin: "http://localhost:4196",
   runtimeOrigin: "https://runtime.invalid",
   fixture: true,
-  authorize: (ticket, origin, purpose) =>
-    mainRelay.nodePool.resolve(ticket, origin, purpose),
+  authorize: (...args) => mainRelay.nodePool.resolve(...args),
 });
 await mainTransport.listen({ host: "127.0.0.1", port: 4197 });
 mainRelay.nodePool.setLocalConnections(() => mainTransport.connectionCount());

@@ -11,7 +11,11 @@ import {
 } from "./compatibility-policy";
 import { DiagnosticLog, requestCategory } from "./diagnostics";
 // Pinned fork bootstrap/transport; Atlas adds its frame bridge and upgrade handling.
-import { createRelayController } from "./relay-controller";
+import {
+  createRelayController,
+  refreshRelayCredentials,
+} from "./relay-controller";
+import { orderedCredentialUpdates } from "./credential-updates";
 import { migrateCookies, activateWorker } from "./runtime-migration";
 import { loadRuntimeConfig, watchRuntimeSession } from "./connection";
 import { watchFavicon } from "./favicon";
@@ -24,11 +28,8 @@ import { installOpaqueRenderer, type OpaqueResource } from "./opaque-renderer";
 import { createHttpCachePlugin } from "./http-cache";
 import { createRequestHeadersPlugin } from "./request-headers";
 import { createYouTubeAdblockPlugin } from "./youtube-adblock";
-import {
-  installDocumentSurface,
-  type DocumentSurface,
-} from "./document-surface";
-import { SURFACE_PREFERENCE_KEY } from "./compatibility-policy";
+import { createVerifiedStylesheetPlugin } from "./verified-stylesheet";
+import { createDiscordScriptSelectorPlugin } from "./discord-script-selector";
 const globals = window as any;
 const opaqueRequests = new WeakMap<
   object,
@@ -150,15 +151,9 @@ function startDiagnostics(
     });
 }
 const launchParams = new URLSearchParams(location.hash.slice(1));
-const ticket = launchParams.get("ticket") || "";
+let ticket = launchParams.get("ticket") || "";
 let youtubeAdblock = launchParams.get("adblock") !== "0";
 let siteModes: SiteModes = {};
-let surfaceModes: SiteModes = {};
-try {
-  surfaceModes = sanitizeSiteModes(
-    JSON.parse(localStorage.getItem(SURFACE_PREFERENCE_KEY) || "{}"),
-  );
-} catch {}
 const diagnosticModes = new Map<string, boolean>();
 const standalone = parent === window;
 if (standalone) {
@@ -182,7 +177,7 @@ const config = await loadRuntimeConfig(ticket).catch((error) => {
   }
   throw error;
 });
-const relayQuery = ticket ? encodeURIComponent(ticket) + "/" : "";
+let relayQuery = ticket ? encodeURIComponent(ticket) + "/" : "";
 let standaloneExpired = false;
 const notify = (type: string, data: Record<string, unknown> = {}) => {
   if (standalone) {
@@ -214,13 +209,6 @@ const notify = (type: string, data: Record<string, unknown> = {}) => {
         metadata.disabled = !ruleFor(data.url, config.fixture === true);
         metadata.checked = siteModes[new URL(data.url).origin] === true;
       }
-      const surface = document.querySelector<HTMLInputElement>(
-        "#popup-page-surface",
-      );
-      if (surface) {
-        surface.disabled = false;
-        surface.checked = surfaceModes[new URL(data.url).origin] === true;
-      }
       const field = document.querySelector<HTMLInputElement>("#popup-address");
       if (field) field.value = data.url;
       // Keep reload/back-to-this-tab on its latest URL, without putting the
@@ -242,6 +230,17 @@ const notify = (type: string, data: Record<string, unknown> = {}) => {
     }
     const status = document.querySelector<HTMLElement>("#popup-status");
     if (status) {
+      if (type === "session-refresh-needed") {
+        if (
+          ["SESSION_REVOKED", "INVALID_SESSION"].includes(String(data.code))
+        ) {
+          type = "session-expired";
+        } else {
+          status.textContent =
+            "This direct tab needs a fresh connection. Return to Atlas and reopen it.";
+          return;
+        }
+      }
       if (type === "session-expired") {
         standaloneExpired = true;
         status.textContent = "Session expired. Return to Atlas and reconnect.";
@@ -262,7 +261,7 @@ const notify = (type: string, data: Record<string, unknown> = {}) => {
   }
   parent.postMessage({ atlas: 1, type, ...data }, config.appOrigin);
 };
-watchRuntimeSession(ticket, notify);
+const sessionWatch = watchRuntimeSession(() => ticket, notify);
 const records = new Map<
   string,
   {
@@ -273,7 +272,6 @@ const records = new Map<
     timer?: ReturnType<typeof setTimeout>;
     disposeFavicon?: () => void;
     guards?: Map<Document, DocumentGuard>;
-    surfaces?: Map<Document, { guard: DocumentSurface; origin: () => string }>;
     renderers?: Map<Document, () => void>;
     diagnostics?: DiagnosticLog;
   }
@@ -342,7 +340,6 @@ function destroy(id: string) {
   clearTimeout(record.timer);
   record.disposeFavicon?.();
   for (const guard of record.guards?.values() || []) guard.dispose();
-  for (const entry of record.surfaces?.values() || []) entry.guard.dispose();
   for (const dispose of record.renderers?.values() || []) dispose();
   diagnosticModes.delete(id);
   record.element.remove();
@@ -382,18 +379,6 @@ function attachPageBridge(
 ) {
   const record = records.get(id)!;
   if (!record || !client) return;
-  record.surfaces ??= new Map();
-  if (!record.surfaces.has(win.document)) {
-    const origin = () => new URL(client.url.href).origin;
-    record.surfaces.set(win.document, {
-      guard: installDocumentSurface(
-        win,
-        client,
-        surfaceModes[origin()] === true,
-      ),
-      origin,
-    });
-  }
   record.guards ??= new Map();
   if (!record.guards.has(win.document)) {
     while (record.guards.size >= 16) {
@@ -402,8 +387,6 @@ function attachPageBridge(
       record.renderers?.get(oldest[0])?.();
       record.renderers?.delete(oldest[0]);
       record.guards.delete(oldest[0]);
-      record.surfaces?.get(oldest[0])?.guard.dispose();
-      record.surfaces?.delete(oldest[0]);
     }
     const guard = installDocumentGuard(win, {
       id,
@@ -425,8 +408,6 @@ function attachPageBridge(
     win.addEventListener("pagehide", (event) => {
       if (!(event as PageTransitionEvent).persisted) {
         record.guards?.delete(guardDoc);
-        record.surfaces?.get(guardDoc)?.guard.dispose();
-        record.surfaces?.delete(guardDoc);
         record.renderers?.get(guardDoc)?.();
         record.renderers?.delete(guardDoc);
       }
@@ -747,6 +728,8 @@ function createRecord(id: string, engine: string) {
         diagnosticsPlugin(id),
         createYouTubeAdblockPlugin(globals, () => youtubeAdblock),
         createRequestHeadersPlugin(globals),
+        createDiscordScriptSelectorPlugin(globals),
+        createVerifiedStylesheetPlugin(globals),
         createHttpCachePlugin(globals),
         new UrlWatcherPlugin((value: URL) => {
           record.url = String(value);
@@ -858,6 +841,23 @@ async function navigate(id: string, url: string, engine: string) {
   notify("loading", { id });
   await record.frame.go(url);
 }
+const updateRuntimeCredentials = orderedCredentialUpdates<{
+  ticket: string;
+  ticketExpiresAt: number;
+  relayTicket: string;
+  assignedOrigin: string;
+}>({ ticket, ticketExpiresAt: config.ticketExpiresAt || 0 }, async (update) => {
+  await (initialization ??= init());
+  await refreshRelayCredentials(
+    controller,
+    update.assignedOrigin,
+    update.relayTicket,
+  );
+  ticket = update.ticket;
+  relayQuery = encodeURIComponent(ticket) + "/";
+  if (config.relayOrigin) config.relayTicket = update.relayTicket;
+  sessionWatch.update(ticket);
+});
 window.addEventListener("message", async (event) => {
   if (
     event.source !== parent ||
@@ -873,13 +873,36 @@ window.addEventListener("message", async (event) => {
     return;
   }
   try {
+    if (type === "session-update") {
+      const update = event.data;
+      if (
+        typeof update.sessionHash !== "string" ||
+        update.sessionHash !== config.session ||
+        typeof update.ticket !== "string" ||
+        !update.ticket ||
+        update.ticket.length > 32768 ||
+        update.generation !== (config.generation ?? 0)
+      )
+        return;
+      const assignedOrigin = config.relayOrigin || config.runtimeOrigin;
+      if (update.relayOrigin !== assignedOrigin) return;
+      const nextRelayTicket = config.relayOrigin
+        ? update.relayTicket
+        : update.ticket;
+      if (typeof nextRelayTicket !== "string" || !nextRelayTicket) return;
+      const applied = await updateRuntimeCredentials({
+        ticket: update.ticket,
+        ticketExpiresAt: update.ticketExpiresAt,
+        relayTicket: nextRelayTicket,
+        assignedOrigin,
+      });
+      if (applied) notify("session-updated", { generation: update.generation });
+      return;
+    }
     if (typeof id !== "string" || id.length > 100) return;
     if (type === "compatibility-config") {
       siteModes = sanitizeSiteModes(event.data.sites);
-      surfaceModes = sanitizeSiteModes(event.data.surfaces);
       const r = records.get(id);
-      for (const entry of r?.surfaces?.values() || [])
-        entry.guard.update(surfaceModes[entry.origin()] === true);
       for (const [doc, guard] of r?.guards || []) {
         guard.update();
       }
@@ -963,10 +986,9 @@ if (standalone) {
   pageOptions.innerHTML = `<summary>Connection</summary><div style="position:absolute;right:0;top:30px;width:270px;z-index:100;background:#18251c;color:#edf3e8;padding:12px;display:grid;gap:10px;border:1px solid #56715b;border-radius:8px"><details><summary>Page options</summary><div style="display:grid;gap:10px;padding-top:10px">
     <label><input type="checkbox" id="popup-page-metadata" disabled> Adjust site metadata for this origin</label>
     <button type="button" id="popup-page-restore">Restore page defaults</button>
-    <label><input type="checkbox" id="popup-page-surface" disabled> Isolate page structure (experimental)</label>
     <label><input type="checkbox" id="popup-page-diagnostics">Record local diagnostics (5 minutes)</label>
     <button type="button" id="popup-page-export">Export local diagnostics</button>
-    <p id="popup-page-notice" role="status"></p><small>Site content may still be classified. Structural isolation can affect website behavior.</small></div></details></div>`;
+    <p id="popup-page-notice" role="status"></p><small>Site content may still be classified.</small></div></details></div>`;
   bar.append(pageOptions);
   const setMetadata = (enabled: boolean) => {
     const r = records.get(activeStandaloneId());
@@ -981,24 +1003,6 @@ if (standalone) {
     document.querySelector<HTMLInputElement>("#popup-page-metadata")!.checked =
       enabled;
   };
-  const setSurface = (enabled: boolean) => {
-    const r = records.get(activeStandaloneId());
-    if (!r?.url) return;
-    const origin = new URL(r.url).origin;
-    if (enabled) surfaceModes[origin] = true;
-    else delete surfaceModes[origin];
-    try {
-      localStorage.setItem(
-        SURFACE_PREFERENCE_KEY,
-        JSON.stringify(surfaceModes),
-      );
-    } catch {}
-    for (const record of records.values())
-      for (const entry of record.surfaces?.values() || [])
-        entry.guard.update(surfaceModes[entry.origin()] === true);
-    document.querySelector<HTMLInputElement>("#popup-page-surface")!.checked =
-      enabled;
-  };
   pageOptions
     .querySelector("#popup-page-metadata")!
     .addEventListener("change", (event) =>
@@ -1006,15 +1010,7 @@ if (standalone) {
     );
   pageOptions
     .querySelector("#popup-page-restore")!
-    .addEventListener("click", () => {
-      setMetadata(false);
-      setSurface(false);
-    });
-  pageOptions
-    .querySelector("#popup-page-surface")!
-    .addEventListener("change", (event) =>
-      setSurface((event.target as HTMLInputElement).checked),
-    );
+    .addEventListener("click", () => setMetadata(false));
   pageOptions
     .querySelector("#popup-page-diagnostics")!
     .addEventListener("change", (event) => {

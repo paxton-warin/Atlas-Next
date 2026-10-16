@@ -55,3 +55,42 @@ export async function createRelayController(
   config.runtimekitPath = "/runtime/runtimekit.js";
   return new Controller({ serviceworker: sw, transport });
 }
+
+// Rotate only credentials for the already assigned relay. The existing client
+// exposes no mutable socket factory; initialize its replacement so future HTTP
+// and WebSocket connections use the new bearer, then swap managed transports.
+// Existing sockets are not closed and the browsing frame is not navigated.
+export async function refreshRelayCredentials(
+  controller: any,
+  relayOrigin: string,
+  relayTicket: string,
+) {
+  const origin = new URL(relayOrigin);
+  // The committed vendor artifact calls this replaceConnector; upstream
+  // TypeScript calls it setTransport. Qualify the shipped artifact, not only
+  // the source checkout, and preserve both pinned API spellings.
+  const replace = controller?.replaceConnector ?? controller?.setTransport;
+  if (
+    !/^https?:$/.test(origin.protocol) ||
+    (location.protocol === "https:" && origin.protocol !== "https:") ||
+    origin.username ||
+    origin.password ||
+    origin.pathname !== "/" ||
+    origin.search ||
+    origin.hash ||
+    !relayTicket ||
+    relayTicket.length > 32768 ||
+    typeof replace !== "function"
+  )
+    throw Error("Invalid relay credential update.");
+  const relay = new URL(
+    "/relay/" + encodeURIComponent(relayTicket) + "/",
+    origin,
+  );
+  relay.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
+  const transport = new (window as any).HttpEngineTransport.HttpEngineClient({
+    relay: relay.href,
+  });
+  await transport.init();
+  replace.call(controller, transport);
+}

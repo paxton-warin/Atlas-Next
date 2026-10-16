@@ -1,4 +1,4 @@
-import { requestOrigin } from "./request-origin.mjs";
+import { requestOrigin, createUpgradeOrigin } from "./request-origin.mjs";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { server as wisp, logging } from "@mercuryworkshop/wisp-js/server";
@@ -6,6 +6,7 @@ import { Socket } from "node:net";
 import { createDestinationResolver } from "./destination-resolver.mjs";
 export { isPublicIp } from "./destination-resolver.mjs";
 import { resolve } from "node:path";
+import { connectionErrorBody } from "./node-ticket.mjs";
 export function guardedSocket({ fixture = false, blockedHosts = [] } = {}) {
   const resolveDestination = createDestinationResolver();
   return class GuardedTcp {
@@ -19,7 +20,9 @@ export function guardedSocket({ fixture = false, blockedHosts = [] } = {}) {
     }
     async connect() {
       const allowedFixture =
-        fixture && this.hostname === "127.0.0.1" && this.port === 4199;
+        fixture &&
+        ["127.0.0.1", "localhost"].includes(this.hostname) &&
+        this.port === 4199;
       if (
         !allowedFixture &&
         (blockedHosts.includes(this.hostname.toLowerCase()) ||
@@ -109,6 +112,9 @@ export async function createRuntime({
       ? process.env.TRUST_PROXY.split(",")
       : false,
   });
+  app.setErrorHandler((error, req, reply) => {
+    reply.code(error.statusCode || 500).send(connectionErrorBody(error));
+  });
   logging.set_level(logging.NONE);
   Object.assign(wisp.options, {
     allow_udp_streams: false,
@@ -128,20 +134,32 @@ export async function createRuntime({
   const sockets = new Set();
   const sessions = new Map();
   const authorizations = new Map();
-  const getAuthorization = (req, origin, purpose = "runtime") => {
+  const getAuthorization = (req, origin, purpose = "runtime", options) => {
     const raw =
       req.headers.authorization?.replace(/^Bearer /, "") ||
       new URL(req.url, "http://runtime").pathname.match(
         /^\/(?:relay|wisp)\/([A-Za-z0-9_.-]+)\/$/,
       )?.[1];
-    return authorize?.(
-      raw,
-      origin || requestOrigin(req, runtimeOrigin),
-      purpose,
-    );
+    return authorize?.(raw, origin || upgradeOrigin(req), purpose, {
+      ...options,
+      relayOrigin: purpose === "relay" ? upgradeOrigin(req) : undefined,
+    });
   };
   const perIp = new Map();
+  const upgradeOrigin = createUpgradeOrigin(
+    runtimeOrigin,
+    process.env.TRUST_PROXY?.split(",") || [],
+  );
   app.server.on("upgrade", (req, socket, head) => {
+    // A separate purpose-bound upload gateway owns this reserved path. Never
+    // consume/reject its upgrade with the Wisp relay ticket verifier first.
+    if (
+      app.hasDecorator("nativeResourceGateway") &&
+      new URL(req.url, "http://runtime").pathname.startsWith(
+        "/native-resource/v1/owner/",
+      )
+    )
+      return;
     let assignment;
     try {
       assignment = getAuthorization(req, req.headers.origin, "relay");
@@ -169,7 +187,9 @@ export async function createRuntime({
     sockets.add(socket);
     if (authorize)
       authorizations.set(socket, () =>
-        getAuthorization(req, req.headers.origin, "relay"),
+        getAuthorization(req, req.headers.origin, "relay", {
+          established: true,
+        }),
       );
     if (sessionKey) sessions.set(sessionKey, sessionCount + 1);
     if (!authorize) perIp.set(ip, n + 1);
@@ -239,6 +259,15 @@ export async function createRuntime({
         : runtimeOrigin,
       fixture,
       node: assignment?.node,
+      ...(assignment
+        ? {
+            session: assignment.session,
+            generation: assignment.generation,
+            leaseExpiresAt: assignment.leaseExpiresAt,
+            ticketExpiresAt: assignment.ticketExpiresAt,
+            serverTime: Date.now(),
+          }
+        : {}),
       ...(assignment?.relayOrigin
         ? {
             relayOrigin: assignment.relayOrigin,

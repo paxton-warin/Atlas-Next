@@ -4,12 +4,15 @@ import { selectBrowsingLeaseForOwner } from "./browsing-session";
 export type BrowsingNodeSelectionProps = {
   browsingSession?: string;
   browsingNode?: { id: string; name: string };
+  /** Combined frontend runtime owns reserve/probe/commit and peer renewal. */
+  selectBrowsingNode?: (nodeId: string, csrf: string) => Promise<any>;
   onLeaseSelected: (lease: any, persisted: boolean) => void;
 };
 export default function NodeSettings({
   csrf,
   browsingSession,
   browsingNode,
+  selectBrowsingNode,
   onLeaseSelected,
 }: { csrf: string } & BrowsingNodeSelectionProps) {
   const [nodes, setNodes] = useState<any[]>([]),
@@ -25,6 +28,8 @@ export default function NodeSettings({
       ...options,
       headers: { ...options.headers, "x-atlas-csrf": csrf },
     });
+  const requiresSetup = (node: any) =>
+    node.setupRequired && !(selectBrowsingNode && node.id === "local");
   const refresh = () =>
     request()
       .then(setNodes)
@@ -66,6 +71,11 @@ export default function NodeSettings({
           setChangingConnection(true);
           setError("");
           try {
+            if (selectBrowsingNode) {
+              const lease = await selectBrowsingNode(selectedNode, csrf);
+              onLeaseSelected(lease, true);
+              return;
+            }
             let persisted = false;
             const lease = await selectBrowsingLeaseForOwner(
               browsingSession,
@@ -94,9 +104,11 @@ export default function NodeSettings({
         </p>
         <p className="small">
           Changes only this browser's connection, not other clients or node
-          weights. Saved tabs stay intact; websites may require signing in again
-          on a different node. Online draining nodes are available for owner
-          tests.
+          weights. Saved tabs stay intact;{" "}
+          {selectBrowsingNode
+            ? "website storage stays on this Atlas frontend when the traffic node changes."
+            : "websites may require signing in again on a different node."}{" "}
+          Online draining nodes are available for owner tests.
         </p>
         <label className="form-field">
           Assign this browser to
@@ -114,7 +126,7 @@ export default function NodeSettings({
                 disabled={
                   !node.online ||
                   node.state === "disabled" ||
-                  node.setupRequired
+                  requiresSetup(node)
                 }
               >
                 {node.name}
@@ -140,7 +152,7 @@ export default function NodeSettings({
             <div>
               <strong>{node.name}</strong>
               <span className={"node-health " + (node.online ? "online" : "")}>
-                {node.setupRequired
+                {requiresSetup(node)
                   ? "Setup required"
                   : node.online
                     ? "Online"
@@ -148,17 +160,19 @@ export default function NodeSettings({
               </span>
             </div>
             <p className="small">
-              {node.relayMode === "frontend"
-                ? "Current frontend URL · Main server relay"
-                : node.runtimeOrigin ||
-                  node.endpoint ||
-                  "This server · local browsing runtime"}
+              {selectBrowsingNode && node.id === "local"
+                ? "Current frontend URL · Main server traffic relay"
+                : node.relayMode === "frontend"
+                  ? "Current frontend URL · Main server relay"
+                  : node.runtimeOrigin ||
+                    node.endpoint ||
+                    "This server · local browsing runtime"}
             </p>
             {node.id === "local" && (
               <p className="small">
-                {node.setupRequired && node.relayMode === "frontend" ? (
+                {requiresSetup(node) && node.relayMode === "frontend" ? (
                   "Update and attach a healthy node to host the isolated browsing frame. Website traffic still uses Main server's IP and bandwidth."
-                ) : node.setupRequired ? (
+                ) : requiresSetup(node) ? (
                   <>
                     Set <code>RUNTIME_ORIGIN</code> to this server's separate
                     browsing hostname and restart Atlas before enabling it.

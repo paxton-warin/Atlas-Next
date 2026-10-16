@@ -12,6 +12,10 @@ import {
   X,
 } from "lucide-react";
 import { createDirectTabUrl } from "../../runtime/direct-tab";
+import {
+  frontendRuntimeEnabled,
+  createFrontendWorkspace,
+} from "./frontend-runtime";
 import { isSearchShortcut } from "../../runtime/browser-shortcuts";
 import { matchesShortcut } from "../../runtime/panic-shortcut";
 import { attachFullscreenKeyboard } from "../../runtime/fullscreen-keyboard";
@@ -29,12 +33,19 @@ import {
   type PopoutLaunch,
 } from "./popout-link";
 import "./popout.css";
+import {
+  createBrowsingLeaseLifecycle,
+  normalizeBrowsingLease,
+  LEASE_STORAGE_KEY,
+  TERMINAL_LEASE_CODES,
+  retryBrowsingLeaseOperation,
+  type BrowsingLease,
+} from "./browsing-session";
 
-type Connection = {
+type Connection = BrowsingLease & {
   node?: { name: string; online: boolean };
   runtimeOrigin: string;
   nodeRouting?: boolean;
-  session?: string;
   ticket?: string;
   expiresLocally?: number;
 };
@@ -67,6 +78,15 @@ export default function Popout() {
     sanitizeSettings(readLocal("atlas.settings", defaults)),
   );
   const [connection, setConnection] = useState<Connection | null>(null);
+  const opaqueMode = frontendRuntimeEnabled(connection);
+  const frontendArea = useRef<HTMLDivElement>(null);
+  const frontendWorkspace = useRef<ReturnType<
+    typeof createFrontendWorkspace
+  > | null>(null);
+  const connectionRef = useRef<Connection | null>(null);
+  connectionRef.current = connection;
+  const renewLease = useRef<() => void>(() => {});
+  const runtimeBootFailed = useRef(false);
   const [error, setError] = useState(launch.error || "");
   const [expired, setExpired] = useState(false);
   const [ready, setReady] = useState(false);
@@ -87,9 +107,20 @@ export default function Popout() {
   const runtimeLoaded = useRef(false);
   useEffect(() => {
     runtimeLoaded.current = false;
-  }, [connection?.runtimeOrigin, connection?.ticket]);
+  }, [connection?.runtimeOrigin, connection?.session, connection?.generation]);
 
   function send(type: string, extra: Record<string, unknown> = {}) {
+    if (frontendRuntimeEnabled(connectionRef.current)) {
+      if (
+        ["navigate", "activate", "close", "reload", "back", "forward"].includes(
+          type,
+        )
+      )
+        void frontendWorkspace.current
+          ?.command(type, { id: active.current, ...extra })
+          .catch((error) => setMessage(error.message));
+      return;
+    }
     if (!connection || isExpired.current || !runtimeLoaded.current) return;
     runtime.current?.contentWindow?.postMessage(
       {
@@ -143,18 +174,38 @@ export default function Popout() {
     let mounted = true;
     // StrictMode can replay effects. Validate this exact lease only once and
     // never fall back to allocation or another tab's localStorage session.
-    startup.current ||= api("/config", {
-      signal: AbortSignal.timeout(12000),
-    }).then(async (config) => {
+    startup.current ||= retryBrowsingLeaseOperation(() =>
+      api("/config", {
+        signal: AbortSignal.timeout(12000),
+      }),
+    ).then(async (config) => {
+      if (frontendRuntimeEnabled(config)) {
+        if (!launch.value!.session) throw Error(EXPIRED);
+        return {
+          session: launch.value!.session,
+          ...config,
+          runtimeOrigin: location.origin,
+        };
+      }
       let result = config;
       if (config.nodeRouting) {
         if (!launch.value!.session)
           throw Object.assign(Error(EXPIRED), { status: 409 });
-        const lease = await api("/browse/session", {
-          method: "POST",
-          body: JSON.stringify({ session: launch.value!.session }),
-          signal: AbortSignal.timeout(12000),
-        });
+        const lease = await retryBrowsingLeaseOperation(
+          () =>
+            api("/browse/session", {
+              method: "POST",
+              body: JSON.stringify({
+                session: launch.value!.session,
+                intent: "restore",
+              }),
+              signal: AbortSignal.timeout(12000),
+            }),
+          {
+            retrying: () =>
+              setMessage("Reconnecting to the current browsing node…"),
+          },
+        );
         if (lease.session !== launch.value!.session)
           throw Object.assign(Error(EXPIRED), { status: 409 });
         if (
@@ -166,15 +217,7 @@ export default function Popout() {
           throw Error(
             "This node is unavailable. Return to Atlas to reconnect; this popout will not switch nodes automatically.",
           );
-        result = {
-          ...config,
-          ...lease,
-          expiresLocally:
-            Number.isFinite(lease.expiresAt) &&
-            Number.isFinite(lease.serverTime)
-              ? Date.now() + lease.expiresAt - lease.serverTime
-              : undefined,
-        };
+        result = { ...config, ...normalizeBrowsingLease(lease) };
       }
       const origin = new URL(result.runtimeOrigin);
       if (
@@ -189,18 +232,16 @@ export default function Popout() {
         throw Error(
           "The browsing connection is not configured. Return to Atlas to check it.",
         );
-      return { ...result, runtimeOrigin: origin.origin };
+      return { session: "", ...result, runtimeOrigin: origin.origin };
     });
     startup.current
       .then((config) => {
         if (!mounted) return;
-        if (config.expiresLocally && config.expiresLocally <= Date.now())
-          expire();
-        else setConnection(config);
+        setConnection(config);
       })
       .catch((reason) => {
         if (!mounted) return;
-        if (reason.status === 409) expire();
+        if (TERMINAL_LEASE_CODES.has(reason.code)) expire();
         else {
           setError(reason.message || "The browsing connection did not start.");
           setLoading(false);
@@ -210,6 +251,76 @@ export default function Popout() {
       mounted = false;
     };
   }, [launch]);
+
+  useEffect(() => {
+    if (!opaqueMode || !launch.value || !frontendArea.current) return;
+    let mounted = true;
+    const workspace = createFrontendWorkspace({
+      container: frontendArea.current,
+      initialSession: launch.value.session,
+      onAssignment(assignment) {
+        if (!mounted) return;
+        connectionRef.current = {
+          ...connectionRef.current,
+          ...assignment,
+          runtimeOrigin: location.origin,
+          node: { ...assignment.node, online: true },
+          nodeRouting: true,
+        };
+        setConnection(connectionRef.current);
+        setError("");
+      },
+      onConnection(state) {
+        if (!mounted) return;
+        if (state.status === "revoked" || state.status === "invalid") expire();
+        else if (state.status === "retrying")
+          setMessage(
+            "Retrying the pinned browsing node; your page remains open…",
+          );
+        else if (state.status === "error")
+          setError(state.code || "The browsing connection did not start.");
+      },
+      onEvent(event) {
+        if (!mounted) return;
+        const page = pages.current.get(event.id);
+        if (!page) return;
+        if (event.type === "navigation" && event.url) {
+          page.url = event.url;
+          if (active.current === event.id) showPage(event.id);
+        }
+        if (active.current !== event.id) return;
+        if (event.type === "loading") {
+          setLoading(true);
+          setMessage("");
+        }
+        if (event.type === "loaded") {
+          setLoading(false);
+          setMessage("");
+        }
+        if (event.type === "error") {
+          setLoading(false);
+          setMessage(event.message || "The website did not load.");
+        }
+      },
+    });
+    frontendWorkspace.current = workspace;
+    setReady(true);
+    void workspace
+      .connect()
+      .then(() => workspace.navigate(ROOT_PAGE, target || launch.value!.target))
+      .catch((error) => {
+        if (mounted) {
+          setError(error.message);
+          setLoading(false);
+        }
+      });
+    return () => {
+      mounted = false;
+      workspace.dispose();
+      if (frontendWorkspace.current === workspace)
+        frontendWorkspace.current = null;
+    };
+  }, [opaqueMode, launch]);
 
   useEffect(() => {
     document.title = "Atlas";
@@ -228,22 +339,88 @@ export default function Popout() {
   }, [settings.mode]);
 
   useEffect(() => {
-    if (!connection?.expiresLocally || expired) return;
+    if (
+      opaqueMode ||
+      !connection?.nodeRouting ||
+      !connection.session ||
+      expired
+    )
+      return;
+    const lifecycle = createBrowsingLeaseLifecycle<Connection>({
+      current: () => connectionRef.current,
+      visible: () => !document.hidden,
+      request: (lease, intent) =>
+        api("/browse/session", {
+          method: "POST",
+          body: JSON.stringify({
+            intent,
+            session: lease.session,
+            generation: lease.generation,
+          }),
+          signal: AbortSignal.timeout(12000),
+        }),
+      locks: navigator.locks,
+      readRemembered: () => readLocal(LEASE_STORAGE_KEY, null),
+      // Refresh this exact pin only; a popout never follows another tab's
+      // manual switch and never overwrites the owner's selected session.
+      remember: (lease) => {
+        const saved = readLocal<Connection | null>(LEASE_STORAGE_KEY, null);
+        if (!saved || saved.session === lease.session)
+          try {
+            localStorage.setItem(LEASE_STORAGE_KEY, JSON.stringify(lease));
+          } catch {}
+      },
+      apply: (lease, previous) => {
+        const bootFailed = runtimeBootFailed.current;
+        if (bootFailed) lease = { ...lease, bootTicket: lease.ticket };
+        connectionRef.current = lease;
+        setConnection(lease);
+        setError("");
+        if (
+          lease.generation !== previous.generation ||
+          lease.session !== previous.session ||
+          bootFailed
+        ) {
+          runtimeBootFailed.current = false;
+          started.current = false;
+          runtimeLoaded.current = false;
+          setReady(false);
+          setLoading(true);
+        } else
+          send("session-update", {
+            sessionHash: lease.sessionHash,
+            generation: lease.generation,
+            ticket: lease.ticket,
+            relayTicket: lease.relayTicket,
+            relayOrigin: lease.relayOrigin,
+            ticketExpiresAt: lease.ticketExpiresAt,
+          });
+      },
+      terminal: () => expire(),
+    });
+    renewLease.current = () => {
+      void lifecycle.check(true);
+    };
     const check = () => {
-      if (Date.now() >= connection.expiresLocally!) expire();
+      if (!document.hidden) void lifecycle.check();
     };
-    const timer = setTimeout(
-      check,
-      Math.min(2147483647, Math.max(0, connection.expiresLocally - Date.now())),
-    );
-    window.addEventListener("pageshow", check);
+    lifecycle.start();
     document.addEventListener("visibilitychange", check);
+    window.addEventListener("pageshow", check);
+    window.addEventListener("online", check);
     return () => {
-      clearTimeout(timer);
-      window.removeEventListener("pageshow", check);
+      lifecycle.stop();
+      renewLease.current = () => {};
       document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("pageshow", check);
+      window.removeEventListener("online", check);
     };
-  }, [connection, expired]);
+  }, [
+    connection?.session,
+    connection?.generation,
+    connection?.nodeRouting,
+    expired,
+  ]);
 
   useEffect(() => {
     if (!connection || expired) return;
@@ -257,21 +434,42 @@ export default function Popout() {
         return;
       const data = event.data;
       if (data.type === "ready") {
+        runtimeBootFailed.current = false;
         setReady(true);
         setError("");
         if (!started.current) {
           started.current = true;
           send("panic-key", { id: "system", key: settings.exitKey });
-          send("navigate", {
-            id: ROOT_PAGE,
-            url: launch.value!.target,
-            engine: "runtime",
-          });
+          // A generation replacement creates an empty runtime, not a new
+          // browsing intent. Restore each current managed page, with the
+          // active page last so it remains visible after initialization.
+          const retained = [...pages.current.entries()].filter(([, page]) =>
+            webAddress(page.url),
+          );
+          const chosen = retained.some(([id]) => id === active.current)
+            ? active.current
+            : retained.find(([id]) => id === ROOT_PAGE)?.[0] || ROOT_PAGE;
+          retained.sort(
+            ([a], [b]) => Number(a === chosen) - Number(b === chosen),
+          );
+          for (const [id, page] of retained)
+            send("navigate", { id, url: page.url, engine: "runtime" });
+          if (retained.length) showPage(chosen);
+          else
+            send("navigate", {
+              id: ROOT_PAGE,
+              url: target || launch.value!.target,
+              engine: "runtime",
+            });
         }
         return;
       }
-      if (data.type === "session-expired") {
-        expire();
+      if (
+        data.type === "session-expired" ||
+        data.type === "session-refresh-needed"
+      ) {
+        if (data.boot === true) runtimeBootFailed.current = true;
+        renewLease.current();
         return;
       }
       if (data.type === "boot-error") {
@@ -367,7 +565,7 @@ export default function Popout() {
   }, [connection, expired, launch, settings]);
 
   useEffect(() => {
-    if (!connection || expired || ready) return;
+    if (opaqueMode || !connection || expired || ready) return;
     const ping = () => send("ping", { id: "system" });
     ping();
     const retry = setInterval(ping, 500);
@@ -412,7 +610,9 @@ export default function Popout() {
       attachFullscreenKeyboard(
         document,
         navigator,
-        () => document.fullscreenElement === runtime.current,
+        () =>
+          document.fullscreenElement ===
+          (frontendWorkspace.current?.frame ?? runtime.current),
         (state) => {
           if (state !== "locked")
             setMessage(
@@ -424,7 +624,7 @@ export default function Popout() {
   );
 
   let directUrl = "";
-  if (connection && ready && !expired && webAddress(target)) {
+  if (!opaqueMode && connection && ready && !expired && webAddress(target)) {
     try {
       directUrl = createDirectTabUrl(
         connection.runtimeOrigin,
@@ -537,6 +737,11 @@ export default function Popout() {
           pageOptions={(controls) => (
             <CompatibilityPanel
               {...controls}
+              control={
+                opaqueMode
+                  ? frontendWorkspace.current?.pageControls(active.current)
+                  : undefined
+              }
               ready={ready}
               frame={runtime.current?.contentWindow}
               runtimeOrigin={connection?.runtimeOrigin}
@@ -595,14 +800,24 @@ export default function Popout() {
         </a>
       </header>
       <section className="popout-content" aria-label="Website">
-        {connection && !expired && (
+        {opaqueMode && (
+          <div
+            ref={frontendArea}
+            data-frontend-runtime="2"
+            style={{ position: "absolute", inset: 0 }}
+          />
+        )}
+        {!opaqueMode && connection && !expired && (
           <iframe
             ref={runtime}
             title="Atlas isolated browsing runtime"
             src={
               connection.runtimeOrigin +
-              (connection.ticket
-                ? "#ticket=" + encodeURIComponent(connection.ticket)
+              ((connection.bootTicket ?? connection.ticket)
+                ? "#ticket=" +
+                  encodeURIComponent(
+                    (connection.bootTicket ?? connection.ticket)!,
+                  )
                 : "")
             }
             onLoad={() => {

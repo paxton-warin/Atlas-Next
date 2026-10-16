@@ -1,3 +1,10 @@
+import { OPAQUE_RUNTIME_PROTOCOL } from "./runtime-capabilities.mjs";
+import { installReservedRendererHelper } from "./reserved-renderer-helper.mjs";
+import { installFrontendControllerAPI } from "./frontend-controller.mjs";
+import { installOpaqueRuntimeAssets } from "./opaque-runtime-assets.mjs";
+import { opaqueRuntimeSettings } from "./runtime-activation.mjs";
+import { createNativeResourceAuthority } from "./native-resource-authority.mjs";
+import { installNativeResourceGateway } from "./native-resource-gateway.mjs";
 import {
   createRequestLimits,
   defaultRequestLimits,
@@ -6,7 +13,8 @@ import {
 } from "./request-limits.mjs";
 import { fetchSearchSuggestions } from "./search-suggestions.mjs";
 import { createNodePool } from "./node-pool.mjs";
-import { requestOrigin } from "./request-origin.mjs";
+import { connectionErrorBody } from "./node-ticket.mjs";
+import { createUpgradeOrigin } from "./request-origin.mjs";
 import Fastify from "fastify";
 import { installAi } from "./ai.mjs";
 import fastifyStatic from "@fastify/static";
@@ -42,9 +50,21 @@ export const defaults = () => ({
   staticDir: resolve("dist/web"),
   dynamicOrigins: true,
   nodesEnabled: false,
+  // Defaults held. Release activation is explicit, never inferred from assets.
+  ...opaqueRuntimeSettings(),
 });
 export async function createApp(options = {}) {
   const config = { ...defaults(), ...options };
+  if (
+    config.opaqueRuntimeActivated &&
+    (!config.opaqueRuntimeEnabled ||
+      !config.opaqueAssetsDir ||
+      config.localRelayMode !== "frontend" ||
+      !config.appOrigin.startsWith("https://"))
+  )
+    throw Error(
+      "Combined runtime activation requires HTTPS, frontend relay mode and verified opaque assets.",
+    );
   if (
     new URL(config.appOrigin).hostname ===
     new URL(config.runtimeOrigin).hostname
@@ -69,10 +89,13 @@ export async function createApp(options = {}) {
       ? process.env.TRUST_PROXY.split(",")
       : false,
   });
+  let runtimeAssets;
+  const originFromRequest = createUpgradeOrigin(
+    config.appOrigin,
+    process.env.TRUST_PROXY?.split(",") || [],
+  );
   const originFor = (req) =>
-    config.dynamicOrigins
-      ? requestOrigin(req, config.appOrigin)
-      : config.appOrigin;
+    config.dynamicOrigins ? originFromRequest(req) : config.appOrigin;
   const store = openStore(config.dataDir),
     { db, get, set, audit, seal, unseal } = store;
   const pool = createNodePool(store, {
@@ -155,6 +178,23 @@ export async function createApp(options = {}) {
     return true;
   }
   app.addHook("onRequest", async (req, reply) => {
+    const controllerEndpoints = config.opaqueRuntimeEnabled
+      ? [
+          originFor(req),
+          ...pool
+            .list()
+            .filter((n) => n.id !== "local")
+            .map((n) => n.endpoint),
+        ]
+      : [];
+    const controllerConnect = controllerEndpoints
+      .flatMap((value) => {
+        const url = new URL(value),
+          ws = new URL(url.origin);
+        ws.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        return [url.origin, ws.origin];
+      })
+      .join(" ");
     reply
       .header("Referrer-Policy", "no-referrer")
       .header("X-Content-Type-Options", "nosniff")
@@ -164,7 +204,7 @@ export async function createApp(options = {}) {
       );
     reply.header(
       "Content-Security-Policy",
-      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-src 'self' ${config.runtimeOrigin} ${pool
+      `default-src 'self'; script-src 'self'${config.opaqueRuntimeEnabled ? " 'wasm-unsafe-eval'" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ${controllerConnect}; frame-src 'self' ${config.runtimeOrigin} ${pool
         .list()
         .filter((n) => n.id !== "local")
         .map((n) => n.endpoint)
@@ -198,17 +238,29 @@ export async function createApp(options = {}) {
     }
   });
   app.setErrorHandler((err, req, reply) =>
-    reply.code(err.statusCode || 500).send({
-      error: err.statusCode
-        ? err.message
-        : "The request could not be completed.",
-    }),
+    reply.code(err.statusCode || 500).send(
+      req.url.split("?")[0] === "/api/browse/session" ||
+        req.url.startsWith("/api/browse/controller/") ||
+        req.url.split("?")[0] === "/api/admin/nodes/controller-select"
+        ? connectionErrorBody(err)
+        : {
+            error: err.statusCode
+              ? err.message
+              : "The request could not be completed.",
+          },
+    ),
   );
   app.get("/api/config", () => ({
     name: get("siteName") || "Atlas",
     runtimeOrigin: config.runtimeOrigin,
     engines: ["scramjet"],
     nodeRouting: config.nodesEnabled,
+    runtimeProtocols: {
+      opaque: {
+        ...OPAQUE_RUNTIME_PROTOCOL,
+        activated: config.opaqueRuntimeActivated === true && !!runtimeAssets,
+      },
+    },
   }));
   app.get("/health", () => {
     db.prepare("SELECT 1").get();
@@ -530,16 +582,57 @@ export async function createApp(options = {}) {
   });
   app.post("/api/browse/session", async (req) => {
     limitIp(req, "browse");
-    return pool.allocate(
-      req.body?.session,
-      originFor(req),
-      config.runtimeOrigin,
-    );
+    return pool.operate(req.body || {}, originFor(req), config.runtimeOrigin);
   });
   app.delete("/api/browse/session", (req) => {
     pool.release(req.body?.session, originFor(req));
     return { ok: true };
   });
+  let frontendDocuments;
+  if (config.opaqueRuntimeEnabled) {
+    frontendDocuments = installFrontendControllerAPI(app, {
+      pool,
+      originFor,
+      limitBrowse: (req) => limitIp(req, "browse"),
+      administrator: session,
+    });
+    installReservedRendererHelper(app, {
+      originFor,
+      authorizeReservation: (req, id) => frontendDocuments.rendererOwner(req, id),
+      validateReservation: binding => frontendDocuments.rendererOwnerValid(binding),
+    });
+    installNativeResourceGateway(app, {
+      originFor,
+      ...createNativeResourceAuthority({
+        nodeId: () => "local",
+        secret: () => unseal(get("localNodeSecret")),
+        originFor,
+        liveLease: (owner) =>
+          pool.list().find((n) => n.id === "local")?.state !== "disabled" &&
+          pool.frontendAssignments.validate({
+            hash: owner.leaseHash,
+            origin: owner.frontendOrigin,
+            generation: owner.generation,
+          }),
+      }),
+    });
+  }
+  if (config.opaqueRuntimeEnabled && config.opaqueAssetsDir) {
+    runtimeAssets = installOpaqueRuntimeAssets(app, {
+      directory: config.opaqueAssetsDir,
+      originFor,
+      nativeResourceOrigin: frontendDocuments.resourceOrigin,
+      rendererHelperPrefix: frontendDocuments.rendererPrefix,
+      relayOrigins: (req) => [
+        originFor(req),
+        ...pool
+          .list()
+          .filter((n) => n.id !== "local")
+          .map((n) => n.endpoint),
+      ],
+    });
+    app.post("/api/browse/controller/runtime", () => runtimeAssets);
+  }
   app.post("/api/nodes/heartbeat", async (req) => {
     limitIp(req, "node-heartbeat");
     await pool.heartbeat(

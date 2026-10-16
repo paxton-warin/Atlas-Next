@@ -1,5 +1,11 @@
 # Direct browsing nodes
 
+**Architecture status:** this page describes the deployed/legacy frame-host
+selection. The unreleased [combined frontend-frame update](COMBINED-UPDATE-20261016.md)
+keeps frame URLs on the current frontend and pins WebSocket/native-resource
+traffic to the selected node. Its combined acceptance and rollout gates remain
+separate from these historical deployment instructions.
+
 For the complete three-server procedure, see [Three VPS setup](THREE-VPS-SETUP.md).
 
 ## Traffic

@@ -1,46 +1,75 @@
-// Called only during a fresh application mount, before any website is loaded.
-// A live session's expiry/revocation continues to require explicit reconnect.
+export type BrowsingLease = {
+  session: string;
+  sessionHash?: string;
+  generation?: number;
+  ticket?: string;
+  relayTicket?: string;
+  relayOrigin?: string;
+  runtimeOrigin?: string;
+  leaseExpiresAt?: number;
+  ticketExpiresAt?: number;
+  expiresAt?: number;
+  serverTime?: number;
+  expiresLocally?: number;
+  bootTicket?: string;
+};
+export type LeaseFailure = Error & {
+  status?: number;
+  code?: string;
+  retryable?: boolean;
+  retryAfter?: number;
+};
+export type LeaseIntent = "restore" | "renew" | "new";
+export const LEASE_STORAGE_KEY = "atlas.nodeLease.v2";
+export const TERMINAL_LEASE_CODES = new Set([
+  "SESSION_REVOKED",
+  "INVALID_SESSION",
+  "SESSION_GENERATION_MISMATCH",
+]);
+export function normalizeBrowsingLease<T extends BrowsingLease>(
+  lease: T,
+  previous?: BrowsingLease,
+): T {
+  const same =
+    previous?.session === lease.session &&
+    previous?.generation === lease.generation;
+  const expiry = lease.ticketExpiresAt ?? lease.expiresAt;
+  return {
+    ...lease,
+    bootTicket: same ? (previous.bootTicket ?? previous.ticket) : lease.ticket,
+    expiresLocally:
+      Number.isFinite(expiry) && Number.isFinite(lease.serverTime)
+        ? Date.now() + expiry! - lease.serverTime!
+        : undefined,
+  };
+}
+function savedSession(saved: unknown) {
+  return typeof saved === "string" && saved.length <= 100 ? saved : "";
+}
+// Restore is a distinct server operation: only the server can prove an idle
+// expiry. A generic 409/network failure must never discard a valid node pin.
 export async function restoreBrowsingLease<T extends { session: string }>(
   saved: unknown,
-  allocate: (session: string) => Promise<T>,
+  allocate: (session: string, intent?: LeaseIntent) => Promise<T>,
   remember: (session: string) => void,
 ): Promise<T> {
-  const session = typeof saved === "string" && saved.length <= 100 ? saved : "";
-  let lease: T;
-  try {
-    lease = await allocate(session);
-  } catch (error) {
-    if (!session || (error as { status?: number })?.status !== 409) throw error;
-    // One attempt only. Network errors, offline nodes, and rate limits must
-    // not silently replace a still-valid pin or cause allocation retry loops.
-    lease = await allocate("");
-  }
+  const session = savedSession(saved);
+  const lease = await allocate(session, "restore");
   remember(lease.session);
   return lease;
 }
-
-// The lock spans reading storage, allocation and persistence. A second window
-// therefore reuses the first window's replacement instead of racing it.
 export function restoreBrowsingLeaseOnStartup<T extends { session: string }>(
   readSaved: () => unknown,
-  allocate: (session: string) => Promise<T>,
+  allocate: (session: string, intent?: LeaseIntent) => Promise<T>,
   remember: (session: string) => void,
   locks?: Pick<LockManager, "request">,
 ): Promise<T> {
   const restore = () => restoreBrowsingLease(readSaved(), allocate, remember);
-  // Browsers without Web Locks may allocate independent leases in a race.
-  // Keep each active window pinned to its own result; never follow storage
-  // changes or revoke a different window's lease when reconnecting.
   return locks ? locks.request("atlas-browsing-session", restore) : restore();
 }
-
 export function browsingSessionToRelease(active: unknown, saved: unknown) {
-  const session = typeof active === "string" && active ? active : saved;
-  return typeof session === "string" && session.length <= 100 ? session : "";
+  return savedSession(typeof active === "string" && active ? active : saved);
 }
-
-// Explicit owner action: use this window's live pin, not a peer's newer storage
-// value, and share the startup lock until the replacement has been remembered.
 export function selectBrowsingLeaseForOwner<T extends { session: string }>(
   active: unknown,
   readSaved: () => unknown,
@@ -54,4 +83,225 @@ export function selectBrowsingLeaseForOwner<T extends { session: string }>(
     return lease;
   };
   return locks ? locks.request("atlas-browsing-session", change) : change();
+}
+export function leaseRetryDelay(attempt: number, retryAfter?: number) {
+  return Math.min(
+    30000,
+    Math.max(
+      1000,
+      (Number.isFinite(retryAfter) && retryAfter! >= 0
+        ? retryAfter!
+        : Math.min(30, 2 ** Math.min(attempt, 5))) * 1000,
+    ),
+  );
+}
+// Cold starts can wait through a control-plane outage without deleting the
+// saved pin or converting a transport timeout into session expiration.
+export async function retryBrowsingLeaseOperation<T>(
+  operation: () => Promise<T>,
+  options: {
+    signal?: AbortSignal;
+    retrying?: (error: LeaseFailure) => void;
+  } = {},
+): Promise<T> {
+  let attempt = 0;
+  for (;;) {
+    options.signal?.throwIfAborted();
+    try {
+      return await operation();
+    } catch (error) {
+      const failure = error as LeaseFailure;
+      if (
+        TERMINAL_LEASE_CODES.has(failure.code || "") ||
+        failure.retryable === false
+      )
+        throw failure;
+      options.retrying?.(failure);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          done,
+          leaseRetryDelay(attempt++, failure.retryAfter),
+        );
+        function done() {
+          options.signal?.removeEventListener("abort", abort);
+          resolve();
+        }
+        function abort() {
+          clearTimeout(timer);
+          options.signal?.removeEventListener("abort", abort);
+          reject(options.signal!.reason);
+        }
+        options.signal?.addEventListener("abort", abort, { once: true });
+        if (options.signal?.aborted) abort();
+      });
+    }
+  }
+}
+export type LeaseLifecycleOptions<T extends BrowsingLease> = {
+  current: () => T | null;
+  request: (lease: T, intent: LeaseIntent) => Promise<T>;
+  apply: (lease: T, previous: T) => void;
+  terminal: (error: LeaseFailure) => void;
+  retrying?: (error: LeaseFailure) => void;
+  remember?: (lease: T) => void;
+  readRemembered?: () => T | null;
+  locks?: Pick<LockManager, "request">;
+  visible?: () => boolean;
+  now?: () => number;
+  epoch?: () => unknown;
+  schedule?: (fn: () => void, delay: number) => ReturnType<typeof setTimeout>;
+  cancel?: (timer: ReturnType<typeof setTimeout>) => void;
+};
+// No location changes or iframe remounts happen here. Only a confirmed server
+// revocation is terminal; wall-clock expiry and connectivity loss are not.
+export function createBrowsingLeaseLifecycle<T extends BrowsingLease>(
+  options: LeaseLifecycleOptions<T>,
+) {
+  let stopped = false,
+    pending: Promise<void> | undefined,
+    timer: ReturnType<typeof setTimeout> | undefined,
+    attempt = 0,
+    authoritativeQueued = false;
+  const now = options.now ?? Date.now;
+  const schedule = options.schedule ?? setTimeout;
+  const cancel = options.cancel ?? clearTimeout;
+  const same = (a: BrowsingLease | null, b: BrowsingLease) =>
+    a?.session === b.session && a?.generation === b.generation;
+  const later = (delay: number) => {
+    if (timer) cancel(timer);
+    if (!stopped)
+      timer = schedule(() => {
+        void check();
+      }, delay);
+  };
+  const check = (authoritative = false): Promise<void> => {
+    if (stopped) return Promise.resolve();
+    if (pending) {
+      // An authentication failure must not be satisfied by a concurrently
+      // queued peer-cache refresh. Follow it with one authoritative check.
+      if (authoritative) authoritativeQueued = true;
+      return pending;
+    }
+    const original = options.current();
+    if (!original?.session) return Promise.resolve();
+    if (options.visible && !options.visible()) {
+      later(300000);
+      return Promise.resolve();
+    }
+    const started = now();
+    const epoch = options.epoch?.();
+    const active = () =>
+      !stopped &&
+      same(options.current(), original) &&
+      options.epoch?.() === epoch;
+    const work = async () => {
+      if (!active()) return;
+      let lease: T;
+      const peer = options.readRemembered?.();
+      const higherGeneration = (
+        candidate: BrowsingLease | null | undefined,
+        than: BrowsingLease,
+      ) =>
+        candidate?.session === than.session &&
+        Number.isSafeInteger(candidate.generation) &&
+        candidate.generation! > (than.generation ?? 0);
+      const restoreCurrentGeneration = () =>
+        options.request({ ...original, generation: undefined }, "restore");
+      if (higherGeneration(peer, original)) {
+        // Another frontend window may have restored this same capability after
+        // idle expiry. Stored credentials alone do not authorize a generation
+        // change: resolve the current assignment through the server again.
+        lease = await restoreCurrentGeneration();
+      } else if (
+        !authoritative &&
+        peer &&
+        same(peer, original) &&
+        (peer.serverTime ?? 0) > (original.serverTime ?? 0) &&
+        (peer.expiresLocally ?? 0) > started + 60000
+      ) {
+        lease = peer;
+      } else {
+        try {
+          lease = await options.request(original, "renew");
+        } catch (error) {
+          const code = (error as LeaseFailure).code;
+          if (code === "SESSION_GENERATION_MISMATCH") {
+            // The raw session is the private owner capability. Omitting only
+            // the obsolete generation validates its latest assignment; it
+            // neither allocates a new session nor revives a revoked one.
+            lease = await restoreCurrentGeneration();
+          } else if (code === "SESSION_EXPIRED") {
+            lease = await options.request(original, "restore");
+          } else throw error;
+        }
+      }
+      // Browsers without Web Locks can receive an older response after another
+      // window restores the generation. Never overwrite that newer saved state
+      // with stale credentials; ask the authoritative server once more.
+      if (higherGeneration(options.readRemembered?.(), lease))
+        lease = await restoreCurrentGeneration();
+      if (
+        lease.session !== original.session ||
+        (lease.generation ?? 0) < (original.generation ?? 0)
+      )
+        throw Object.assign(
+          Error(
+            "The browsing assignment changed unexpectedly. Reconnect to continue.",
+          ),
+          {
+            code: "INVALID_SESSION",
+            retryable: false,
+          },
+        );
+      if (!active()) return;
+      const normalized = normalizeBrowsingLease(lease, original);
+      options.remember?.(normalized);
+      options.apply(normalized, original);
+      attempt = 0;
+      later(300000);
+    };
+    pending = (
+      options.locks
+        ? options.locks.request("atlas-browsing-session", work)
+        : work()
+    )
+      .catch((error: LeaseFailure) => {
+        if (!active()) return;
+        if (
+          TERMINAL_LEASE_CODES.has(error.code || "") ||
+          error.retryable === false
+        ) {
+          options.terminal(error);
+          stopped = true;
+          if (timer) cancel(timer);
+          return;
+        }
+        options.retrying?.(error);
+        later(leaseRetryDelay(attempt++, error.retryAfter));
+      })
+      .finally(() => {
+        pending = undefined;
+        if (authoritativeQueued && !stopped) {
+          authoritativeQueued = false;
+          return check(true);
+        }
+        if (
+          !stopped &&
+          same(options.current(), original) &&
+          options.epoch?.() !== epoch
+        )
+          later(300000);
+      });
+    return pending;
+  };
+  return {
+    check,
+    start() {
+      later(300000);
+    },
+    stop() {
+      stopped = true;
+      if (timer) cancel(timer);
+    },
+  };
 }

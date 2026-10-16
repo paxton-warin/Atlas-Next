@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import type { FrontendPageControls } from "./frontend-runtime.ts";
 import {
   SITE_PREFERENCE_KEY,
-  SURFACE_PREFERENCE_KEY,
   sanitizeSiteModes,
   ruleFor,
   validStatus,
@@ -120,6 +120,7 @@ export default function CompatibilityPanel({
   panelOpen,
   onOpen,
   onClose,
+  control,
 }: {
   frame: Window | null | undefined;
   runtimeOrigin?: string;
@@ -130,17 +131,10 @@ export default function CompatibilityPanel({
   panelOpen?: boolean;
   onOpen?: () => void;
   onClose?: () => void;
+  /** Trusted v2 document-bound subscription, never an opaque Window message. */
+  control?: FrontendPageControls;
 }) {
   const [sites, setSites] = useState(load);
-  const [surfaces, setSurfaces] = useState<SiteModes>(() => {
-    try {
-      return sanitizeSiteModes(
-        JSON.parse(localStorage.getItem(SURFACE_PREFERENCE_KEY) || "{}"),
-      );
-    } catch {
-      return {};
-    }
-  });
   const [diagnostics, setDiagnostics] = useState(false);
   const [status, setStatus] = useState<CompatibilityStatus>();
   const [open, setOpen] = useState(false);
@@ -159,7 +153,8 @@ export default function CompatibilityPanel({
   } catch {}
   const supported = !!url && !!ruleFor(url, fixture);
   function send(type: string, extra: Record<string, unknown> = {}) {
-    if (ready && frame && runtimeOrigin && id)
+    if (ready && control) control.send(type, extra);
+    else if (!control && ready && frame && runtimeOrigin && id)
       frame.postMessage({ atlas: 1, type, id, ...extra }, runtimeOrigin);
   }
   useEffect(() => {
@@ -167,18 +162,11 @@ export default function CompatibilityPanel({
     setNotice("");
   }, [id, origin]);
   useEffect(() => {
-    send("compatibility-config", { sites, surfaces, diagnostics });
+    send("compatibility-config", { sites, diagnostics });
     // A runtime may be creating its record asynchronously; resend after ready/navigation.
-    const listener = (event: MessageEvent) => {
-      if (
-        event.source !== frame ||
-        event.origin !== runtimeOrigin ||
-        event.data?.atlas !== 1
-      )
-        return;
-      const data = event.data;
+    const receive = (data: any) => {
       if (["ready", "navigation", "loaded"].includes(data.type))
-        send("compatibility-config", { sites, surfaces, diagnostics });
+        send("compatibility-config", { sites, diagnostics });
       if (data.id !== id) return;
       if (
         data.type === "runtime-compatibility" &&
@@ -229,18 +217,22 @@ export default function CompatibilityPanel({
         setTimeout(() => URL.revokeObjectURL(href), 1000);
       }
     };
+    if (control) return control.subscribe(receive);
+    const listener = (event: MessageEvent) => {
+      if (
+        event.source === frame &&
+        event.origin === runtimeOrigin &&
+        event.data?.atlas === 1
+      )
+        receive(event.data);
+    };
     window.addEventListener("message", listener);
     return () => window.removeEventListener("message", listener);
-  }, [frame, runtimeOrigin, id, origin, sites, surfaces, diagnostics, ready]);
+  }, [control, frame, runtimeOrigin, id, origin, sites, diagnostics, ready]);
   useEffect(() => {
     const fullscreen = () => setHidden(!!document.fullscreenElement);
     const storage = (event: StorageEvent) => {
       if (event.key === SITE_PREFERENCE_KEY) setSites(load());
-      if (event.key === SURFACE_PREFERENCE_KEY) {
-        try {
-          setSurfaces(sanitizeSiteModes(JSON.parse(event.newValue || "{}")));
-        } catch {}
-      }
     };
     document.addEventListener("fullscreenchange", fullscreen);
     window.addEventListener("storage", storage);
@@ -261,19 +253,6 @@ export default function CompatibilityPanel({
       );
     }
     setSites(sanitizeSiteModes(next));
-  }
-  function toggleSurface(enabled: boolean) {
-    const next = { ...surfaces };
-    if (enabled) next[origin] = true;
-    else delete next[origin];
-    try {
-      localStorage.setItem(SURFACE_PREFERENCE_KEY, JSON.stringify(next));
-    } catch {
-      setNotice(
-        "Device storage is full; this choice applies to this window only.",
-      );
-    }
-    setSurfaces(sanitizeSiteModes(next));
   }
   if (!url || !id || !runtimeOrigin) return null;
   return (
@@ -334,24 +313,9 @@ export default function CompatibilityPanel({
           {!supported && (
             <small>No reviewed metadata rule for this site.</small>
           )}
-          <button
-            type="button"
-            onClick={() => {
-              toggle(false);
-              toggleSurface(false);
-            }}
-          >
+          <button type="button" onClick={() => toggle(false)}>
             Restore page defaults
           </button>
-          <label>
-            <input
-              type="checkbox"
-              checked={!!surfaces[origin]}
-              disabled={!origin}
-              onChange={(event) => toggleSurface(event.target.checked)}
-            />{" "}
-            Isolate page structure (experimental)
-          </label>
           {status && (
             <small>
               {status.applied} metadata adjustments

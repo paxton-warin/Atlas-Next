@@ -5,8 +5,7 @@ const app = await createApp({ ...config, nodesEnabled: true });
 const runtime = await createRuntime({
   appOrigin: config.appOrigin,
   runtimeOrigin: config.runtimeOrigin,
-  authorize: (ticket, origin, purpose) =>
-    app.nodePool.resolve(ticket, origin, purpose),
+  authorize: (...args) => app.nodePool.resolve(...args),
   fixture:
     process.env.NODE_ENV === "test" && process.env.ATLAS_TEST_FIXTURE === "1",
 });

@@ -1,6 +1,13 @@
+import { NODE_RUNTIME_CAPABILITIES } from "./runtime-capabilities.mjs";
 import { digest } from "./store.mjs";
-import { verifyTicket } from "./node-ticket.mjs";
+import { verifyTicket, connectionError } from "./node-ticket.mjs";
 import { createRuntime } from "./runtime.mjs";
+import { createUpgradeOrigin } from "./request-origin.mjs";
+import {
+  createNativeResourceAuthority,
+  RESOURCE_OWNER_ROLE,
+} from "./native-resource-authority.mjs";
+import { installNativeResourceGateway } from "./native-resource-gateway.mjs";
 export async function createNodeService({
   id,
   secret,
@@ -12,29 +19,89 @@ export async function createNodeService({
   if (!pairing && (!id || typeof secret !== "string" || secret.length < 32))
     throw Error("NODE_ID and NODE_TOKEN are required.");
   let lastRevision = -1;
+  const resourceOriginFor = createUpgradeOrigin(
+    runtimeOrigin,
+    process.env.TRUST_PROXY?.split(",") || [],
+  );
   let lastControl = 0,
     state = "disabled",
-    leases = new Set();
+    leases = new Set(),
+    grants = null,
+    revoked = new Set();
   const app = await createRuntime({
     appOrigin: runtimeOrigin,
     runtimeOrigin,
     fixture,
     staticDir,
-    authorize(raw, origin, purpose = "runtime") {
+    authorize(
+      raw,
+      origin,
+      purpose = "runtime",
+      { established = false, relayOrigin } = {},
+    ) {
       if (!secret)
         throw Object.assign(Error("Node is not attached."), {
           statusCode: 503,
         });
-      const ticket = verifyTicket(raw, secret, origin);
+      const ticket = verifyTicket(raw, secret, origin, {
+        allowExpired: established && purpose === "relay",
+      });
+      if (ticket.role === RESOURCE_OWNER_ROLE)
+        throw connectionError(
+          "Invalid relay/runtime ticket purpose.",
+          401,
+          "INVALID_TICKET",
+        );
       if (
-        ticket.node !== id ||
-        state === "disabled" ||
-        Date.now() - lastControl > 45000 ||
-        !leases.has(ticket.lease)
+        ticket.role === "frontend-controller-v2" &&
+        (purpose !== "relay" ||
+          ticket.origin !== origin ||
+          ticket.runtimeOrigin !== origin ||
+          ticket.relayOrigin !== relayOrigin)
       )
-        throw Object.assign(
-          Error("Node session is unavailable. Reconnect from Atlas."),
-          { statusCode: 503 },
+        throw connectionError(
+          "Invalid controller relay ticket.",
+          401,
+          "INVALID_TICKET",
+        );
+      if (ticket.node !== id)
+        throw connectionError(
+          "Invalid node assignment.",
+          401,
+          "INVALID_TICKET",
+        );
+      if (state === "disabled")
+        throw connectionError(
+          "Your assigned node is unavailable.",
+          503,
+          "NODE_UNAVAILABLE",
+          true,
+        );
+      if (Date.now() - lastControl > 45000)
+        throw connectionError(
+          "Node control is temporarily unavailable. Retry the same connection.",
+          503,
+          "CONTROL_UNAVAILABLE",
+          true,
+        );
+      if (!leases.has(ticket.lease))
+        throw connectionError(
+          "This browsing session is no longer active. Validate it with Atlas.",
+          410,
+          revoked.has(ticket.lease) ? "SESSION_REVOKED" : "SESSION_EXPIRED",
+        );
+      const grant = grants?.get(ticket.lease);
+      if (grants && (!grant || (ticket.generation || 1) !== grant.generation))
+        throw connectionError(
+          "This transport belongs to an older browsing assignment.",
+          410,
+          "SESSION_REVOKED",
+        );
+      if (grant && Date.now() >= grant.expiresAt)
+        throw connectionError(
+          "The browsing session is idle-expired. Restore it through Atlas.",
+          410,
+          "SESSION_EXPIRED",
         );
       if (
         ticket.role === "runtime-host" &&
@@ -42,15 +109,20 @@ export async function createNodeService({
           ticket.relayOrigin !== ticket.origin ||
           typeof ticket.relayTicket !== "string")
       )
-        throw Object.assign(Error("Invalid runtime-host ticket."), {
-          statusCode: 401,
-        });
+        throw connectionError(
+          "Invalid runtime-host ticket.",
+          401,
+          "INVALID_TICKET",
+        );
       return {
         ...(ticket.role === "runtime-host"
           ? { relayOrigin: ticket.relayOrigin, relayTicket: ticket.relayTicket }
           : {}),
         appOrigin: ticket.origin,
         session: ticket.lease,
+        generation: ticket.generation || 1,
+        leaseExpiresAt: grant?.expiresAt,
+        ticketExpiresAt: ticket.expires,
         node: {
           id: ticket.role === "runtime-host" ? "local" : id,
           name: ticket.name,
@@ -68,10 +140,30 @@ export async function createNodeService({
         id,
         status: "ok",
         connections: app.connectionCount(),
-        capabilities: ["frontend-relay-v1"],
+        capabilities: [...NODE_RUNTIME_CAPABILITIES],
       };
     },
   });
+  const resourceAuthority = createNativeResourceAuthority({
+    nodeId: () => id,
+    secret: () => secret,
+    originFor: resourceOriginFor,
+    liveLease: (owner) =>
+      state !== "disabled" &&
+      Date.now() - lastControl < 45000 &&
+      leases.has(owner.leaseHash) &&
+      !revoked.has(owner.leaseHash) &&
+      grants?.get(owner.leaseHash)?.generation === owner.generation &&
+      grants.get(owner.leaseHash).expiresAt > Date.now(),
+  });
+  app.decorate(
+    "nativeResourceGateway",
+    installNativeResourceGateway(app, {
+      originFor: resourceOriginFor,
+      ...resourceAuthority,
+      blockedHosts: [new URL(runtimeOrigin).hostname],
+    }),
+  );
   let attempts = 0,
     reset = Date.now() + 60000;
   app.post("/node/pair", async (req, reply) => {
@@ -136,7 +228,19 @@ export async function createNodeService({
       !["active", "draining", "disabled"].includes(req.body?.state) ||
       !Number.isSafeInteger(req.body?.revision) ||
       !Array.isArray(req.body?.leases) ||
-      !req.body.leases.every((x) => /^[a-f0-9]{64}$/.test(x))
+      !req.body.leases.every((x) => /^[a-f0-9]{64}$/.test(x)) ||
+      (req.body.grants != null &&
+        (!Array.isArray(req.body.grants) ||
+          !req.body.grants.every(
+            (grant) =>
+              /^[a-f0-9]{64}$/.test(grant?.hash) &&
+              Number.isSafeInteger(grant.generation) &&
+              grant.generation >= 1 &&
+              Number.isFinite(grant.expiresAt),
+          ))) ||
+      (req.body.revoked != null &&
+        (!Array.isArray(req.body.revoked) ||
+          !req.body.revoked.every((hash) => /^[a-f0-9]{64}$/.test(hash))))
     )
       return reply.code(400).send({ error: "Invalid control state." });
     app.applyControl(req.body);
@@ -147,6 +251,10 @@ export async function createNodeService({
     lastRevision = value.revision;
     state = value.state;
     leases = new Set(value.leases);
+    grants = value.grants
+      ? new Map(value.grants.map((grant) => [grant.hash, grant]))
+      : null;
+    revoked = new Set(value.revoked || []);
     lastControl = Date.now();
     app.recheckConnections();
   });

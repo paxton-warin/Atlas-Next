@@ -1,8 +1,20 @@
+import { createFrontendAssignments } from "./frontend-assignments.mjs";
+import {
+  acceptedNodeCapabilities,
+  FRONTEND_CONTROLLER_RELAY_V2,
+  FRONTEND_NATIVE_RESOURCES_V1,
+} from "./runtime-capabilities.mjs";
+import {
+  RESOURCE_OWNER_ROLE,
+  RESOURCE_OWNER_PURPOSE,
+} from "./native-resource-authority.mjs";
 import { randomUUID } from "node:crypto";
-import { signTicket, verifyTicket } from "./node-ticket.mjs";
+import { signTicket, verifyTicket, connectionError } from "./node-ticket.mjs";
 import { token, digest } from "./store.mjs";
 const TTL = 12 * 60 * 60 * 1000;
+const TICKET_TTL = 12 * 60 * 60 * 1000;
 const FRESH = 45000;
+const TOMBSTONE_TTL = 7 * 24 * 60 * 60 * 1000;
 const fail = (message, statusCode = 400) =>
   Object.assign(Error(message), { statusCode });
 export function createNodePool(
@@ -38,6 +50,19 @@ export function createNodePool(
   db.exec(
     "CREATE INDEX IF NOT EXISTS browse_leases_runtime_node ON browse_leases(runtime_node)",
   );
+  if (
+    !db
+      .prepare("PRAGMA table_info(browse_leases)")
+      .all()
+      .some((c) => c.name === "generation")
+  )
+    db.exec(
+      "ALTER TABLE browse_leases ADD COLUMN generation INTEGER NOT NULL DEFAULT 1",
+    );
+  db.exec(`CREATE TABLE IF NOT EXISTS browse_lease_tombstones (
+    hash TEXT PRIMARY KEY, node TEXT NOT NULL, origin TEXT NOT NULL, runtime_node TEXT,
+    generation INTEGER NOT NULL, reason TEXT NOT NULL, removed INTEGER NOT NULL, expires INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS browse_lease_tombstones_expiry ON browse_lease_tombstones(expires);`);
   const hostCapable = (n) =>
     (store.get("nodeCapabilities") || {})[n.id]?.includes("frontend-relay-v1");
   const hosts = () =>
@@ -49,8 +74,61 @@ export function createNodePool(
   const online = (n) =>
     n && (n.id === "local" ? localReady() : Date.now() - n.seen < FRESH);
   const available = (n) => online(n) && n.state !== "disabled";
-  const prune = () =>
-    db.prepare("DELETE FROM browse_leases WHERE seen<?").run(Date.now() - TTL);
+  function prune() {
+    const now = Date.now();
+    db.prepare(
+      `INSERT OR REPLACE INTO browse_lease_tombstones
+      SELECT hash,node,origin,runtime_node,generation,'expired',seen+?,seen+?+?
+      FROM browse_leases WHERE seen<=?`,
+    ).run(TTL, TTL, TOMBSTONE_TTL, now - TTL);
+    db.prepare("DELETE FROM browse_leases WHERE seen<=?").run(now - TTL);
+    db.prepare("DELETE FROM browse_lease_tombstones WHERE expires<=?").run(now);
+  }
+  function retire(hash, origin, reason = "revoked") {
+    const row = db
+      .prepare("SELECT * FROM browse_leases WHERE hash=? AND origin=?")
+      .get(hash, origin);
+    if (row) {
+      db.prepare(
+        "INSERT OR REPLACE INTO browse_lease_tombstones VALUES (?,?,?,?,?,?,?,?)",
+      ).run(
+        hash,
+        row.node,
+        origin,
+        row.runtime_node,
+        row.generation,
+        reason,
+        Date.now(),
+        Date.now() + TOMBSTONE_TTL,
+      );
+      db.prepare("DELETE FROM browse_leases WHERE hash=? AND origin=?").run(
+        hash,
+        origin,
+      );
+    } else if (reason === "revoked") {
+      db.prepare(
+        "UPDATE browse_lease_tombstones SET reason='revoked',removed=?,expires=? WHERE hash=? AND origin=?",
+      ).run(Date.now(), Date.now() + TOMBSTONE_TTL, hash, origin);
+    }
+  }
+  function missingSession(hash, origin) {
+    const tombstone = db
+      .prepare(
+        "SELECT * FROM browse_lease_tombstones WHERE hash=? AND origin=?",
+      )
+      .get(hash, origin);
+    return connectionError(
+      tombstone?.reason === "revoked"
+        ? "This browsing session was revoked. Reconnect to start a new session."
+        : "Browsing session expired. Choose Reconnect to start a new session.",
+      409,
+      tombstone?.reason === "revoked"
+        ? "SESSION_REVOKED"
+        : tombstone
+          ? "SESSION_EXPIRED"
+          : "INVALID_SESSION",
+    );
+  }
   function list() {
     prune();
     return db
@@ -218,9 +296,7 @@ export function createNodePool(
     if (!health || health.id !== id)
       throw fail("Node endpoint check failed.", 502);
     const capabilities = store.get("nodeCapabilities") || {};
-    capabilities[id] = Array.isArray(health.capabilities)
-      ? health.capabilities.filter((c) => c === "frontend-relay-v1")
-      : [];
+    capabilities[id] = acceptedNodeCapabilities(health.capabilities);
     store.set("nodeCapabilities", capabilities);
     db.prepare("UPDATE nodes SET seen=?,connections=? WHERE id=?").run(
       Date.now(),
@@ -231,6 +307,156 @@ export function createNodePool(
   async function allocate(raw, origin, runtimeOrigin) {
     return allocateLease(raw, origin, runtimeOrigin);
   }
+  const operations = new Map();
+  function operate(input = {}, origin, runtimeOrigin) {
+    const {
+      intent = input.session ? "restore" : "new",
+      session: raw = "",
+      generation,
+    } = input;
+    if (
+      !["restore", "renew", "new"].includes(intent) ||
+      typeof raw !== "string" ||
+      raw.length > 100 ||
+      (generation != null &&
+        (!Number.isSafeInteger(generation) || generation < 1)) ||
+      (intent === "renew" && !raw)
+    )
+      return Promise.reject(
+        connectionError(
+          "Invalid browsing session operation.",
+          400,
+          "INVALID_SESSION",
+        ),
+      );
+    const key = origin + ":" + (raw ? digest(raw) : "new:" + randomUUID());
+    const pending = operations.get(key);
+    if (pending) {
+      if (pending.intent === intent && pending.generation === generation)
+        return pending.promise;
+      return Promise.reject(
+        connectionError(
+          "This connection is already being updated.",
+          409,
+          "SESSION_BUSY",
+          true,
+        ),
+      );
+    }
+    const promise = Promise.resolve()
+      .then(async () => {
+        prune();
+        const hash = raw ? digest(raw) : "";
+        let lease =
+          hash &&
+          db.prepare("SELECT * FROM browse_leases WHERE hash=?").get(hash);
+        const tombstone =
+          hash &&
+          db
+            .prepare(
+              "SELECT * FROM browse_lease_tombstones WHERE hash=? AND origin=?",
+            )
+            .get(hash, origin);
+        if (
+          (lease && lease.origin !== origin) ||
+          (!lease && hash && !tombstone && intent !== "new")
+        )
+          throw missingSession(hash, origin);
+        if (lease && frontendAssignments.isFrontend(hash))
+          throw connectionError(
+            "Refresh Atlas to use the current frontend browsing protocol.",
+            409,
+            "RUNTIME_PROTOCOL_REQUIRED",
+          );
+        if (generation != null && lease && generation !== lease.generation)
+          throw connectionError(
+            "This browsing assignment changed. Refresh the connection state.",
+            409,
+            "SESSION_GENERATION_MISMATCH",
+            true,
+          );
+        if (intent === "new" || !raw) {
+          // Reserve first. A failed replacement never destroys the current pin.
+          if (lease) return select(raw, origin, runtimeOrigin, "");
+          const nextRaw = token();
+          try {
+            const result = await allocateLease(
+              "",
+              origin,
+              runtimeOrigin,
+              "",
+              nextRaw,
+              true,
+            );
+            if (tombstone) retire(hash, origin);
+            return result;
+          } catch (error) {
+            db.prepare(
+              "DELETE FROM browse_leases WHERE hash=? AND origin=?",
+            ).run(digest(nextRaw), origin);
+            throw error;
+          }
+        }
+        if (!lease) {
+          if (intent !== "restore" || tombstone.reason !== "expired")
+            throw missingSession(hash, origin);
+          if (generation != null && generation !== tombstone.generation)
+            throw connectionError(
+              "This browsing assignment changed.",
+              409,
+              "SESSION_GENERATION_MISMATCH",
+              true,
+            );
+          const previous = node(tombstone.node),
+            host = tombstone.runtime_node
+              ? node(tombstone.runtime_node)
+              : previous;
+          if (!previous || previous.state === "disabled" || !available(host))
+            throw connectionError(
+              "Your previous browsing node is temporarily unavailable. Retry this connection or explicitly choose a new session.",
+              503,
+              "NODE_UNAVAILABLE",
+              true,
+            );
+          // The old raw capability remains private to its holder. Incrementing the
+          // assignment generation prevents old transport tickets from reviving.
+          db.prepare(
+            "INSERT INTO browse_leases(hash,node,origin,created,seen,runtime_node,generation) VALUES (?,?,?,?,?,?,?)",
+          ).run(
+            hash,
+            tombstone.node,
+            origin,
+            Date.now(),
+            Date.now(),
+            tombstone.runtime_node,
+            tombstone.generation + 1,
+          );
+          try {
+            const result = await allocateLease(
+              raw,
+              origin,
+              runtimeOrigin,
+              "",
+              "",
+              true,
+            );
+            db.prepare("DELETE FROM browse_lease_tombstones WHERE hash=?").run(
+              hash,
+            );
+            return result;
+          } catch (error) {
+            db.prepare(
+              "DELETE FROM browse_leases WHERE hash=? AND generation=?",
+            ).run(hash, tombstone.generation + 1);
+            throw error;
+          }
+        }
+        return allocateLease(raw, origin, runtimeOrigin, "", "", true);
+      })
+      .finally(() => operations.delete(key));
+    operations.set(key, { intent, generation, promise });
+    return promise;
+  }
   // Preferred-node reservations are private to the owner selection operation.
   // The public allocation route never receives or forwards a preference.
   async function allocateLease(
@@ -239,6 +465,7 @@ export function createNodePool(
     runtimeOrigin,
     preferredNode = "",
     replacementSession = "",
+    strict = false,
   ) {
     prune();
     let hash, lease;
@@ -247,10 +474,12 @@ export function createNodePool(
         throw fail("Invalid browsing session.");
       hash = digest(raw);
       lease = db.prepare("SELECT * FROM browse_leases WHERE hash=?").get(hash);
-      if (!lease || lease.origin !== origin)
-        throw fail(
-          "Browsing session expired. Choose Reconnect to start a new session.",
+      if (!lease || lease.origin !== origin) throw missingSession(hash, origin);
+      if (frontendAssignments.isFrontend(hash))
+        throw connectionError(
+          "Refresh Atlas to use the current frontend browsing protocol.",
           409,
+          "RUNTIME_PROTOCOL_REQUIRED",
         );
     } else {
       // Synchronous SQLite allocation reserves a lease before the next request.
@@ -268,7 +497,12 @@ export function createNodePool(
           a.id.localeCompare(b.id),
       );
       if (!candidates.length)
-        throw fail("No browsing nodes are available.", 503);
+        throw connectionError(
+          "No browsing nodes are available.",
+          503,
+          "NODE_UNAVAILABLE",
+          true,
+        );
       raw = replacementSession || token();
       hash = digest(raw);
       lease = {
@@ -277,6 +511,7 @@ export function createNodePool(
         origin,
         created: Date.now(),
         seen: Date.now(),
+        generation: 1,
         runtime_node:
           candidates[0].id === "local" && frontendRelay
             ? hosts()
@@ -336,34 +571,74 @@ export function createNodePool(
       host &&
       (host.id === "local" ||
         (Date.now() - host.seen < FRESH && host.state !== "disabled"));
-    if (lease.runtime_node && (!hostAvailable || !n || n.state === "disabled"))
-      throw fail(
+    if (
+      (strict || lease.runtime_node) &&
+      (!hostAvailable || !n || n.state === "disabled")
+    )
+      throw connectionError(
         "Your assigned node or runtime host is unavailable. Reconnect explicitly to select another connection.",
         503,
+        "NODE_UNAVAILABLE",
+        true,
       );
     if (host?.id !== "local" && available(host)) {
-      const response = await fetch(host.endpoint + "/node/control", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          authorization: "Bearer " + unseal(host.credential),
-        },
-        body: JSON.stringify(nodeState(host.id)),
-        signal: AbortSignal.timeout(3000),
-        redirect: "error",
-      });
+      let response;
+      try {
+        response = await fetch(host.endpoint + "/node/control", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            authorization: "Bearer " + unseal(host.credential),
+          },
+          body: JSON.stringify(nodeState(host.id)),
+          signal: AbortSignal.timeout(3000),
+          redirect: "error",
+        });
+      } catch {
+        throw connectionError(
+          "Your assigned node is unreachable. Retry the same connection.",
+          503,
+          "CONTROL_UNAVAILABLE",
+          true,
+        );
+      }
       if (!response.ok)
-        throw fail(
+        throw connectionError(
           "Your assigned node is unreachable. Reconnect explicitly to select another node.",
           503,
+          "CONTROL_UNAVAILABLE",
+          true,
         );
     }
+    const current = db
+      .prepare("SELECT * FROM browse_leases WHERE hash=?")
+      .get(hash);
+    if (!current || current.generation !== lease.generation)
+      throw missingSession(hash, origin);
+    if (
+      strict &&
+      (!node(lease.node) ||
+        node(lease.node).state === "disabled" ||
+        !available(
+          lease.runtime_node ? node(lease.runtime_node) : node(lease.node),
+        ))
+    )
+      throw connectionError(
+        "Your assigned node is unavailable.",
+        503,
+        "NODE_UNAVAILABLE",
+        true,
+      );
     const serverTime = Date.now(),
-      expiresAt = serverTime + TTL;
+      expiresAt = serverTime + TICKET_TTL;
     return {
       serverTime,
       expiresAt,
+      ticketExpiresAt: expiresAt,
+      leaseExpiresAt: current.seen + TTL,
+      generation: current.generation,
       session: raw,
+      sessionHash: hash,
       runtimeOrigin: selectedOrigin,
       node: {
         id: n?.id || lease.node,
@@ -380,6 +655,7 @@ export function createNodePool(
         ? signTicket(
             {
               lease: hash,
+              generation: current.generation,
               origin,
               runtimeOrigin: selectedOrigin,
               node: host.id,
@@ -390,6 +666,7 @@ export function createNodePool(
               relayTicket: signTicket(
                 {
                   lease: hash,
+                  generation: current.generation,
                   origin,
                   runtimeOrigin: selectedOrigin,
                   node: "local",
@@ -405,6 +682,7 @@ export function createNodePool(
         : signTicket(
             {
               lease: hash,
+              generation: current.generation,
               origin,
               runtimeOrigin: selectedOrigin,
               node: n.id,
@@ -428,15 +706,27 @@ export function createNodePool(
     const previous = previousHash
       ? db.prepare("SELECT * FROM browse_leases WHERE hash=?").get(previousHash)
       : null;
+    if (previousHash && frontendAssignments.isFrontend(previousHash))
+      throw connectionError(
+        "This assignment requires the frontend controller protocol.",
+        409,
+        "RUNTIME_PROTOCOL_REQUIRED",
+      );
     if (previousHash && (!previous || previous.origin !== origin))
-      throw fail(
+      throw connectionError(
         "Browsing session expired. Reload Atlas before selecting a node.",
         409,
+        "SESSION_EXPIRED",
       );
     if (requestedNode) {
       const selected = node(requestedNode);
       if (!available(selected))
-        throw fail("Selected browsing node is unavailable.", 503);
+        throw connectionError(
+          "Selected browsing node is unavailable.",
+          503,
+          "NODE_UNAVAILABLE",
+          true,
+        );
       if (
         selected.id !== "local" &&
         new URL(selected.endpoint).hostname === new URL(origin).hostname
@@ -444,9 +734,11 @@ export function createNodePool(
         throw fail("Select a node with a separate browsing hostname.");
     }
     if (previousHash && selecting.has(previousHash))
-      throw fail(
+      throw connectionError(
         "This browser is already changing connections. Try again after it finishes.",
         409,
+        "SESSION_BUSY",
+        true,
       );
     if (previousHash) selecting.add(previousHash);
     const replacement = token(),
@@ -459,6 +751,7 @@ export function createNodePool(
         runtimeOrigin,
         requestedNode,
         replacement,
+        true,
       );
       const lease = db
         .prepare("SELECT * FROM browse_leases WHERE hash=?")
@@ -473,24 +766,26 @@ export function createNodePool(
           ? available(host) && hostCapable(host)
           : available(selected))
       )
-        throw fail("Selected browsing node is unavailable.", 503);
+        throw connectionError(
+          "Selected browsing node is unavailable.",
+          503,
+          "NODE_UNAVAILABLE",
+          true,
+        );
       if (
         previousHash &&
         db
           .prepare("SELECT origin FROM browse_leases WHERE hash=?")
           .get(previousHash)?.origin !== origin
       )
-        throw fail(
+        throw connectionError(
           "This browser's connection changed. Reload Atlas before selecting a node.",
           409,
+          "SESSION_REVOKED",
         );
       db.exec("BEGIN");
       try {
-        if (previousHash)
-          db.prepare("DELETE FROM browse_leases WHERE hash=? AND origin=?").run(
-            previousHash,
-            origin,
-          );
+        if (previousHash) retire(previousHash, origin);
         audit("node.select", result.node.id);
         db.exec("COMMIT");
       } catch (error) {
@@ -504,68 +799,241 @@ export function createNodePool(
         origin,
       );
       if (error.statusCode) throw error;
-      throw fail(
+      throw connectionError(
         "Selected browsing node is unreachable. Your original connection is unchanged.",
         503,
+        "CONTROL_UNAVAILABLE",
+        true,
       );
     } finally {
       if (previousHash) selecting.delete(previousHash);
     }
   }
-  function resolve(ticket, runtimeOrigin, purpose = "runtime") {
-    let t;
-    try {
-      t = verifyTicket(ticket, localSecret, runtimeOrigin);
-    } catch {
-      throw fail("Invalid browsing ticket.", 401);
+  // Staged v2 transport negotiation. This does not activate frontend-hosted
+  // documents or create a second public release. Only the holder of an existing
+  // origin-bound owner capability may obtain a controller relay ticket.
+  async function controllerRelay(raw, origin, generation) {
+    if (
+      typeof raw !== "string" ||
+      !raw ||
+      raw.length > 100 ||
+      !Number.isSafeInteger(generation) ||
+      generation < 1
+    )
+      throw connectionError(
+        "Invalid browsing assignment.",
+        400,
+        "INVALID_SESSION",
+      );
+    prune();
+    const hash = digest(raw);
+    const read = () =>
+      db
+        .prepare("SELECT * FROM browse_leases WHERE hash=? AND origin=?")
+        .get(hash, origin);
+    const lease = read();
+    if (!lease) throw missingSession(hash, origin);
+    if (lease.generation !== generation)
+      throw connectionError(
+        "Browsing assignment changed.",
+        409,
+        "SESSION_GENERATION_MISMATCH",
+        true,
+      );
+    const selected = node(lease.node);
+    if (
+      !selected ||
+      selected.state === "disabled" ||
+      (selected.id !== "local" && Date.now() - selected.seen >= FRESH)
+    )
+      throw connectionError(
+        "Your assigned node is unavailable.",
+        503,
+        "NODE_UNAVAILABLE",
+        true,
+      );
+    if (selected.id !== "local") {
+      if (
+        !(store.get("nodeCapabilities") || {})[selected.id]?.includes(
+          FRONTEND_CONTROLLER_RELAY_V2,
+        )
+      )
+        throw connectionError(
+          "This node requires the combined runtime update.",
+          409,
+          "RUNTIME_CAPABILITY_REQUIRED",
+        );
+      let response;
+      try {
+        response = await fetch(selected.endpoint + "/node/control", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer " + unseal(selected.credential),
+          },
+          body: JSON.stringify(nodeState(selected.id)),
+          signal: AbortSignal.timeout(3000),
+          redirect: "error",
+        });
+      } catch {}
+      if (!response?.ok)
+        throw connectionError(
+          "Node control is temporarily unavailable.",
+          503,
+          "CONTROL_UNAVAILABLE",
+          true,
+        );
     }
-    if (t.expires < Date.now() || t.runtimeOrigin !== runtimeOrigin)
-      throw fail("Browsing ticket expired. Reconnect from Atlas.", 401);
+    // An async control response cannot resurrect an owner revoked/reassigned
+    // while the node was being checked. No alternate node is selected here.
+    const current = read(),
+      latestNode = node(lease.node);
+    if (!current) throw missingSession(hash, origin);
+    if (current.generation !== generation)
+      throw connectionError(
+        "Browsing assignment changed.",
+        409,
+        "SESSION_GENERATION_MISMATCH",
+        true,
+      );
+    if (
+      !latestNode ||
+      latestNode.state === "disabled" ||
+      (latestNode.id !== "local" && Date.now() - latestNode.seen >= FRESH)
+    )
+      throw connectionError(
+        "Your assigned node is unavailable.",
+        503,
+        "NODE_UNAVAILABLE",
+        true,
+      );
+    const relayOrigin = selected.id === "local" ? origin : selected.endpoint;
+    const serverTime = Date.now(),
+      expires = serverTime + TICKET_TTL;
+    return {
+      protocol: 2,
+      capability: FRONTEND_CONTROLLER_RELAY_V2,
+      serverTime,
+      ticketExpiresAt: expires,
+      leaseExpiresAt: current.seen + TTL,
+      frontendOrigin: origin,
+      relayOrigin,
+      generation,
+      sessionHash: hash,
+      node: { id: selected.id, name: selected.name },
+      ticket: signTicket(
+        {
+          role: "frontend-controller-v2",
+          node: selected.id,
+          lease: hash,
+          generation,
+          origin,
+          runtimeOrigin: origin,
+          relayOrigin,
+          name: selected.name,
+          expires,
+        },
+        selected.id === "local" ? localSecret : unseal(selected.credential),
+      ),
+    };
+  }
+  function resolve(
+    ticket,
+    runtimeOrigin,
+    purpose = "runtime",
+    { established = false, relayOrigin } = {},
+  ) {
+    const t = verifyTicket(ticket, localSecret, runtimeOrigin, {
+      allowExpired: established && purpose === "relay",
+    });
+    if (t.role === RESOURCE_OWNER_ROLE)
+      throw connectionError(
+        "Invalid relay/runtime ticket purpose.",
+        401,
+        "INVALID_TICKET",
+      );
+    const controller = t.role === "frontend-controller-v2";
+    if (
+      controller &&
+      (purpose !== "relay" ||
+        t.origin !== runtimeOrigin ||
+        t.node !== "local" ||
+        t.relayOrigin !== relayOrigin)
+    )
+      throw connectionError(
+        "Invalid controller relay ticket.",
+        401,
+        "INVALID_TICKET",
+      );
+    prune();
     const lease = db
       .prepare("SELECT * FROM browse_leases WHERE hash=?")
       .get(t.lease);
-    if (!lease || lease.origin !== t.origin || Date.now() - lease.seen > TTL)
-      throw fail("Browsing session expired.", 401);
+    if (!lease || lease.origin !== t.origin)
+      throw missingSession(t.lease, t.origin);
+    if ((t.generation || 1) !== lease.generation)
+      throw connectionError(
+        "This transport belongs to an older browsing assignment.",
+        410,
+        "SESSION_REVOKED",
+      );
     const n = node(lease.node);
     if (
       lease.runtime_node &&
+      !controller &&
       (purpose !== "relay" ||
         t.role !== "frontend-relay" ||
         t.node !== "local" ||
         node(lease.runtime_node)?.endpoint !== runtimeOrigin)
     )
-      throw fail("Invalid relay ticket.", 401);
-    if (lease.runtime_node) {
+      throw connectionError("Invalid relay ticket.", 401, "INVALID_TICKET");
+    if (lease.runtime_node && !controller) {
       const host = node(lease.runtime_node);
       if (!host || host.state === "disabled" || Date.now() - host.seen >= FRESH)
-        throw fail(
+        throw connectionError(
           "Runtime host is unavailable. Reconnect explicitly from Atlas.",
           503,
+          "NODE_UNAVAILABLE",
+          true,
         );
     }
     // Never fail over an existing session: its outbound IP must not silently change.
-    if (!(n && n.state !== "disabled" && (lease.runtime_node || online(n))))
-      throw fail(
+    if (
+      !(
+        n &&
+        n.state !== "disabled" &&
+        (controller ? lease.node === "local" : lease.runtime_node || online(n))
+      )
+    )
+      throw connectionError(
         "Your browsing node is offline. Reconnect explicitly to choose another node.",
         503,
+        "NODE_UNAVAILABLE",
+        true,
       );
-    db.prepare("UPDATE browse_leases SET seen=? WHERE hash=?").run(
-      Date.now(),
-      lease.hash,
-    );
+    // Periodic authorization of an already-open relay is not user activity.
+    // Visible frontend renewal (or a fresh authenticated connection) maintains
+    // the lease; a forgotten socket alone must not defeat the 12-hour idle rule.
+    if (!established) {
+      lease.seen = Date.now();
+      db.prepare("UPDATE browse_leases SET seen=? WHERE hash=?").run(
+        lease.seen,
+        lease.hash,
+      );
+    }
     return {
       node: { id: n.id, name: n.name },
       appOrigin: t.origin,
       session: lease.hash,
+      generation: lease.generation,
+      leaseExpiresAt: lease.seen + TTL,
+      ticketExpiresAt: t.expires,
     };
   }
   function release(raw, origin) {
     if (typeof raw !== "string" || raw.length > 100)
       throw fail("Invalid browsing session.");
-    db.prepare("DELETE FROM browse_leases WHERE hash=? AND origin=?").run(
-      digest(raw),
-      origin,
-    );
+    retire(digest(raw), origin);
   }
   function nodeState(id) {
     const n = node(id);
@@ -582,9 +1050,110 @@ export function createNodePool(
         )
         .all(id, id)
         .map((x) => x.hash),
+      grants: db
+        .prepare(
+          "SELECT hash,generation,seen FROM browse_leases WHERE node=? OR runtime_node=?",
+        )
+        .all(id, id)
+        .map(({ hash, generation, seen }) => ({
+          hash,
+          generation,
+          expiresAt: seen + TTL,
+        })),
+      revoked: db
+        .prepare(
+          "SELECT hash FROM browse_lease_tombstones WHERE (node=? OR runtime_node=?) AND reason='revoked'",
+        )
+        .all(id, id)
+        .map((row) => row.hash),
+    };
+  }
+  const frontendAssignments = createFrontendAssignments(store, {
+    node,
+    listNodes: list,
+    prune,
+    grant: controllerRelay,
+    localSecret,
+  });
+  async function resourceOwner(raw, origin, generation) {
+    const owner = frontendAssignments.identity(raw, origin, generation);
+    if (!owner)
+      throw connectionError(
+        "Invalid frontend assignment.",
+        401,
+        "INVALID_SESSION",
+      );
+    const relay = await controllerRelay(raw, origin, generation);
+    if (!frontendAssignments.validate(owner))
+      throw connectionError(
+        "Browsing assignment changed.",
+        410,
+        "SESSION_REVOKED",
+      );
+    const selected = node(relay.node.id);
+    if (
+      !selected ||
+      selected.state === "disabled" ||
+      (selected.id !== "local" && Date.now() - selected.seen >= FRESH)
+    )
+      throw connectionError(
+        "Your assigned node is unavailable.",
+        503,
+        "NODE_UNAVAILABLE",
+        true,
+      );
+    if (
+      !origin.startsWith("https://") ||
+      !relay.relayOrigin.startsWith("https://")
+    )
+      throw connectionError(
+        "Native resource owners require HTTPS.",
+        409,
+        "RESOURCE_HTTPS_REQUIRED",
+      );
+    if (
+      selected.id !== "local" &&
+      !(store.get("nodeCapabilities") || {})[selected.id]?.includes(
+        FRONTEND_NATIVE_RESOURCES_V1,
+      )
+    )
+      throw connectionError(
+        "Selected node requires the complete resource protocol.",
+        409,
+        "RUNTIME_CAPABILITY_REQUIRED",
+      );
+    const expiresAt = Math.min(relay.ticketExpiresAt, relay.leaseExpiresAt);
+    const identity = {
+      nodeId: selected.id,
+      frontendOrigin: origin,
+      resourceOrigin: relay.relayOrigin,
+      leaseHash: owner.hash,
+      generation,
+      expiresAt,
+    };
+    return {
+      ...identity,
+      role: RESOURCE_OWNER_ROLE,
+      purpose: RESOURCE_OWNER_PURPOSE,
+      ownerTicket: signTicket(
+        {
+          role: RESOURCE_OWNER_ROLE,
+          purpose: RESOURCE_OWNER_PURPOSE,
+          node: selected.id,
+          origin,
+          runtimeOrigin: origin,
+          resourceOrigin: relay.relayOrigin,
+          lease: owner.hash,
+          generation,
+          expires: expiresAt,
+        },
+        selected.id === "local" ? localSecret : unseal(selected.credential),
+      ),
     };
   }
   return {
+    frontendAssignments,
+    resourceOwner,
     list,
     attach,
     add,
@@ -593,7 +1162,9 @@ export function createNodePool(
     authenticate,
     heartbeat,
     allocate,
+    operate,
     select,
+    controllerRelay,
     resolve,
     release,
     nodeState,
