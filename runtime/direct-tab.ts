@@ -2,6 +2,14 @@ import { encodeTarget, decodeTarget } from "./url-codec.ts";
 
 export const SAME_ORIGIN_RUNTIME_PATH = "/browse/runtime/";
 
+export function runtimeFrameSandbox(config?: {
+  runtimeProtocols?: { sameOrigin?: { activated?: boolean } };
+}) {
+  return config?.runtimeProtocols?.sameOrigin?.activated === true
+    ? undefined
+    : "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-pointer-lock allow-presentation";
+}
+
 /** Both runtime locations are fixed application routes, never caller URLs. */
 export function runtimeDocumentUrl(runtimeOrigin: string, runtimePath = "/") {
   const runtime = new URL(runtimeOrigin);

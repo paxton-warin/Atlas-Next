@@ -1,4 +1,3 @@
-import CompatibilityPanel from "./CompatibilityPanel";
 import Catalog from "./Catalog";
 import { version as appVersion } from "../../package.json";
 import {
@@ -14,6 +13,7 @@ import { isSearchShortcut } from "../../runtime/browser-shortcuts";
 import {
   createDirectTabUrl,
   createRuntimeFrameUrl,
+  runtimeFrameSandbox,
 } from "../../runtime/direct-tab";
 import { createPopoutUrl } from "./popout-link";
 import {
@@ -1431,31 +1431,6 @@ export default function App() {
                 problem={connectionExpired || !!config?.connectionError}
                 reconnect={requestReconnect}
                 directUrl={directTabUrl}
-                pageOptionsAvailable={
-                  !!active &&
-                  !current?.local &&
-                  !!current?.url &&
-                  !!config?.runtimeOrigin
-                }
-                pageOptions={(controls) => (
-                  <CompatibilityPanel
-                    {...controls}
-                    control={
-                      opaqueMode
-                        ? frontendWorkspace.current?.pageControls(active)
-                        : undefined
-                    }
-                    ready={runtimeReady}
-                    frame={runtimeRef.current?.contentWindow}
-                    runtimeOrigin={config?.runtimeOrigin}
-                    id={active}
-                    url={current?.local ? undefined : current?.url}
-                    fixture={
-                      config?.fixture === true ||
-                      location.hostname === "localhost"
-                    }
-                  />
-                )}
               />
               {popoutUrl ? (
                 <a
@@ -1641,7 +1616,7 @@ export default function App() {
                     send("ping", { id: "system" });
                   }}
                   allow="autoplay; encrypted-media; fullscreen; clipboard-write; camera; microphone"
-                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-pointer-lock allow-presentation"
+                  sandbox={runtimeFrameSandbox(config)}
                   hidden={!!current?.local}
                 />
               )}

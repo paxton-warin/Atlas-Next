@@ -1,4 +1,3 @@
-import CompatibilityPanel from "./CompatibilityPanel";
 import BrowsingOptions from "./BrowsingOptions";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
@@ -14,6 +13,7 @@ import {
 import {
   createDirectTabUrl,
   createRuntimeFrameUrl,
+  runtimeFrameSandbox,
   SAME_ORIGIN_RUNTIME_PATH,
 } from "../../runtime/direct-tab";
 import {
@@ -749,29 +749,6 @@ export default function Popout() {
           node={connection?.node}
           problem={expired || !!error}
           hideDirectOption
-          pageOptionsAvailable={
-            !!connection?.runtimeOrigin &&
-            !!pages.current.get(active.current)?.url
-          }
-          pageOptions={(controls) => (
-            <CompatibilityPanel
-              {...controls}
-              control={
-                opaqueMode
-                  ? frontendWorkspace.current?.pageControls(active.current)
-                  : undefined
-              }
-              ready={ready}
-              frame={runtime.current?.contentWindow}
-              runtimeOrigin={connection?.runtimeOrigin}
-              id={active.current}
-              url={pages.current.get(active.current)?.url}
-              fixture={
-                (connection as any)?.fixture === true ||
-                location.hostname === "localhost"
-              }
-            />
-          )}
         />
         {popupActive && (
           <button
@@ -844,7 +821,7 @@ export default function Popout() {
               send("ping", { id: "system" });
             }}
             allow="autoplay; encrypted-media; fullscreen; clipboard-write; camera; microphone"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-pointer-lock allow-presentation"
+            sandbox={runtimeFrameSandbox(connection ?? undefined)}
           />
         )}
         {error ? (

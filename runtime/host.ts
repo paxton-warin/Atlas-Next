@@ -5,8 +5,6 @@ import {
 } from "./site-compatibility";
 import {
   sanitizeSiteModes,
-  ruleFor,
-  SITE_PREFERENCE_KEY,
   type SiteModes,
 } from "./compatibility-policy";
 import { DiagnosticLog, requestCategory } from "./diagnostics";
@@ -157,13 +155,6 @@ let youtubeAdblock = launchParams.get("adblock") !== "0";
 let siteModes: SiteModes = {};
 const diagnosticModes = new Map<string, boolean>();
 const standalone = parent === window;
-if (standalone) {
-  try {
-    siteModes = sanitizeSiteModes(
-      JSON.parse(localStorage.getItem(SITE_PREFERENCE_KEY) || "{}"),
-    );
-  } catch {}
-}
 const config = await loadRuntimeConfig(ticket).catch((error) => {
   if (standalone) {
     const panel = document.createElement("main");
@@ -182,34 +173,10 @@ let relayQuery = ticket ? encodeURIComponent(ticket) + "/" : "";
 let standaloneExpired = false;
 const notify = (type: string, data: Record<string, unknown> = {}) => {
   if (standalone) {
-    if (type === "runtime-compatibility") {
-      const status = document.getElementById("popup-page-notice");
-      if (status)
-        status.textContent =
-          data.state === "applied"
-            ? "Compatibility adjustments applied."
-            : "The isolated response renderer did not load. Reload this page to retry.";
-    }
-    if (type === "compatibility-status") {
-      const status = document.getElementById("popup-page-notice");
-      if (status)
-        status.textContent = data.applied
-          ? "Compatibility adjustments applied."
-          : data.risk
-            ? "This site may still be classified based on its content."
-            : "";
-    }
     // Keep the real browser tab generic; site titles still belong to the site.
     if (type === "title") document.title = "Atlas";
     if (type === "navigation" && typeof data.url === "string") {
       if (records.get(String(data.id))?.element.hidden) return;
-      const metadata = document.querySelector<HTMLInputElement>(
-        "#popup-page-metadata",
-      );
-      if (metadata) {
-        metadata.disabled = !ruleFor(data.url, config.fixture === true);
-        metadata.checked = siteModes[new URL(data.url).origin] === true;
-      }
       const field = document.querySelector<HTMLInputElement>("#popup-address");
       if (field) field.value = data.url;
       // Keep reload/back-to-this-tab on its latest URL, without putting the
@@ -985,59 +952,16 @@ if (standalone) {
   returnLink.href = config.appOrigin;
   returnLink.setAttribute("aria-label", "Return to Atlas");
   returnLink.title = "Return to Atlas";
-  const pageOptions = document.createElement("details");
-  pageOptions.style.cssText = "position:relative;font:12px system-ui";
-  pageOptions.innerHTML = `<summary>Connection</summary><div style="position:absolute;right:0;top:30px;width:270px;z-index:100;background:#18251c;color:#edf3e8;padding:12px;display:grid;gap:10px;border:1px solid #56715b;border-radius:8px"><details><summary>Page options</summary><div style="display:grid;gap:10px;padding-top:10px">
-    <label><input type="checkbox" id="popup-page-metadata" disabled> Adjust site metadata for this origin</label>
-    <button type="button" id="popup-page-restore">Restore page defaults</button>
-    <label><input type="checkbox" id="popup-page-diagnostics">Record local diagnostics (5 minutes)</label>
-    <button type="button" id="popup-page-export">Export local diagnostics</button>
-    <p id="popup-page-notice" role="status"></p><small>Site content may still be classified.</small></div></details></div>`;
-  bar.append(pageOptions);
-  const setMetadata = (enabled: boolean) => {
-    const r = records.get(activeStandaloneId());
-    if (!r?.url || !ruleFor(r.url, config.fixture === true)) return;
-    const origin = new URL(r.url).origin;
-    if (enabled) siteModes[origin] = true;
-    else delete siteModes[origin];
-    try {
-      localStorage.setItem(SITE_PREFERENCE_KEY, JSON.stringify(siteModes));
-    } catch {}
-    for (const guard of r.guards?.values() || []) guard.update();
-    document.querySelector<HTMLInputElement>("#popup-page-metadata")!.checked =
-      enabled;
-  };
-  pageOptions
-    .querySelector("#popup-page-metadata")!
-    .addEventListener("change", (event) =>
-      setMetadata((event.target as HTMLInputElement).checked),
-    );
-  pageOptions
-    .querySelector("#popup-page-restore")!
-    .addEventListener("click", () => setMetadata(false));
-  pageOptions
-    .querySelector("#popup-page-diagnostics")!
-    .addEventListener("change", (event) => {
-      const record = records.get(activeStandaloneId());
-      if (record)
-        startDiagnostics(record, (event.target as HTMLInputElement).checked);
-    });
-  pageOptions
-    .querySelector("#popup-page-export")!
-    .addEventListener("click", () => {
-      const report = records.get(activeStandaloneId())?.diagnostics?.snapshot();
-      if (!report) return;
-      const href = URL.createObjectURL(
-        new Blob([JSON.stringify(report, null, 2)], {
-          type: "application/json",
-        }),
-      );
-      const a = document.createElement("a");
-      a.href = href;
-      a.download = "atlas-local-diagnostics.json";
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(href), 1000);
-    });
+  const connection = document.createElement("details");
+  connection.style.cssText = "position:relative;font:12px system-ui";
+  const connectionLabel = document.createElement("summary");
+  connectionLabel.textContent = "Connection";
+  const connectionInfo = document.createElement("div");
+  connectionInfo.style.cssText =
+    "position:absolute;right:0;top:30px;width:220px;z-index:100;background:#18251c;color:#edf3e8;padding:12px;border:1px solid #56715b;border-radius:8px";
+  connectionInfo.textContent = "Traffic node: " + (config.node?.name || "Main server");
+  connection.append(connectionLabel, connectionInfo);
+  bar.append(connection);
   returnLink.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 9v12"/></svg><span class="popup-return-label">Return to Atlas</span>`;
   returnLink.id = "popup-return";
   bar.append(returnLink);

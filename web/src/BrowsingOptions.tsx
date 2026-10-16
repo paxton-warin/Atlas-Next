@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, Globe2, RefreshCw, ExternalLink } from "lucide-react";
 
 export default function BrowsingOptions({
@@ -7,8 +7,6 @@ export default function BrowsingOptions({
   routing,
   problem,
   directUrl,
-  pageOptions,
-  pageOptionsAvailable = false,
   hideDirectOption = false,
 }: {
   node?: { name: string; online: boolean };
@@ -16,21 +14,14 @@ export default function BrowsingOptions({
   routing: boolean;
   problem: boolean;
   directUrl?: string;
-  pageOptions?: (controls: {
-    panelOpen: boolean;
-    onOpen: () => void;
-    onClose: () => void;
-  }) => ReactNode;
-  pageOptionsAvailable?: boolean;
   hideDirectOption?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [pageOpen, setPageOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
   const id = useId();
   useEffect(() => {
-    if (!open && !pageOpen) return;
+    if (!open) return;
     if (open)
       root.current
         ?.querySelector<HTMLElement>(
@@ -40,15 +31,13 @@ export default function BrowsingOptions({
     const outside = (e: PointerEvent) => {
       if (!root.current?.contains(e.target as Node)) {
         setOpen(false);
-        setPageOpen(false);
       }
     };
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
-  }, [open, pageOpen]);
+  }, [open]);
   function close() {
     setOpen(false);
-    setPageOpen(false);
     trigger.current?.focus();
   }
   return (
@@ -58,7 +47,6 @@ export default function BrowsingOptions({
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget)) {
           setOpen(false);
-          setPageOpen(false);
         }
       }}
     >
@@ -72,7 +60,6 @@ export default function BrowsingOptions({
         aria-controls={open ? id : undefined}
         title="Connection status and node"
         onClick={() => {
-          setPageOpen(false);
           setOpen(!open);
         }}
         onKeyDown={(e) => {
@@ -163,21 +150,6 @@ export default function BrowsingOptions({
               )}
             </>
           )}
-          {pageOptions && pageOptionsAvailable && (
-            <button
-              type="button"
-              role="menuitem"
-              tabIndex={-1}
-              aria-haspopup="dialog"
-              disabled={problem}
-              onClick={() => {
-                setOpen(false);
-                setPageOpen(true);
-              }}
-            >
-              Page options
-            </button>
-          )}
           {!hideDirectOption &&
             (directUrl && !problem ? (
               <a
@@ -206,14 +178,6 @@ export default function BrowsingOptions({
             ))}
         </div>
       )}
-      {pageOptions?.({
-        panelOpen: pageOpen,
-        onOpen: () => {
-          setOpen(false);
-          setPageOpen(true);
-        },
-        onClose: close,
-      })}
     </div>
   );
 }

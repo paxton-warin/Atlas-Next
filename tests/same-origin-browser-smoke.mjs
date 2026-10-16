@@ -271,6 +271,11 @@ async function assertPhysicalOrigin(page) {
   const iframe = page.locator(
     'iframe[title="Atlas isolated browsing runtime"]',
   );
+  assert.equal(
+    await iframe.getAttribute("sandbox"),
+    null,
+    "same-origin compatibility runtime must use native unsandboxed iframe behavior",
+  );
   const source = new URL(await iframe.getAttribute("src"));
   assert.equal(
     source.origin,
@@ -460,6 +465,14 @@ try {
   );
   receipt.checks.currentFrontendNativeOrigin = "PASS";
   receipt.checks.staleLegacyAssignmentIgnoredAndPreserved = "PASS";
+  await page
+    .getByRole("button", { name: "Connection options", exact: true })
+    .click();
+  await expect(
+    page.getByRole("menuitem", { name: "Page options", exact: true }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  receipt.checks.nativeRuntimeAndNoPageCompatibilityOptions = "PASS";
   await network(page);
   assert.ok(
     relayedUpgrades.some(
@@ -557,6 +570,13 @@ try {
   assert.equal(new URL(popup.url()).origin, frontend);
   assert.equal(new URL(popup.url()).pathname, "/popout");
   await assertPhysicalOrigin(popup);
+  await popup
+    .getByRole("button", { name: "Connection options", exact: true })
+    .click();
+  await expect(
+    popup.getByRole("menuitem", { name: "Page options", exact: true }),
+  ).toHaveCount(0);
+  await popup.keyboard.press("Escape");
   await savedState(popup);
   await popup.reload();
   await savedState(popup);
