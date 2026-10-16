@@ -3,8 +3,8 @@
 import { resolve } from "node:path";
 export function opaqueRuntimeSettings(env = process.env, cwd = process.cwd()) {
   const mode = env.ATLAS_BROWSER_RUNTIME || "held";
-  if (!["held", "opaque-v2"].includes(mode))
-    throw Error("ATLAS_BROWSER_RUNTIME must be held or opaque-v2.");
+  if (!["held", "opaque-v2", "same-origin"].includes(mode))
+    throw Error("ATLAS_BROWSER_RUNTIME must be held, opaque-v2 or same-origin.");
   const active = mode === "opaque-v2";
   if (active && env.LOCAL_RELAY_MODE !== "frontend")
     throw Error(
@@ -16,5 +16,10 @@ export function opaqueRuntimeSettings(env = process.env, cwd = process.cwd()) {
     opaqueAssetsDir: active
       ? resolve(cwd, env.OPAQUE_ASSETS_DIR || "dist/opaque-runtime")
       : null,
+    ...(mode === "same-origin" ? {
+      sameOriginRuntime: true,
+      runtimePath: "/browse/runtime/",
+      runtimeAssetsDir: resolve(cwd, "dist/runtime"),
+    } : {}),
   });
 }

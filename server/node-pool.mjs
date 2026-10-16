@@ -19,7 +19,7 @@ const fail = (message, statusCode = 400) =>
   Object.assign(Error(message), { statusCode });
 export function createNodePool(
   store,
-  { runtimeOrigin, localRelayMode = "isolated" } = {},
+  { runtimeOrigin, localRelayMode = "isolated", sameOriginRuntime = false } = {},
 ) {
   const { db, seal, unseal, audit } = store;
   const frontendRelay = localRelayMode === "frontend";
@@ -70,7 +70,7 @@ export function createNodePool(
       .prepare("SELECT * FROM nodes WHERE id != 'local' AND state = 'active'")
       .all()
       .filter((n) => Date.now() - n.seen < FRESH && hostCapable(n));
-  const localReady = () => (frontendRelay ? hosts().length > 0 : isolatedReady);
+  const localReady = () => sameOriginRuntime || (frontendRelay ? hosts().length > 0 : isolatedReady);
   const online = (n) =>
     n && (n.id === "local" ? localReady() : Date.now() - n.seen < FRESH);
   const available = (n) => online(n) && n.state !== "disabled";
@@ -513,7 +513,7 @@ export function createNodePool(
         seen: Date.now(),
         generation: 1,
         runtime_node:
-          candidates[0].id === "local" && frontendRelay
+          candidates[0].id === "local" && frontendRelay && !sameOriginRuntime
             ? hosts()
                 .filter(
                   (n) =>
@@ -522,7 +522,7 @@ export function createNodePool(
                 .sort((a, b) => a.id.localeCompare(b.id))[0]?.id
             : null,
       };
-      if (candidates[0].id === "local" && frontendRelay && !lease.runtime_node)
+      if (candidates[0].id === "local" && frontendRelay && !sameOriginRuntime && !lease.runtime_node)
         throw fail(
           "No isolated runtime host is available for Main server.",
           503,
@@ -551,6 +551,35 @@ export function createNodePool(
       hash,
     );
     const n = node(lease.node);
+    if (sameOriginRuntime) {
+      // The document origin stays on this frontend. Only the authenticated
+      // transport assignment changes; Main never needs a separate frame host.
+      if (lease.runtime_node) {
+        db.prepare("UPDATE browse_leases SET runtime_node=NULL WHERE hash=?").run(hash);
+        lease.runtime_node = null;
+      }
+      const relay = await controllerRelay(raw, origin, lease.generation);
+      const expiresAt = relay.ticketExpiresAt;
+      return {
+        serverTime: relay.serverTime,
+        expiresAt,
+        ticketExpiresAt: expiresAt,
+        leaseExpiresAt: relay.leaseExpiresAt,
+        generation: relay.generation,
+        session: raw,
+        sessionHash: hash,
+        runtimeOrigin: origin,
+        runtimePath: "/browse/runtime/",
+        relayOrigin: relay.relayOrigin,
+        relayTicket: relay.ticket,
+        node: { ...relay.node, online: true },
+        ticket: signTicket({
+          role: "frontend-runtime-v1", node: relay.node.id, lease: hash,
+          generation: relay.generation, origin, runtimeOrigin: origin,
+          relayOrigin: relay.relayOrigin, relayTicket: relay.ticket, expires: expiresAt,
+        }, localSecret),
+      };
+    }
     if (n?.id === "local" && frontendRelay && !lease.runtime_node)
       throw fail(
         "Main server connection changed. Choose Reconnect to start a new session.",
@@ -946,7 +975,7 @@ export function createNodePool(
     const t = verifyTicket(ticket, localSecret, runtimeOrigin, {
       allowExpired: established && purpose === "relay",
     });
-    if (t.role === RESOURCE_OWNER_ROLE)
+    if (t.role === RESOURCE_OWNER_ROLE || t.role === "frontend-runtime-v1")
       throw connectionError(
         "Invalid relay/runtime ticket purpose.",
         401,
@@ -1034,6 +1063,30 @@ export function createNodePool(
     if (typeof raw !== "string" || raw.length > 100)
       throw fail("Invalid browsing session.");
     retire(digest(raw), origin);
+  }
+  function sameOriginConfig(raw, origin) {
+    if (!sameOriginRuntime) throw connectionError("Runtime unavailable.", 404, "RUNTIME_PROTOCOL_REQUIRED");
+    const ticket = verifyTicket(raw, localSecret, origin);
+    if (ticket.role !== "frontend-runtime-v1")
+      throw connectionError("Invalid runtime ticket.", 401, "INVALID_TICKET");
+    prune();
+    const lease = db.prepare("SELECT * FROM browse_leases WHERE hash=? AND origin=?").get(ticket.lease, origin);
+    if (!lease) throw missingSession(ticket.lease, origin);
+    const selected = node(lease.node);
+    if (lease.generation !== ticket.generation || lease.node !== ticket.node)
+      throw connectionError("Browsing assignment changed.", 410, "SESSION_REVOKED");
+    if (!available(selected))
+      throw connectionError("Your assigned node is unavailable.", 503, "NODE_UNAVAILABLE", true);
+    const relayOrigin = selected.id === "local" ? origin : selected.endpoint;
+    if (ticket.relayOrigin !== relayOrigin || !ticket.relayTicket)
+      throw connectionError("Invalid runtime transport.", 401, "INVALID_TICKET");
+    return {
+      appOrigin: origin, runtimeOrigin: origin, runtimePath: "/browse/runtime/",
+      relayOrigin, relayTicket: ticket.relayTicket,
+      session: ticket.lease, generation: lease.generation,
+      leaseExpiresAt: lease.seen + TTL, ticketExpiresAt: ticket.expires,
+      serverTime: Date.now(), node: { id: selected.id, name: selected.name },
+    };
   }
   function nodeState(id) {
     const n = node(id);
@@ -1165,6 +1218,7 @@ export function createNodePool(
     operate,
     select,
     controllerRelay,
+    sameOriginConfig,
     resolve,
     release,
     nodeState,

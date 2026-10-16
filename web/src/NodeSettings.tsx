@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
 import { api, readLocal, writeLocal } from "./model";
-import { selectBrowsingLeaseForOwner } from "./browsing-session";
+import {
+  selectBrowsingLeaseForOwner,
+  SESSION_STORAGE_KEY,
+} from "./browsing-session";
 export type BrowsingNodeSelectionProps = {
   browsingSession?: string;
   browsingNode?: { id: string; name: string };
+  browsingSessionStorageKey?: string;
+  frontendStorage?: boolean;
   /** Combined frontend runtime owns reserve/probe/commit and peer renewal. */
   selectBrowsingNode?: (nodeId: string, csrf: string) => Promise<any>;
   onLeaseSelected: (lease: any, persisted: boolean) => void;
@@ -12,6 +17,8 @@ export default function NodeSettings({
   csrf,
   browsingSession,
   browsingNode,
+  browsingSessionStorageKey = SESSION_STORAGE_KEY,
+  frontendStorage = false,
   selectBrowsingNode,
   onLeaseSelected,
 }: { csrf: string } & BrowsingNodeSelectionProps) {
@@ -79,14 +86,14 @@ export default function NodeSettings({
             let persisted = false;
             const lease = await selectBrowsingLeaseForOwner(
               browsingSession,
-              () => readLocal("atlas.nodeSession", ""),
+              () => readLocal(browsingSessionStorageKey, ""),
               (session) =>
                 request("/select", {
                   method: "POST",
                   body: JSON.stringify({ session, node: selectedNode }),
                 }),
               (session) => {
-                persisted = writeLocal("atlas.nodeSession", session);
+                persisted = writeLocal(browsingSessionStorageKey, session);
               },
               navigator.locks,
             );
@@ -105,7 +112,7 @@ export default function NodeSettings({
         <p className="small">
           Changes only this browser's connection, not other clients or node
           weights. Saved tabs stay intact;{" "}
-          {selectBrowsingNode
+          {selectBrowsingNode || frontendStorage
             ? "website storage stays on this Atlas frontend when the traffic node changes."
             : "websites may require signing in again on a different node."}{" "}
           Online draining nodes are available for owner tests.

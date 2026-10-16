@@ -187,7 +187,7 @@ export default function BrowsingOptions({
                 role="menuitem"
                 tabIndex={-1}
                 onClick={close}
-                title="Open the node directly. Separate website storage may require signing in again."
+                title="Open this browsing runtime directly in a new tab."
               >
                 <ExternalLink size={14} />
                 Open direct node tab

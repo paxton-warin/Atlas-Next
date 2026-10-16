@@ -11,7 +11,10 @@ import {
 } from "react";
 import { matchesShortcut } from "../../runtime/panic-shortcut";
 import { isSearchShortcut } from "../../runtime/browser-shortcuts";
-import { createDirectTabUrl } from "../../runtime/direct-tab";
+import {
+  createDirectTabUrl,
+  createRuntimeFrameUrl,
+} from "../../runtime/direct-tab";
 import { createPopoutUrl } from "./popout-link";
 import {
   frontendRuntimeEnabled,
@@ -24,7 +27,7 @@ import {
   selectBrowsingLeaseForOwner,
   createBrowsingLeaseLifecycle,
   normalizeBrowsingLease,
-  LEASE_STORAGE_KEY,
+  browsingLeaseStorageKeys,
   TERMINAL_LEASE_CODES,
   retryBrowsingLeaseOperation,
 } from "./browsing-session";
@@ -319,6 +322,7 @@ export default function App() {
           current.url,
           config.ticket || undefined,
           settings.youtubeAdblock,
+          config.runtimePath,
         );
         if (!config.nodeRouting || config.session)
           popoutUrl = createPopoutUrl(
@@ -373,9 +377,10 @@ export default function App() {
       ).then(async (config) => {
         if (frontendRuntimeEnabled(config) || !config.nodeRouting)
           return config;
+        const savedKeys = browsingLeaseStorageKeys(config);
         try {
           const lease = await restoreBrowsingLeaseOnStartup(
-            () => readLocal("atlas.nodeSession", ""),
+            () => readLocal(savedKeys.session, ""),
             (session, intent) =>
               retryBrowsingLeaseOperation(
                 () =>
@@ -390,12 +395,12 @@ export default function App() {
                 },
               ),
             (session) => {
-              writeLocal("atlas.nodeSession", session);
+              writeLocal(savedKeys.session, session);
             },
             navigator.locks,
           );
           const normalized = normalizeBrowsingLease(lease);
-          writeLocal(LEASE_STORAGE_KEY, normalized);
+          writeLocal(savedKeys.lease, normalized);
           return { ...config, ...normalized };
         } catch (error) {
           return {
@@ -403,7 +408,7 @@ export default function App() {
             connectionError: (error as Error).message,
             connectionErrorStatus: (error as { status?: number }).status,
             connectionErrorCode: (error as { code?: string }).code,
-            session: readLocal("atlas.nodeSession", ""),
+            session: readLocal(savedKeys.session, ""),
           };
         }
       }),
@@ -587,6 +592,7 @@ export default function App() {
     runtimeLoaded.current = false;
   }, [
     config?.runtimeOrigin,
+    config?.runtimePath,
     config?.session,
     config?.generation,
     runtimeAttempt,
@@ -639,15 +645,16 @@ export default function App() {
         setRuntimeError("");
         return;
       }
+      const savedKeys = browsingLeaseStorageKeys(config);
       const old = browsingSessionToRelease(
         config?.session,
-        readLocal("atlas.nodeSession", ""),
+        readLocal(savedKeys.session, ""),
       );
       // Reserve the replacement before releasing the old pin. An outage must
       // leave the currently usable connection and its browser data intact.
       const lease = await selectBrowsingLeaseForOwner(
         old,
-        () => readLocal("atlas.nodeSession", ""),
+        () => readLocal(savedKeys.session, ""),
         (session) =>
           api("/browse/session", {
             method: "POST",
@@ -659,13 +666,13 @@ export default function App() {
             signal: AbortSignal.timeout(12000),
           }),
         (session) => {
-          writeLocal("atlas.nodeSession", session);
+          writeLocal(savedKeys.session, session);
         },
         navigator.locks,
       );
       const normalized = normalizeBrowsingLease(lease);
-      writeLocal("atlas.nodeSession", normalized.session);
-      writeLocal(LEASE_STORAGE_KEY, normalized);
+      writeLocal(savedKeys.session, normalized.session);
+      writeLocal(savedKeys.lease, normalized);
       configRef.current = { ...config, ...normalized, connectionError: "" };
       setConfig(configRef.current);
       setConnectionExpired(false);
@@ -685,6 +692,7 @@ export default function App() {
       connectionExpired
     )
       return;
+    const savedKeys = browsingLeaseStorageKeys(config);
     const lifecycle = createBrowsingLeaseLifecycle<any>({
       current: () => configRef.current,
       epoch: () => leaseEpoch.current,
@@ -700,11 +708,11 @@ export default function App() {
           signal: AbortSignal.timeout(12000),
         }),
       locks: navigator.locks,
-      readRemembered: () => readLocal(LEASE_STORAGE_KEY, null),
+      readRemembered: () => readLocal(savedKeys.lease, null),
       remember: (lease) => {
-        writeLocal(LEASE_STORAGE_KEY, lease);
-        if (readLocal("atlas.nodeSession", "") === configRef.current?.session)
-          writeLocal("atlas.nodeSession", lease.session);
+        writeLocal(savedKeys.lease, lease);
+        if (readLocal(savedKeys.session, "") === configRef.current?.session)
+          writeLocal(savedKeys.session, lease.session);
       },
       apply: (lease, previous) => {
         const bootFailed = runtimeBootFailed.current;
@@ -922,11 +930,11 @@ export default function App() {
         pendingClear.current = false;
         toast("Website data cleared.");
         if (runtimeRef.current)
-          runtimeRef.current.src =
-            config.runtimeOrigin +
-            (config.ticket
-              ? "#ticket=" + encodeURIComponent(config.ticket)
-              : "");
+          runtimeRef.current.src = createRuntimeFrameUrl(
+            config.runtimeOrigin,
+            config.ticket,
+            config.runtimePath,
+          );
         setRuntimeReady(false);
         live.current.clear();
         return;
@@ -1152,6 +1160,10 @@ export default function App() {
           <Admin
             browsingSession={config?.session}
             browsingNode={config?.node}
+            browsingSessionStorageKey={browsingLeaseStorageKeys(config).session}
+            frontendStorage={
+              config?.runtimeProtocols?.sameOrigin?.activated === true
+            }
             selectBrowsingNode={
               opaqueMode
                 ? (node, csrf) =>
@@ -1191,7 +1203,7 @@ export default function App() {
               setConnectionExpired(false);
               setReconnectReason(null);
               setReconnectError("");
-              setPage(tabs.length ? "browser" : "home");
+              setPage(tabs.length ? "browse" : "home");
               restartRuntime();
               toast(
                 persisted
@@ -1618,14 +1630,12 @@ export default function App() {
                 <iframe
                   title="Atlas isolated browsing runtime"
                   ref={runtimeRef}
-                  src={
-                    config.runtimeOrigin +
-                    (runtimeAttempt ? "?session=" + runtimeAttempt : "") +
-                    ((config.bootTicket ?? config.ticket)
-                      ? "#ticket=" +
-                        encodeURIComponent(config.bootTicket ?? config.ticket)
-                      : "")
-                  }
+                  src={createRuntimeFrameUrl(
+                    config.runtimeOrigin,
+                    config.bootTicket ?? config.ticket,
+                    config.runtimePath,
+                    runtimeAttempt,
+                  )}
                   onLoad={() => {
                     runtimeLoaded.current = true;
                     send("ping", { id: "system" });

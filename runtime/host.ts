@@ -26,6 +26,7 @@ import { createDirectTabUrl, directTabTarget } from "./direct-tab";
 import { encodeTarget, decodeTarget } from "./url-codec";
 import { installOpaqueRenderer, type OpaqueResource } from "./opaque-renderer";
 import { createHttpCachePlugin } from "./http-cache";
+import { createLogicalStoragePlugin } from "./logical-storage";
 import { createRequestHeadersPlugin } from "./request-headers";
 import { createYouTubeAdblockPlugin } from "./youtube-adblock";
 import { createVerifiedStylesheetPlugin } from "./verified-stylesheet";
@@ -222,6 +223,7 @@ const notify = (type: string, data: Record<string, unknown> = {}) => {
             data.url,
             ticket || undefined,
             youtubeAdblock,
+            config.runtimePath,
           ),
         );
       } catch {
@@ -724,6 +726,7 @@ function createRecord(id: string, engine: string) {
       globals.$runtimekitUtils;
     record.frame = controller.createFrame(element, {
       plugins: [
+        createLogicalStoragePlugin(globals),
         pageBridgePlugin(id),
         diagnosticsPlugin(id),
         createYouTubeAdblockPlugin(globals, () => youtubeAdblock),
@@ -744,6 +747,7 @@ function createRecord(id: string, engine: string) {
                 String(value),
                 ticket || undefined,
                 youtubeAdblock,
+                config.runtimePath,
               ),
             ),
         ),
@@ -947,7 +951,7 @@ window.addEventListener("message", async (event) => {
           : r?.element.contentWindow?.history.forward();
     } else if (type === "clear") {
       location.replace(
-        "/clear.html" + (ticket ? "#ticket=" + encodeURIComponent(ticket) : ""),
+        (config.runtimePath || "/") + "clear.html" + (ticket ? "#ticket=" + encodeURIComponent(ticket) : ""),
       );
     }
   } catch (err) {

@@ -20,7 +20,25 @@ export type LeaseFailure = Error & {
   retryAfter?: number;
 };
 export type LeaseIntent = "restore" | "renew" | "new";
+export const SESSION_STORAGE_KEY = "atlas.nodeSession";
 export const LEASE_STORAGE_KEY = "atlas.nodeLease.v2";
+export const SAME_ORIGIN_SESSION_STORAGE_KEY =
+  "atlas.nodeSession.sameOrigin.v1";
+export const SAME_ORIGIN_LEASE_STORAGE_KEY = "atlas.nodeLease.sameOrigin.v1";
+
+/** A newly activated runtime must not replay assignments from another protocol.
+ * Only connection metadata gets a new namespace; website and Atlas state stay
+ * untouched. Subsequent same-origin loads reuse the same saved node pin. */
+export function browsingLeaseStorageKeys(config?: {
+  runtimeProtocols?: { sameOrigin?: { activated?: boolean } };
+}) {
+  return config?.runtimeProtocols?.sameOrigin?.activated === true
+    ? {
+        session: SAME_ORIGIN_SESSION_STORAGE_KEY,
+        lease: SAME_ORIGIN_LEASE_STORAGE_KEY,
+      }
+    : { session: SESSION_STORAGE_KEY, lease: LEASE_STORAGE_KEY };
+}
 export const TERMINAL_LEASE_CODES = new Set([
   "SESSION_REVOKED",
   "INVALID_SESSION",

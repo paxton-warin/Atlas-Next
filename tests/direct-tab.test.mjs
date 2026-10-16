@@ -1,6 +1,71 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDirectTabUrl, directTabTarget } from "../runtime/direct-tab.ts";
+import {
+  createDirectTabUrl,
+  createRuntimeFrameUrl,
+  directTabTarget,
+  SAME_ORIGIN_RUNTIME_PATH,
+} from "../runtime/direct-tab.ts";
+
+test("same-frontend direct tabs and iframe reloads retain the dedicated runtime path", () => {
+  const frontend = "https://frontend.example";
+  const ticket = "signed.boot.ticket";
+  const direct = new URL(
+    createDirectTabUrl(
+      frontend,
+      "https://website.example/article",
+      ticket,
+      false,
+      SAME_ORIGIN_RUNTIME_PATH,
+    ),
+  );
+  assert.equal(direct.origin, frontend);
+  assert.equal(direct.pathname, "/browse/runtime/");
+  assert.equal(direct.search, "");
+  assert.equal(
+    directTabTarget(new URLSearchParams(direct.hash.slice(1))),
+    "https://website.example/article",
+  );
+  const embedded = new URL(
+    createRuntimeFrameUrl(frontend, ticket, SAME_ORIGIN_RUNTIME_PATH, 2),
+  );
+  assert.equal(embedded.pathname, "/browse/runtime/");
+  assert.equal(embedded.search, "?session=2");
+  assert.equal(embedded.hash, "#ticket=signed.boot.ticket");
+  assert.equal(
+    createRuntimeFrameUrl(frontend, undefined, SAME_ORIGIN_RUNTIME_PATH),
+    frontend + "/browse/runtime/",
+  );
+  assert.equal(
+    createRuntimeFrameUrl("https://node.example", ticket),
+    "https://node.example/#ticket=signed.boot.ticket",
+  );
+});
+
+test("runtime routes cannot point the shell at APIs, queries or another origin", () => {
+  for (const path of [
+    "/api/config",
+    "//different.example/",
+    "https://different.example/",
+    "/browse/runtime/?ticket=secret",
+    "/browse/runtime/#ticket=secret",
+    "/browse/runtime/../",
+    "browse/runtime/",
+  ]) {
+    assert.throws(() =>
+      createRuntimeFrameUrl("https://frontend.example", "ticket", path),
+    );
+    assert.throws(() =>
+      createDirectTabUrl(
+        "https://frontend.example",
+        "https://website.example/",
+        "ticket",
+        true,
+        path,
+      ),
+    );
+  }
+});
 
 test("direct browsing URL uses assigned node root and keeps target/ticket only in its fragment", () => {
   const target = "https://play.example/game?q=hello world&return=%2Fhome#saved";

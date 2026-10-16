@@ -1,23 +1,45 @@
 import { encodeTarget, decodeTarget } from "./url-codec.ts";
 
-/** Keep assignment tickets out of HTTP URLs/referrers and literal targets out of wrapper URLs. */
-export function createDirectTabUrl(
-  runtimeOrigin: string,
-  target: string,
-  ticket?: string,
-  youtubeAdblock = true,
-): string {
+export const SAME_ORIGIN_RUNTIME_PATH = "/browse/runtime/";
+
+/** Both runtime locations are fixed application routes, never caller URLs. */
+export function runtimeDocumentUrl(runtimeOrigin: string, runtimePath = "/") {
   const runtime = new URL(runtimeOrigin);
-  const destination = new URL(target);
   if (
     !["https:", "http:"].includes(runtime.protocol) ||
     runtime.username ||
     runtime.password ||
     runtime.pathname !== "/" ||
     runtime.search ||
-    runtime.hash
+    runtime.hash ||
+    !["/", SAME_ORIGIN_RUNTIME_PATH].includes(runtimePath)
   )
-    throw Error("Use a browsing node origin.");
+    throw Error("Use a browsing runtime origin and route.");
+  return new URL(runtimePath, runtime.origin);
+}
+
+export function createRuntimeFrameUrl(
+  runtimeOrigin: string,
+  ticket?: string,
+  runtimePath = "/",
+  attempt = 0,
+) {
+  const runtime = runtimeDocumentUrl(runtimeOrigin, runtimePath);
+  if (attempt) runtime.searchParams.set("session", String(attempt));
+  if (ticket) runtime.hash = new URLSearchParams({ ticket }).toString();
+  return runtime.href;
+}
+
+/** Keep assignment tickets out of HTTP URLs/referrers and literal targets out of wrapper URLs. */
+export function createDirectTabUrl(
+  runtimeOrigin: string,
+  target: string,
+  ticket?: string,
+  youtubeAdblock = true,
+  runtimePath = "/",
+): string {
+  const runtime = runtimeDocumentUrl(runtimeOrigin, runtimePath);
+  const destination = new URL(target);
   if (
     !["https:", "http:"].includes(destination.protocol) ||
     destination.username ||
@@ -37,7 +59,7 @@ export function createDirectTabUrl(
   });
   if (ticket) fragment.set("ticket", ticket);
   if (!youtubeAdblock) fragment.set("adblock", "0");
-  const result = new URL(runtime.origin + "/");
+  const result = runtime;
   result.hash = fragment.toString();
   return result.href;
 }

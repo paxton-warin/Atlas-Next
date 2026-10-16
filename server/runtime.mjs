@@ -281,6 +281,12 @@ export async function createRuntime({
   app.get("/health", () => ({ status: "ok", wisp: "listening" }));
   await app.register(fastifyStatic, {
     root: staticDir,
+    prefix: "/browse/runtime/",
+    decorateReply: false,
+    preCompressed: true,
+  });
+  await app.register(fastifyStatic, {
+    root: staticDir,
     preCompressed: true,
     setHeaders(response) {
       response.setHeader("Vary", "Accept-Encoding");

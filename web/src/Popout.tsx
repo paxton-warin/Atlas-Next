@@ -11,7 +11,11 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { createDirectTabUrl } from "../../runtime/direct-tab";
+import {
+  createDirectTabUrl,
+  createRuntimeFrameUrl,
+  SAME_ORIGIN_RUNTIME_PATH,
+} from "../../runtime/direct-tab";
 import {
   frontendRuntimeEnabled,
   createFrontendWorkspace,
@@ -36,7 +40,7 @@ import "./popout.css";
 import {
   createBrowsingLeaseLifecycle,
   normalizeBrowsingLease,
-  LEASE_STORAGE_KEY,
+  browsingLeaseStorageKeys,
   TERMINAL_LEASE_CODES,
   retryBrowsingLeaseOperation,
   type BrowsingLease,
@@ -45,6 +49,8 @@ import {
 type Connection = BrowsingLease & {
   node?: { name: string; online: boolean };
   runtimeOrigin: string;
+  runtimePath?: string;
+  runtimeProtocols?: { sameOrigin?: { activated?: boolean } };
   nodeRouting?: boolean;
   ticket?: string;
   expiresLocally?: number;
@@ -107,7 +113,12 @@ export default function Popout() {
   const runtimeLoaded = useRef(false);
   useEffect(() => {
     runtimeLoaded.current = false;
-  }, [connection?.runtimeOrigin, connection?.session, connection?.generation]);
+  }, [
+    connection?.runtimeOrigin,
+    connection?.runtimePath,
+    connection?.session,
+    connection?.generation,
+  ]);
 
   function send(type: string, extra: Record<string, unknown> = {}) {
     if (frontendRuntimeEnabled(connectionRef.current)) {
@@ -220,6 +231,9 @@ export default function Popout() {
         result = { ...config, ...normalizeBrowsingLease(lease) };
       }
       const origin = new URL(result.runtimeOrigin);
+      const sameOriginRuntime =
+        result.runtimeProtocols?.sameOrigin?.activated === true &&
+        result.runtimePath === SAME_ORIGIN_RUNTIME_PATH;
       if (
         !/^https?:$/.test(origin.protocol) ||
         origin.username ||
@@ -227,7 +241,9 @@ export default function Popout() {
         origin.pathname !== "/" ||
         origin.search ||
         origin.hash ||
-        origin.origin === location.origin
+        (sameOriginRuntime
+          ? origin.origin !== location.origin
+          : origin.origin === location.origin)
       )
         throw Error(
           "The browsing connection is not configured. Return to Atlas to check it.",
@@ -346,6 +362,7 @@ export default function Popout() {
       expired
     )
       return;
+    const savedKeys = browsingLeaseStorageKeys(connection);
     const lifecycle = createBrowsingLeaseLifecycle<Connection>({
       current: () => connectionRef.current,
       visible: () => !document.hidden,
@@ -360,21 +377,22 @@ export default function Popout() {
           signal: AbortSignal.timeout(12000),
         }),
       locks: navigator.locks,
-      readRemembered: () => readLocal(LEASE_STORAGE_KEY, null),
+      readRemembered: () => readLocal(savedKeys.lease, null),
       // Refresh this exact pin only; a popout never follows another tab's
       // manual switch and never overwrites the owner's selected session.
       remember: (lease) => {
-        const saved = readLocal<Connection | null>(LEASE_STORAGE_KEY, null);
+        const saved = readLocal<Connection | null>(savedKeys.lease, null);
         if (!saved || saved.session === lease.session)
           try {
-            localStorage.setItem(LEASE_STORAGE_KEY, JSON.stringify(lease));
+            localStorage.setItem(savedKeys.lease, JSON.stringify(lease));
           } catch {}
       },
       apply: (lease, previous) => {
         const bootFailed = runtimeBootFailed.current;
         if (bootFailed) lease = { ...lease, bootTicket: lease.ticket };
-        connectionRef.current = lease;
-        setConnection(lease);
+        const next = { ...previous, ...lease };
+        connectionRef.current = next;
+        setConnection(next);
         setError("");
         if (
           lease.generation !== previous.generation ||
@@ -631,6 +649,7 @@ export default function Popout() {
         target,
         connection.ticket,
         launch.value?.youtubeAdblock,
+        connection.runtimePath,
       );
     } catch {
       /* No direct link for internal pages. */
@@ -783,7 +802,11 @@ export default function Popout() {
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Open direct node tab"
-            title="Direct node tab — separate website storage; you may need to sign in again"
+            title={
+              connection?.runtimePath === SAME_ORIGIN_RUNTIME_PATH
+                ? "Direct tab — website storage stays on this Atlas frontend"
+                : "Direct node tab — separate website storage; you may need to sign in again"
+            }
           >
             <ExternalLink size={15} />
             <span>Direct node</span>
@@ -811,15 +834,11 @@ export default function Popout() {
           <iframe
             ref={runtime}
             title="Atlas isolated browsing runtime"
-            src={
-              connection.runtimeOrigin +
-              ((connection.bootTicket ?? connection.ticket)
-                ? "#ticket=" +
-                  encodeURIComponent(
-                    (connection.bootTicket ?? connection.ticket)!,
-                  )
-                : "")
-            }
+            src={createRuntimeFrameUrl(
+              connection.runtimeOrigin,
+              connection.bootTicket ?? connection.ticket,
+              connection.runtimePath,
+            )}
             onLoad={() => {
               runtimeLoaded.current = true;
               send("ping", { id: "system" });

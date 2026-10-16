@@ -3,6 +3,7 @@ import { installReservedRendererHelper } from "./reserved-renderer-helper.mjs";
 import { installFrontendControllerAPI } from "./frontend-controller.mjs";
 import { installOpaqueRuntimeAssets } from "./opaque-runtime-assets.mjs";
 import { opaqueRuntimeSettings } from "./runtime-activation.mjs";
+import { installSameOriginRuntime } from "./same-origin-runtime.mjs";
 import { createNativeResourceAuthority } from "./native-resource-authority.mjs";
 import { installNativeResourceGateway } from "./native-resource-gateway.mjs";
 import {
@@ -101,6 +102,7 @@ export async function createApp(options = {}) {
   const pool = createNodePool(store, {
     runtimeOrigin: config.runtimeOrigin,
     localRelayMode: config.localRelayMode,
+    sameOriginRuntime: config.sameOriginRuntime === true,
   });
   app.decorate("nodePool", pool);
   app.decorate("store", store);
@@ -178,7 +180,7 @@ export async function createApp(options = {}) {
     return true;
   }
   app.addHook("onRequest", async (req, reply) => {
-    const controllerEndpoints = config.opaqueRuntimeEnabled
+    const controllerEndpoints = config.opaqueRuntimeEnabled || config.sameOriginRuntime
       ? [
           originFor(req),
           ...pool
@@ -240,6 +242,7 @@ export async function createApp(options = {}) {
   app.setErrorHandler((err, req, reply) =>
     reply.code(err.statusCode || 500).send(
       req.url.split("?")[0] === "/api/browse/session" ||
+        req.url.split("?")[0] === "/runtime-config" ||
         req.url.startsWith("/api/browse/controller/") ||
         req.url.split("?")[0] === "/api/admin/nodes/controller-select"
         ? connectionErrorBody(err)
@@ -250,12 +253,14 @@ export async function createApp(options = {}) {
           },
     ),
   );
-  app.get("/api/config", () => ({
+  app.get("/api/config", (req) => ({
     name: get("siteName") || "Atlas",
-    runtimeOrigin: config.runtimeOrigin,
+    runtimeOrigin: config.sameOriginRuntime ? originFor(req) : config.runtimeOrigin,
+    ...(config.sameOriginRuntime ? { runtimePath: "/browse/runtime/" } : {}),
     engines: ["scramjet"],
     nodeRouting: config.nodesEnabled,
     runtimeProtocols: {
+      sameOrigin: { version: 1, activated: config.sameOriginRuntime === true, runtimePath: "/browse/runtime/" },
       opaque: {
         ...OPAQUE_RUNTIME_PROTOCOL,
         activated: config.opaqueRuntimeActivated === true && !!runtimeAssets,
@@ -670,12 +675,20 @@ export async function createApp(options = {}) {
     return { ok: true };
   });
   installAi(app, { store, session, rate, ip, fail, limitIp, requestLimits });
+  if (config.sameOriginRuntime)
+    await installSameOriginRuntime(app, {
+      directory: config.runtimeAssetsDir || resolve("dist/runtime"),
+      originFor,
+      runtimeConfig: (ticket, origin) => pool.sameOriginConfig(ticket, origin),
+      fixture: process.env.NODE_ENV === "test" && process.env.ATLAS_TEST_FIXTURE === "1",
+    });
   if (existsSync(config.staticDir)) {
     await app.register(fastifyStatic, { root: config.staticDir });
     app.setNotFoundHandler((req, reply) => {
       if (
         req.method !== "GET" ||
         req.url.startsWith("/api/") ||
+        (config.sameOriginRuntime && ["/~/", "/runtime/", "/controller/", "/clients/", "/bootstrap/", "/browse/runtime/"].some(prefix => req.url.startsWith(prefix))) ||
         (req.url.startsWith("/_control/") &&
           req.url.split("?")[0] !== config.adminPath)
       )
