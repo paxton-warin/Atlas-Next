@@ -299,9 +299,31 @@ export async function createRuntime({
   const maintenanceTimer = setInterval(maintainConnections, maintenanceIntervalMs);
   maintenanceTimer.unref();
   app.decorate("maintainConnections", maintainConnections);
+  const activeSessionCount = () => {
+    const now = maintenanceNow();
+    const active = new Set();
+    for (const [socket, relay] of relays) {
+      if (
+        !relay.ready || relay.ws.readyState !== WebSocket.OPEN ||
+        !relay.session || active.has(relay.session) ||
+        now - relay.lastPong > pongTimeoutMs
+      ) continue;
+      try {
+        // Count an authenticated browsing assignment, not every ticket/socket.
+        // Revalidate without touching the lease: revoked, moved, idle-expired,
+        // or control-stale sockets stop counting before their cleanup timer.
+        const assignment = authorizations.get(socket)?.();
+        if (assignment?.session === relay.session) active.add(relay.session);
+      } catch {
+        // An open TCP/WebSocket handle is not proof of a current assignment.
+      }
+    }
+    return active.size;
+  };
   app.decorate("connectionStats", () => ({
     connections: sockets.size,
     sessions: sessions.size,
+    activeSessions: activeSessionCount(),
     maxConnectionsPerSession: Math.max(0, ...sessions.values()),
     emptyConnections: [...relays.values()].filter((relay) =>
       relay.ready && !Object.keys(relay.connection.streams).length,

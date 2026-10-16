@@ -1940,6 +1940,24 @@ kbd {
   font-weight: 400;
   color: var(--accent);
 }
+.ccu-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.ccu-heading h2 {
+  margin: 0;
+}
+.ccu-summary .ccu-status {
+  margin-bottom: 0;
+}
+.node-ccu {
+  margin: 12px 0 4px;
+}
+.node-ccu strong {
+  color: var(--accent);
+}
 .ticket-row {
   display: flex;
   align-items: center;

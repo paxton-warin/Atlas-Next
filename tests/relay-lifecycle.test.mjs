@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import WebSocket from 'ws';
+import { server as wisp } from '@mercuryworkshop/wisp-js/server';
 import { createRuntime } from '../server/runtime.mjs';
 import { createNodeService } from '../server/node-service.mjs';
 
@@ -17,10 +18,12 @@ async function until(check) {
 }
 async function fixture(t, maintenance = {}) {
   let now = 100000;
+  const denied = new Set();
   const service = await createRuntime({
     appOrigin: origin, runtimeOrigin: origin, staticDir: '/not-built', fixture: true,
     relayMaintenance: { now: () => now, intervalMs: 60000, pongTimeoutMs: 3600000, ...maintenance },
     authorize(raw) {
+      if (denied.has(raw)) throw Error('Assignment is no longer valid.');
       const [session, deadline = '1', generation = '1'] = raw.split('.');
       return { session, ticketExpiresAt: Number(deadline), generation: Number(generation) };
     },
@@ -35,6 +38,7 @@ async function fixture(t, maintenance = {}) {
     service,
     track(socket) { sockets.push(socket); },
     advance(ms) { now += ms; },
+    invalidate(ticket) { denied.add(ticket); },
     async open(ticket, options) {
       const socket = new WebSocket(`ws://127.0.0.1:${service.server.address().port}/relay/${ticket}/`, { origin, ...options });
       sockets.push(socket);
@@ -55,7 +59,7 @@ test('relay counts expose only aggregate capacity and sessions, and close releas
   await f.open('two.1');
   const stats = f.service.connectionStats();
   assert.deepEqual(stats, {
-    connections: 3, sessions: 2, maxConnectionsPerSession: 2,
+    connections: 3, sessions: 2, activeSessions: 2, maxConnectionsPerSession: 2,
     emptyConnections: 3, activeStreams: 0, capacity: 200, perSessionCapacity: 12,
     rejectedCapacity: 0, reclaimedRetired: 0, deadPeers: 0,
   });
@@ -63,6 +67,58 @@ test('relay counts expose only aggregate capacity and sessions, and close releas
   one.terminate();
   await until(() => f.service.connectionCount() === 2);
   assert.equal(f.service.connectionStats().maxConnectionsPerSession, 1);
+});
+
+test('active CCU deduplicates rotated credentials and excludes invalid assignments before socket cleanup', async t => {
+  const f = await fixture(t);
+  await f.open('shared.1');
+  await f.open('shared.2');
+  await f.open('other.1');
+  assert.equal(f.service.connectionStats().activeSessions, 2);
+  assert.equal(f.service.connectionCount(), 3);
+  f.invalidate('shared.1');
+  assert.equal(f.service.connectionStats().activeSessions, 2, 'another valid socket keeps the session live');
+  f.invalidate('shared.2');
+  assert.equal(f.service.connectionStats().activeSessions, 1);
+  assert.equal(f.service.connectionStats().sessions, 2, 'capacity bookkeeping is not the CCU metric');
+  f.invalidate('other.1');
+  assert.equal(f.service.connectionStats().activeSessions, 0);
+  assert.equal(f.service.connectionCount(), 3, 'invalid handles need not be closed before CCU updates');
+});
+
+test('one browsing session counts once until its last relay closes', async t => {
+  const f = await fixture(t);
+  const first = await f.open('same.1');
+  const second = await f.open('same.2');
+  assert.equal(f.service.connectionStats().activeSessions, 1);
+  first.terminate();
+  await until(() => f.service.connectionCount() === 1);
+  assert.equal(f.service.connectionStats().activeSessions, 1);
+  second.terminate();
+  await until(() => f.service.connectionCount() === 0);
+  assert.equal(f.service.connectionStats().activeSessions, 0);
+});
+
+test('an incomplete protocol bootstrap is not counted as active CCU', async t => {
+  let ready;
+  const gate = new Promise(resolve => { ready = resolve; });
+  const setup = wisp.ServerConnection.prototype.setup;
+  t.mock.method(wisp.ServerConnection.prototype, 'setup', async function (...args) {
+    await gate;
+    return setup.apply(this, args);
+  });
+  t.after(() => ready());
+  const f = await fixture(t);
+  const socket = new WebSocket(`ws://127.0.0.1:${f.service.server.address().port}/relay/pending.1/`, { origin });
+  socket.on('error', () => {});
+  f.track(socket);
+  await once(socket, 'open');
+  assert.equal(f.service.connectionCount(), 1);
+  assert.equal(f.service.connectionStats().activeSessions, 0);
+  const firstPacket = once(socket, 'message');
+  ready();
+  await firstPacket;
+  await until(() => f.service.connectionStats().activeSessions === 1);
 });
 
 test('only an empty older credential with a ready newer same-generation relay is reclaimed', async t => {
@@ -121,6 +177,7 @@ test('missed native pong closes a dead relay without touching a more recent live
   const old = await f.open('one.1', { autoPong: false });
   f.advance(66000);
   const live = await f.open('two.1');
+  assert.equal(f.service.connectionStats().activeSessions, 1, 'a stale pong is excluded before maintenance');
   f.service.maintainConnections();
   await until(() => old.readyState === WebSocket.CLOSED);
   assert.equal(live.readyState, WebSocket.OPEN);
@@ -136,4 +193,5 @@ test('protected node health includes aggregate relay stats and rejects anonymous
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().relay.capacity, 200);
   assert.equal(response.json().relay.sessions, 0);
+  assert.equal(response.json().relay.activeSessions, 0);
 });

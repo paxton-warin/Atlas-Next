@@ -10,6 +10,7 @@ const runtime = await createRuntime({
     process.env.NODE_ENV === "test" && process.env.ATLAS_TEST_FIXTURE === "1",
 });
 app.nodePool.setLocalConnections(() => runtime.connectionCount());
+app.nodePool.setLocalRelayStats(() => runtime.connectionStats());
 await runtime.listen({
   port: Number(process.env.RUNTIME_PORT || 4181),
   host: process.env.HOST || "127.0.0.1",

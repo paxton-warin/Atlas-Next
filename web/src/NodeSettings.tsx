@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, readLocal, writeLocal } from "./model";
+import AdminCcuMetrics, { NodeCcuCount } from "./AdminCcuMetrics";
 import {
   selectBrowsingLeaseForOwner,
   SESSION_STORAGE_KEY,
@@ -26,6 +27,7 @@ export default function NodeSettings({
     [name, setName] = useState(""),
     [endpoint, setEndpoint] = useState(""),
     [error, setError] = useState(""),
+    [nodesUnavailable, setNodesUnavailable] = useState(false),
     [code, setCode] = useState(""),
     [busy, setBusy] = useState(false),
     [selectedNode, setSelectedNode] = useState(""),
@@ -37,10 +39,20 @@ export default function NodeSettings({
     });
   const requiresSetup = (node: any) =>
     node.setupRequired && !(selectBrowsingNode && node.id === "local");
-  const refresh = () =>
-    request()
-      .then(setNodes)
-      .catch((e) => setError(e.message));
+  const refresh = () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    return request("", { signal: controller.signal })
+      .then((result) => {
+        setNodes(result);
+        setNodesUnavailable(false);
+      })
+      .catch((e) => {
+        setNodesUnavailable(true);
+        setError(e.message);
+      })
+      .finally(() => clearTimeout(timeout));
+  };
   useEffect(() => {
     void refresh();
     const t = setInterval(refresh, 15000);
@@ -65,6 +77,7 @@ export default function NodeSettings({
         Visitors connect directly to their assigned node. Existing sessions stay
         pinned; draining stops new assignments without moving active sessions.
       </p>
+      <AdminCcuMetrics csrf={csrf} />
       {error && (
         <p role="alert" className="error-text">
           {error}
@@ -191,8 +204,10 @@ export default function NodeSettings({
                 )}
               </p>
             )}
+            <NodeCcuCount node={node} unavailable={nodesUnavailable} />
             <p className="small">
-              {node.connections} connections · {node.sessions} pinned sessions
+              {node.connections} relay connections · {node.sessions} pinned
+              sessions
               {node.hostedSessions
                 ? ` · ${node.hostedSessions} hosted frames`
                 : ""}

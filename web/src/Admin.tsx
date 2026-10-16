@@ -13,6 +13,7 @@ import {
   Plus,
 } from "lucide-react";
 import NodeSettings from "./NodeSettings";
+import AdminCcuMetrics from "./AdminCcuMetrics";
 import type { BrowsingNodeSelectionProps } from "./NodeSettings";
 import RequestLimitSettings from "./RequestLimitSettings";
 import AiProviderSettings from "./AiProviderSettings";
@@ -379,6 +380,7 @@ export default function Admin(browsing: BrowsingNodeSelectionProps) {
                 </section>
               ) : (
                 <>
+                  <AdminCcuMetrics csrf={csrf} />
                   <div className="stat-grid">
                     {[
                       ["Open conversations", overview?.open ?? 0],

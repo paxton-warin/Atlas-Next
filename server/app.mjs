@@ -565,6 +565,7 @@ export async function createApp(options = {}) {
   app.get("/api/admin/overview", (req) => {
     session(req);
     return {
+      ccu: pool.ccu(),
       tickets: db.prepare("SELECT count(*) n FROM tickets").get().n,
       open: db
         .prepare("SELECT count(*) n FROM tickets WHERE status!='closed'")
@@ -649,7 +650,11 @@ export async function createApp(options = {}) {
   });
   app.get("/api/admin/nodes", (req) => {
     session(req);
-    return pool.list();
+    return pool.list({ includeConcurrency: true });
+  });
+  app.get("/api/admin/ccu", (req) => {
+    session(req);
+    return pool.ccu();
   });
   app.post("/api/admin/nodes/select", (req) => {
     session(req, true);

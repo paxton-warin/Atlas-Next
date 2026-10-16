@@ -28,6 +28,42 @@ export function createNodePool(
   if (!store.get("localNodeSecret"))
     store.set("localNodeSecret", seal(token()));
   let localConnections = () => 0;
+  let localRelayStats = () => null;
+  // Only fresh, authenticated relay observations describe connected browsing
+  // sessions. Stored twelve-hour assignments are not concurrency measurements.
+  const remoteRelayStats = new Map();
+  const activeSessionCount = (stats) =>
+    stats &&
+    Number.isSafeInteger(stats.activeSessions) &&
+    stats.activeSessions >= 0 &&
+    Number.isSafeInteger(stats.connections) &&
+    stats.connections >= stats.activeSessions &&
+    stats.connections <= 100000
+      ? stats.activeSessions
+      : null;
+  function sessionObservation(n) {
+    if (n.id === "local") {
+      try {
+        const count = activeSessionCount(localRelayStats());
+        return {
+          activeSessions: count,
+          activeSessionsUpdatedAt: count === null ? 0 : Date.now(),
+        };
+      } catch {
+        return { activeSessions: null, activeSessionsUpdatedAt: 0 };
+      }
+    }
+    const observation = remoteRelayStats.get(n.id);
+    return {
+      activeSessions:
+        observation &&
+        Date.now() - n.seen < FRESH &&
+        Date.now() - observation.updatedAt < FRESH
+          ? observation.activeSessions
+          : null,
+      activeSessionsUpdatedAt: observation?.updatedAt || 0,
+    };
+  }
   const localSecret = unseal(store.get("localNodeSecret"));
   db.exec(`CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, endpoint TEXT NOT NULL, credential TEXT NOT NULL,
@@ -129,7 +165,7 @@ export function createNodePool(
           : "INVALID_SESSION",
     );
   }
-  function list() {
+  function list({ includeConcurrency = false } = {}) {
     prune();
     return db
       .prepare(
@@ -138,6 +174,7 @@ export function createNodePool(
       .all()
       .map((n) => ({
         ...n,
+        ...(includeConcurrency ? sessionObservation(n) : {}),
         connections: n.id === "local" ? localConnections() : n.connections,
         online: online(n),
         runtimeOrigin:
@@ -156,6 +193,20 @@ export function createNodePool(
           .prepare("SELECT count(*) AS n FROM browse_leases WHERE node=?")
           .get(n.id).n,
       }));
+  }
+  function ccu() {
+    const rows = list({ includeConcurrency: true });
+    const observed = rows.filter((n) => n.activeSessions !== null);
+    return {
+      activeSessions: observed.reduce((total, n) => total + n.activeSessions, 0),
+      complete: observed.length === rows.length,
+      reportingNodes: observed.length,
+      totalNodes: rows.length,
+      updatedAt: observed.length
+        ? Math.min(...observed.map((n) => n.activeSessionsUpdatedAt))
+        : 0,
+      freshnessMs: FRESH,
+    };
   }
   function add({ name, endpoint, weight = 1 }) {
     const u = new URL(endpoint);
@@ -271,6 +322,7 @@ export function createNodePool(
     const capabilities = store.get("nodeCapabilities") || {};
     delete capabilities[id];
     store.set("nodeCapabilities", capabilities);
+    remoteRelayStats.delete(id);
     audit("node.remove", id);
   }
   function authenticate(id, secret) {
@@ -303,6 +355,12 @@ export function createNodePool(
       Math.max(0, Math.min(100000, Number(connections) || 0)),
       id,
     );
+    // Do not trust a new heartbeat field or use raw relay connections as CCU.
+    // The paired endpoint's protected health response is the measurement source.
+    remoteRelayStats.set(id, {
+      activeSessions: activeSessionCount(health.relay),
+      updatedAt: Date.now(),
+    });
   }
   async function allocate(raw, origin, runtimeOrigin) {
     return allocateLease(raw, origin, runtimeOrigin);
@@ -1208,6 +1266,7 @@ export function createNodePool(
     frontendAssignments,
     resourceOwner,
     list,
+    ccu,
     attach,
     add,
     update,
@@ -1224,6 +1283,9 @@ export function createNodePool(
     nodeState,
     setLocalConnections: (provider) => {
       localConnections = provider;
+    },
+    setLocalRelayStats: (provider) => {
+      localRelayStats = provider;
     },
   };
 }
