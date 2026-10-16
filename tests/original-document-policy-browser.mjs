@@ -472,7 +472,7 @@ try {
       parsed = new DOMParser().parseFromString(authorized.html, "text/html");
     const unsupported = [];
     for (const html of [
-      '<button onclick="x()">x</button>',
+      '<a href="javascript:x()">x</a>',
       '<iframe src="https://other.test/"></iframe>',
       '<object data="https://other.test/"></object>',
       '<script runtimekit-attr-src="https://other.test/" src="/allowed.js"></script>',

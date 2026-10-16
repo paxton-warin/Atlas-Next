@@ -45,7 +45,7 @@ test("physical execution policy intersects native eval/Wasm privileges and reser
   );
   assert.equal(
     denied,
-    "script-src 'unsafe-inline'; script-src-elem 'unsafe-inline' blob: https://node.test/native-resource/v1/resource/",
+    "script-src 'unsafe-inline'; script-src-elem 'unsafe-inline' blob: https://node.test/native-resource/v1/resource/; script-src-attr 'none'",
   );
   const wasm = originalExecutionCSP(policy("script-src 'wasm-unsafe-eval'"));
   assert.match(wasm, /script-src 'unsafe-inline' 'wasm-unsafe-eval';/);
@@ -274,7 +274,7 @@ test("source destination policies parse independently of runtime feature support
     (e) => e.code === "original_policy_unsupported_source",
   );
 });
-test("style attributes support all-inline only; handlers, strict-dynamic and unsafe-hashes remain explicit gates", () => {
+test("style attributes support all-inline only; handlers and unsafe-hashes remain explicit gates", () => {
   assert.doesNotThrow(() =>
     policy("style-src-attr 'unsafe-inline'").authorizeStyleAttribute(
       "color:red",
@@ -287,10 +287,7 @@ test("style attributes support all-inline only; handlers, strict-dynamic and uns
       ).authorizeStyleAttribute("color:red"),
     denied,
   );
-  for (const p of [
-    "script-src 'strict-dynamic' 'nonce-dGVzdA=='",
-    "script-src 'unsafe-hashes'",
-  ])
+  for (const p of ["script-src 'unsafe-hashes'"])
     assert.throws(
       () => policy(p),
       (e) => e.code.startsWith("original_policy_unsupported"),
@@ -406,4 +403,58 @@ test("snapshots are immutable and source/inline resource bounds reject before ha
       }),
     (e) => e.code === "original_policy_invalid",
   );
+});
+
+
+test("Google-shaped strict-dynamic policy accepts nonced roots and inherited-nonce imports, never parser host fallback", async () => {
+  const p = createOriginalDocumentPolicy({
+    documentURL: "https://www.google.com/search?q=atlas",
+    contentPolicies: ["object-src 'none';base-uri 'self';script-src 'nonce-dGVzdA==' 'strict-dynamic' 'report-sample' 'unsafe-eval' 'unsafe-inline' https: http:;report-uri https://csp.test/report"],
+  });
+  await p.authorizeInline({kind:"script",source:"window.root = true",nonce:"dGVzdA=="});
+  for (const url of ["https://www.google.com/bootstrap.js", "https://otherwise-unlisted.test/import.js"])
+    assert.doesNotThrow(() => p.checkURL({kind:"script",url,nonce:"dGVzdA=="}));
+  for (const url of ["https://www.google.com/host-only.js", "https://otherwise-unlisted.test/import.js"])
+    for (const nonce of [undefined,"wrong-nonce"])
+      assert.throws(() => p.checkURL({kind:"script",url,nonce}),denied);
+  await assert.rejects(p.authorizeInline({kind:"script",source:"window.injected=true"}),denied);
+  assert.doesNotThrow(() => p.checkEval("javascript"));
+  assert.throws(() => p.checkURL({kind:"object",url:"https://www.google.com/object"}),denied);
+  assert.throws(() => p.checkURL({kind:"base",url:"https://outside.test/"}),denied);
+});
+test("strict-dynamic without a nonce/hash suppresses unsafe-inline and URL allowlists", async () => {
+  const p=policy("script-src 'strict-dynamic' 'unsafe-inline' https: 'self'");
+  assert.throws(() => p.checkURL({kind:"script",url:"https://website.test/a.js"}),denied);
+  await assert.rejects(p.authorizeInline({kind:"script",source:"window.injected=true"}),denied);
+});
+test("strict-dynamic retains exact inline hash roots without granting unauthenticated URL descendants", async () => {
+  const source="window.hashRoot=true",p=policy("script-src 'strict-dynamic' 'sha256-"+digest(source)+"' 'unsafe-inline' https:");
+  await p.authorizeInline({kind:"script",source});
+  await assert.rejects(p.authorizeInline({kind:"script",source:source+";"}),denied);
+  assert.throws(() => p.checkURL({kind:"script",url:"https://website.test/child.js"}),denied);
+});
+test("strict-dynamic intersects all enforced policies and keeps script-src-elem precedence", async () => {
+  const p=policy("script-src 'nonce-dGVzdA==' 'strict-dynamic' https:","script-src 'self'");
+  assert.doesNotThrow(() => p.checkURL({kind:"script",url:"https://website.test/a.js",nonce:"dGVzdA=="}));
+  assert.throws(() => p.checkURL({kind:"script",url:"https://other.test/a.js",nonce:"dGVzdA=="}),denied);
+  const explicit=policy("script-src 'nonce-dGVzdA==' 'strict-dynamic';script-src-elem 'self'");
+  assert.doesNotThrow(() => explicit.checkURL({kind:"script",url:"https://website.test/a.js"}));
+  assert.throws(() => explicit.checkURL({kind:"script",url:"https://other.test/a.js",nonce:"dGVzdA=="}),denied);
+});
+
+test("script attributes permit only original all-inline policies, with exact fallback and intersections", () => {
+  const source = "window.clicked=true";
+  for (const p of [policy(), policy("script-src 'unsafe-inline'"), policy("default-src 'unsafe-inline'"), policy("script-src 'none'; script-src-attr 'unsafe-inline'")]) {
+    const receipt = p.authorizeScriptAttribute(source);
+    assert.deepEqual(receipt,{kind:"script-attribute",source});
+    assert.equal(Object.isFrozen(receipt),true);
+    assert.match(originalExecutionCSP(p), /script-src-attr 'unsafe-inline'(?:;|$)/);
+  }
+  for (const p of [policy("script-src 'self'"), policy("default-src 'none'"), policy("script-src 'unsafe-inline';script-src-attr 'none'"), policy("script-src 'unsafe-inline'", "script-src-attr 'none'"), policy("script-src 'unsafe-inline' 'nonce-dGVzdA=='"), policy("script-src 'unsafe-inline' 'sha256-"+digest(source)+"'"), policy("script-src 'unsafe-inline' 'strict-dynamic'")]) {
+    assert.throws(()=>p.authorizeScriptAttribute(source), denied);
+    assert.match(originalExecutionCSP(p), /script-src-attr 'none'(?:;|$)/);
+  }
+  assert.throws(()=>policy().authorizeScriptAttribute(null),e=>e.code==='original_policy_invalid_inline');
+  assert.throws(()=>policy().authorizeScriptAttribute('x'.repeat(2*1024*1024+1)),e=>e.code==='original_policy_invalid_inline');
+  assert.throws(()=>policy("script-src-attr 'unsafe-hashes'"),e=>e.code==='original_policy_unsupported_source');
 });

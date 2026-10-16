@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
 import {
   adaptPinnedHttpEngine,
   addPinnedWebSocketSendExport,
@@ -82,4 +83,66 @@ test("copied Wasm adds exactly one existing function export and changes no instr
     OPAQUE_HTTPENGINE_SOURCE_SHA256,
     "original remains byte-identical",
   );
+});
+test("inline Wasm uses the existing local decoder without fetching data URIs in web or worker realms", async () => {
+  const adapted = adaptPinnedHttpEngine(source);
+  const start = adapted.indexOf("  function getBinaryPromise() {");
+  const end = adapted.indexOf("  function createWasm() {", start);
+  assert.ok(start > 0 && end > start);
+  const body = adapted.slice(start, end) + "\ngetBinaryPromise;";
+  for (const worker of [false, true]) {
+    const calls = [];
+    const binary = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+    const inline = "data:application/octet-stream;base64,AGFzbQEAAAA=";
+    const load = runInNewContext(body, {
+      wasmBinary: undefined,
+      wasmBinaryFile: inline,
+      ENVIRONMENT_IS_WEB: !worker,
+      ENVIRONMENT_IS_WORKER: worker,
+      isDataURI: (value) => value.startsWith("data:"),
+      getBinary(value) {
+        assert.equal(value, inline);
+        calls.push("decode");
+        return binary;
+      },
+      fetch() {
+        calls.push("fetch");
+        throw Error("inline bytes must not reach CSP-controlled fetch");
+      },
+    });
+    assert.equal(await load(), binary);
+    assert.deepEqual(calls, ["decode"]);
+  }
+  assert.equal(hash(source), OPAQUE_HTTPENGINE_SOURCE_SHA256);
+});
+test("non-inline Wasm retains same-origin fetching and the existing failure fallback", async () => {
+  const adapted = adaptPinnedHttpEngine(source);
+  const start = adapted.indexOf("  function getBinaryPromise() {");
+  const end = adapted.indexOf("  function createWasm() {", start);
+  const body = adapted.slice(start, end) + "\ngetBinaryPromise;";
+  for (const fails of [false, true]) {
+    const calls = [];
+    const binary = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+    const load = runInNewContext(body, {
+      wasmBinary: undefined,
+      wasmBinaryFile: "/bundled-engine.wasm",
+      ENVIRONMENT_IS_WEB: false,
+      ENVIRONMENT_IS_WORKER: true,
+      isDataURI: (value) => value.startsWith("data:"),
+      getBinary(value) {
+        assert.equal(value, "/bundled-engine.wasm");
+        calls.push("fallback");
+        return binary;
+      },
+      async fetch(value, options) {
+        assert.equal(value, "/bundled-engine.wasm");
+        assert.equal(options.credentials, "same-origin");
+        calls.push("fetch");
+        if (fails) throw Error("controlled fetch failure");
+        return { ok: true, arrayBuffer: async () => binary };
+      },
+    });
+    assert.equal(await load(), binary);
+    assert.deepEqual(calls, fails ? ["fetch", "fallback"] : ["fetch"]);
+  }
 });

@@ -135,6 +135,23 @@ test("cross-origin navigation redirects do not apply Fetch readability CORS; onl
   assert.equal(calls[1].c.redirectCount, 1);
   assert.equal(calls[1].r.url, "https://final.test/page");
 });
+for (const status of [403, 404, 429, 503])
+  test(`HTML ${status} navigation remains a document with final URL and original CSP`, async () => {
+    let calls = 0;
+    const html = '<html><head><meta http-equiv="content-security-policy" content="img-src \'self\'"></head><body>Upstream error document</body></html>';
+    const f = fixture({
+      fetch: async (r) => ++calls === 1
+        ? response(r.url, "", [["location", "https://final.test/error"], ["content-security-policy", "default-src 'none'"]], 302)
+        : response(r.url, html, [["content-type", "text/html;charset=utf-8"], ["content-security-policy", "script-src 'none'"]], status),
+    });
+    const result = await f.prepare();
+    assert.equal(calls, 2);
+    assert.equal(result.url, "https://final.test/error");
+    assert.equal(result.html, html);
+    assert.deepEqual(result.contentPolicies, ["script-src 'none'", "img-src 'self'"]);
+    assert.equal(Object.isFrozen(result), true);
+    assert.equal(Object.isFrozen(result.contentPolicies), true);
+  });
 test("enforced duplicate/header-list policies are intersection; report-only is never enforced; early real meta directives retained selectively", async () => {
   const f = fixture({
     fetch: async (r) =>
@@ -266,6 +283,13 @@ test("non-HTML, duplicate MIME, XHTML parser mismatch, raw cookies and excessive
       "document_source_xhtml_parser_required",
     ],
     [[["content-type", "text/html"]], 204, "document_source_html_required"],
+    [[["content-type", "text/html"]], 205, "document_source_html_required"],
+    [[["content-type", "text/html"]], 304, "document_source_html_required"],
+    [[], 429, "document_source_html_required"],
+    [[["content-type", "application/json"]], 429, "document_source_html_required"],
+    [[["content-type", "text/plain"]], 503, "document_source_html_required"],
+    [[["content-type", "application/xhtml+xml"]], 403, "document_source_xhtml_parser_required"],
+    [[["content-type", "text/html"], ["content-type", "text/html"]], 404, "document_source_html_required"],
     [
       [
         ["content-type", "text/html"],

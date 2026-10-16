@@ -1,6 +1,8 @@
 /** Exact-pin adaptation of a trusted worker COPY only. The original vendor
  * stays byte-identical; embedded Wasm gains one export of an existing function,
- * with every executable instruction/data section unchanged. No child authority.
+ * with every executable instruction/data section unchanged. Embedded Wasm uses
+ * the vendor's existing local data-URI decoder instead of a CSP-blocked fetch.
+ * No child authority or additional CSP sources.
  */
 import { createHash } from "node:crypto";
 import { OPAQUE_HTTPENGINE_SOURCE_SHA256 } from "../server/runtime-capabilities.mjs";
@@ -80,6 +82,13 @@ export function adaptPinnedHttpEngine(source) {
       "Opaque HttpEngine source hash does not match the inspected pin.",
     );
   const edits = [
+    [
+      "if (!wasmBinary && (ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER)) {",
+      // The vendor already decodes embedded data URIs in getBinary(). Fetching
+      // the same inline bytes first only triggers connect-src violations in
+      // the trusted worker. Preserve network fetching for non-inline binaries.
+      "if (!wasmBinary && !isDataURI(wasmBinaryFile) && (ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER)) {",
+    ],
     [
       "} else if (result_code === 0 && result_closed) {\n        this.cleanup();\n      } else if (result_code !== 81)",
       `} else if (result_code === 0 && result_closed) {

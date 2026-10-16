@@ -12,16 +12,17 @@ import { parseNativeSrcset, serializeNativeSrcset } from "./native-srcset.ts";
 type Kind = "script" | "style" | "image" | "font" | "media";
 export type OriginalElementDecision = Readonly<{
   index: number;
-  kind: Kind | "style-attribute";
+  kind: Kind | "style-attribute" | "script-attribute";
   allowed: boolean;
   url?: string;
   source?: string;
   nonce?: string;
   integrity?: string;
   module?: boolean;
+  attribute?: string;
   receipt?:
     | OriginalInlineReceipt
-    | Readonly<{ kind: "style-attribute"; source: string }>;
+    | Readonly<{ kind: "style-attribute" | "script-attribute"; source: string }>;
 }>;
 type Natives = {
   DOMParser: typeof DOMParser;
@@ -130,13 +131,13 @@ export function createOriginalDocumentPlan(options: {
       };
       for (const element of all) {
         check();
-        const values = attributes.get!.call(element) as NamedNodeMap;
-        for (let i = 0; i < values.length; i++) {
-          const a = values.item(i)!;
+        // Removal mutates NamedNodeMap: snapshot original attributes so a
+        // denied handler never skips the next original attribute or URL gate.
+        const values = Array.from(attributes.get!.call(element) as NamedNodeMap,
+          a => ({ name: a.name, value: a.value }));
+        for (const a of values) {
           if (/^runtimekit-attr-/i.test(a.name))
             throw failure("original_plan_reserved_attribute");
-          if (/^on/i.test(a.name))
-            throw failure("original_plan_handler_unsupported");
           try {
             if (new URL(a.value, logical).protocol === "javascript:")
               throw failure("original_plan_handler_unsupported");
@@ -144,6 +145,12 @@ export function createOriginalDocumentPlan(options: {
             if ((e as any)?.code === "original_plan_handler_unsupported")
               throw e;
           }
+          if (/^on/i.test(a.name))
+            await decide(
+              { kind: "script-attribute", attribute: a.name, source: a.value },
+              () => policy.authorizeScriptAttribute(a.value),
+              () => removeAttr.call(element, a.name),
+            );
         }
         const tag = element.localName.toLowerCase(),
           nonce = attr(element, "nonce") ?? undefined,

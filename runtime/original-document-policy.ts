@@ -65,6 +65,7 @@ const keywords = new Set([
   "'unsafe-eval'",
   "'wasm-unsafe-eval'",
   "'report-sample'",
+  "'strict-dynamic'",
 ]);
 const schemeMatch = (a: string, b: string) =>
   a === b ||
@@ -189,7 +190,6 @@ export function createOriginalDocumentPolicy(options: {
           const lower = source.toLowerCase();
           if (
             [
-              "'strict-dynamic'",
               "'unsafe-hashes'",
               "'trusted-types-eval'",
               "'inline-speculation-rules'",
@@ -348,6 +348,17 @@ export function createOriginalDocumentPolicy(options: {
           sources.some((s) => nonce.exec(s)?.[1] === input.nonce)
         )
           continue;
+        // The graph's initial elements are parser-inserted decisions. A
+        // strict-dynamic policy never turns https:/host/self/unsafe-inline into
+        // permission for those roots: only a matching nonce (above) authorizes
+        // this supported path. Existing private script/module contexts carry
+        // that nonce to imports. Nonce-less dynamic DOM/hash-root propagation
+        // remains conservatively denied, not mistaken for a host allowlist.
+        if (
+          input.kind === "script" &&
+          sources.some((s) => s.toLowerCase() === "'strict-dynamic'")
+        )
+          throw failure("original_policy_denied", "script-src");
         if (
           !sources.some((s) =>
             sourceMatches(s, url, logical, input.redirectCount ?? 0),
@@ -405,6 +416,7 @@ export function createOriginalDocumentPolicy(options: {
           .filter(Boolean) as RegExpExecArray[];
         if (
           !sources.some((s) => nonce.test(s) || hash.test(s)) &&
+          !(input.kind === "script" && sources.some((s) => s.toLowerCase() === "'strict-dynamic'")) &&
           sources.some((s) => s.toLowerCase() === "'unsafe-inline'")
         )
           continue;
@@ -445,6 +457,23 @@ export function createOriginalDocumentPolicy(options: {
         )
           throw failure("original_policy_eval_denied", "script-src");
       }
+    },
+    authorizeScriptAttribute(source: string) {
+      if (typeof source !== "string" || source.length > 2 * 1024 * 1024)
+        throw failure("original_policy_invalid_inline");
+      for (const map of parsed) {
+        const sources =
+          map.get("script-src-attr") ??
+          map.get("script-src") ??
+          map.get("default-src");
+        if (!sources) continue;
+        if (
+          sources.some((s) => nonce.test(s) || hash.test(s) || s.toLowerCase() === "'strict-dynamic'") ||
+          !sources.some((s) => s.toLowerCase() === "'unsafe-inline'")
+        )
+          throw failure("original_policy_denied", "script-src-attr");
+      }
+      return Object.freeze({ kind: "script-attribute" as const, source });
     },
     authorizeStyleAttribute(source: string) {
       if (typeof source !== "string" || source.length > 2 * 1024 * 1024)
@@ -492,6 +521,13 @@ export function originalExecutionCSP(
     sources.push(origin.origin + "/native-resource/v1/resource/");
   }
   const compilation: string[] = ["'unsafe-inline'"];
+  let scriptAttributes = "'none'";
+  try {
+    policy.authorizeScriptAttribute("");
+    scriptAttributes = "'unsafe-inline'";
+  } catch (error) {
+    if ((error as any)?.code !== "original_policy_denied") throw error;
+  }
   if(trustedWorkerResources)compilation.push("blob:");
   for (const [kind, keyword] of [
     ["javascript", "'unsafe-eval'"],
@@ -509,6 +545,7 @@ export function originalExecutionCSP(
     compilation.join(" ") +
     "; script-src-elem " +
     sources.join(" ") +
+    "; script-src-attr " + scriptAttributes +
     (policy.trustedTypes.csp ? "; " + policy.trustedTypes.csp : "")
   );
 }

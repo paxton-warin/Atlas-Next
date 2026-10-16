@@ -273,9 +273,12 @@ export function createFrontendDocumentSource(options: {
             continue;
           }
           const types = values("content-type");
+          // HTTP error responses can carry ordinary navigable HTML documents.
+          // Preserve their original policy and URL; only unresolved redirects,
+          // bodyless statuses and the strict MIME checks remain non-documents.
           if (
             response.status < 200 ||
-            response.status >= 300 ||
+            (response.status >= 300 && response.status < 400) ||
             [204, 205].includes(response.status) ||
             types.length !== 1 ||
             !/^\s*(?:text\/html|application\/xhtml\+xml)(?:\s*;|\s*$)/i.test(
