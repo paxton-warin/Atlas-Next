@@ -25,6 +25,28 @@ export const LEASE_STORAGE_KEY = "atlas.nodeLease.v2";
 export const SAME_ORIGIN_SESSION_STORAGE_KEY =
   "atlas.nodeSession.sameOrigin.v1";
 export const SAME_ORIGIN_LEASE_STORAGE_KEY = "atlas.nodeLease.sameOrigin.v1";
+export const RELAY_RECOVERY_STORAGE_KEY = "atlas.relayRecovery.v1";
+export const RELAY_RECOVERY_REVISION = "20261016-relay-capacity";
+
+/** Discard credentials issued before the relay-capacity repair, not the owner
+ * capability that pins the selected node. Website data and Atlas state are not
+ * part of this cache. Run inside the startup lock, before authoritative restore,
+ * so another window's newly restored credentials are never cleared afterward. */
+export function clearStaleRelayCredentials(
+  storage: Pick<Storage, "getItem" | "removeItem" | "setItem">,
+) {
+  try {
+    if (storage.getItem(RELAY_RECOVERY_STORAGE_KEY) === RELAY_RECOVERY_REVISION)
+      return false;
+    storage.removeItem(LEASE_STORAGE_KEY);
+    storage.removeItem(SAME_ORIGIN_LEASE_STORAGE_KEY);
+    storage.setItem(RELAY_RECOVERY_STORAGE_KEY, RELAY_RECOVERY_REVISION);
+    return true;
+  } catch {
+    // Denied/full browser storage must not prevent an online server restore.
+    return false;
+  }
+}
 
 /** A newly activated runtime must not replay assignments from another protocol.
  * Only connection metadata gets a new namespace; website and Atlas state stay
@@ -81,8 +103,12 @@ export function restoreBrowsingLeaseOnStartup<T extends { session: string }>(
   allocate: (session: string, intent?: LeaseIntent) => Promise<T>,
   remember: (session: string) => void,
   locks?: Pick<LockManager, "request">,
+  beforeRestore?: () => void,
 ): Promise<T> {
-  const restore = () => restoreBrowsingLease(readSaved(), allocate, remember);
+  const restore = () => {
+    beforeRestore?.();
+    return restoreBrowsingLease(readSaved(), allocate, remember);
+  };
   return locks ? locks.request("atlas-browsing-session", restore) : restore();
 }
 export function browsingSessionToRelease(active: unknown, saved: unknown) {

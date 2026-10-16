@@ -39,6 +39,8 @@ import {
 import "./popout.css";
 import {
   createBrowsingLeaseLifecycle,
+  restoreBrowsingLeaseOnStartup,
+  clearStaleRelayCredentials,
   normalizeBrowsingLease,
   browsingLeaseStorageKeys,
   TERMINAL_LEASE_CODES,
@@ -202,20 +204,24 @@ export default function Popout() {
       if (config.nodeRouting) {
         if (!launch.value!.session)
           throw Object.assign(Error(EXPIRED), { status: 409 });
-        const lease = await retryBrowsingLeaseOperation(
-          () =>
-            api("/browse/session", {
-              method: "POST",
-              body: JSON.stringify({
-                session: launch.value!.session,
-                intent: "restore",
-              }),
-              signal: AbortSignal.timeout(12000),
-            }),
-          {
-            retrying: () =>
-              setMessage("Reconnecting to the current browsing node…"),
-          },
+        const lease = await restoreBrowsingLeaseOnStartup(
+          () => launch.value!.session,
+          (session, intent) =>
+            retryBrowsingLeaseOperation(
+              () =>
+                api("/browse/session", {
+                  method: "POST",
+                  body: JSON.stringify({ session, intent }),
+                  signal: AbortSignal.timeout(12000),
+                }),
+              {
+                retrying: () =>
+                  setMessage("Reconnecting to the current browsing node…"),
+              },
+            ),
+          () => {}, // A popout never replaces its owner's saved session pin.
+          navigator.locks,
+          () => clearStaleRelayCredentials(localStorage),
         );
         if (lease.session !== launch.value!.session)
           throw Object.assign(Error(EXPIRED), { status: 409 });

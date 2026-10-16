@@ -23,6 +23,7 @@ import {
 } from "./frontend-runtime";
 import {
   restoreBrowsingLeaseOnStartup,
+  clearStaleRelayCredentials,
   browsingSessionToRelease,
   selectBrowsingLeaseForOwner,
   createBrowsingLeaseLifecycle,
@@ -398,6 +399,7 @@ export default function App() {
               writeLocal(savedKeys.session, session);
             },
             navigator.locks,
+            () => clearStaleRelayCredentials(localStorage),
           );
           const normalized = normalizeBrowsingLease(lease);
           writeLocal(savedKeys.lease, normalized);
