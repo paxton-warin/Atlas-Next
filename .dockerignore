@@ -35,3 +35,7 @@ backups
 .aws
 .ssh
 .npmrc
+
+# Rebuild generated output in the image; inherited overlay directories cannot
+# always be atomically renamed by the opaque-runtime build publisher (EXDEV).
+/dist
