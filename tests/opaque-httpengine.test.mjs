@@ -10,7 +10,7 @@ import {
   OPAQUE_HTTPENGINE_WASM_SHA256,
 } from "../scripts/opaque-httpengine.mjs";
 const source = fs.readFileSync(
-    "runtime/public/clients/httpengine-client.js",
+    "upstream/scramjet-ls-bypass/app/vendor/httpengine-client.js",
     "utf8",
   ),
   hash = (x) => createHash("sha256").update(x).digest("hex");

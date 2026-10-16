@@ -9,7 +9,7 @@ import { chromium } from "@playwright/test";
 import { adaptPinnedHttpEngine } from "../scripts/opaque-httpengine.mjs";
 
 const source = await readFile(
-  "runtime/public/clients/httpengine-client.js",
+  "upstream/scramjet-ls-bypass/app/vendor/httpengine-client.js",
   "utf8",
 );
 const app = Fastify({ logger: false });

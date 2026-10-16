@@ -99,7 +99,9 @@ export async function buildOpaqueRuntime({
     const trustedFile = "rewriter-" + sha(trustedBytes).slice(0, 16) + ".js";
     await writeFile(join(staged, trustedFile), trustedBytes);
     const originalEngine = await readFile(
-      "runtime/public/clients/httpengine-client.js",
+      // The held opaque adapter has its own independently qualified source
+      // seam; do not feed it the active full-runtime credential adaptation.
+      join(pin.directory, "app/vendor/httpengine-client.js"),
     );
     if (
       sha(originalEngine) !== pin.assets["httpengine-client.js"].sha256 ||

@@ -25,6 +25,10 @@ function fixture(t) {
     new URL("../scripts/prepare-runtime.mjs", import.meta.url),
     join(root, "scripts/prepare-runtime.mjs"),
   );
+  copyFileSync(
+    new URL("../scripts/runtime-relay-rotation.mjs", import.meta.url),
+    join(root, "scripts/runtime-relay-rotation.mjs"),
+  );
   const bytes = Buffer.from(
     "/* fixture asset for browser startup */\n".repeat(1000),
   );

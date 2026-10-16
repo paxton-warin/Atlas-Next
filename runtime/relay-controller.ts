@@ -1,6 +1,6 @@
-// The fork bootstrap fixes the relay to location.host. For a Main assignment,
-// reuse its pinned assets/API with an explicit transport URL; the iframe remains
-// on the paired node origin and never shares Atlas's privileged frontend origin.
+// The fork bootstrap fixes the relay to location.host. Use its qualified
+// assets/API with an explicit assigned-node transport URL so frontend-hosted
+// browsing frames can send traffic directly through their selected node.
 export async function createRelayController(
   sw: ServiceWorker,
   relayOrigin: string,
@@ -56,20 +56,16 @@ export async function createRelayController(
   return new Controller({ serviceworker: sw, transport });
 }
 
-// Rotate only credentials for the already assigned relay. The existing client
-// exposes no mutable socket factory; initialize its replacement so future HTTP
-// and WebSocket connections use the new bearer, then swap managed transports.
-// Existing sockets are not closed and the browsing frame is not navigated.
+// Rotate only future upgrade credentials on the already assigned client. The
+// qualified transport preserves its native HTTP pool and established renewable
+// relay socket instead of leaking a new pool/socket for every five-minute renew.
 export async function refreshRelayCredentials(
   controller: any,
   relayOrigin: string,
   relayTicket: string,
 ) {
   const origin = new URL(relayOrigin);
-  // The committed vendor artifact calls this replaceConnector; upstream
-  // TypeScript calls it setTransport. Qualify the shipped artifact, not only
-  // the source checkout, and preserve both pinned API spellings.
-  const replace = controller?.replaceConnector ?? controller?.setTransport;
+  const transport = controller?.transport;
   if (
     !/^https?:$/.test(origin.protocol) ||
     (location.protocol === "https:" && origin.protocol !== "https:") ||
@@ -80,7 +76,7 @@ export async function refreshRelayCredentials(
     origin.hash ||
     !relayTicket ||
     relayTicket.length > 32768 ||
-    typeof replace !== "function"
+    typeof transport?.updateRelay !== "function"
   )
     throw Error("Invalid relay credential update.");
   const relay = new URL(
@@ -88,9 +84,5 @@ export async function refreshRelayCredentials(
     origin,
   );
   relay.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
-  const transport = new (window as any).HttpEngineTransport.HttpEngineClient({
-    relay: relay.href,
-  });
-  await transport.init();
-  replace.call(controller, transport);
+  transport.updateRelay(relay.href);
 }

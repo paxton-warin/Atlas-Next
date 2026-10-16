@@ -4,6 +4,7 @@ import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { brotliCompressSync, gzipSync } from "node:zlib";
+import { adaptRelayCredentialRotation } from "./runtime-relay-rotation.mjs";
 const fork = JSON.parse(
   await readFile(new URL("./runtime-fork.json", import.meta.url)),
 );
@@ -31,11 +32,16 @@ for (const [file, asset] of Object.entries(fork.assets)) {
   const target = join(root, asset.path);
   await mkdir(resolve(target, ".."), { recursive: true });
   await cp(join(fork.directory, "app/vendor", file), target);
-  const bytes = await readFile(target);
+  let bytes = await readFile(target);
+  if (file === "httpengine-client.js") {
+    bytes = adaptRelayCredentialRotation(bytes);
+    await writeFile(target, bytes);
+  }
   hashes[asset.path] = hash(bytes);
   // CloudFront's dynamic/no-cache behavior need not perform edge compression.
   // Build variants once; do not compress on the browsing request's critical path.
-  // The pinned source asset and its recorded hash remain byte-for-byte unchanged.
+  // Record and compress the final qualified asset; upstream source pins remain
+  // byte-for-byte unchanged and the local adaptation is included in our source.
   for (const [suffix, compress] of [
     [".br", brotliCompressSync],
     [".gz", gzipSync],
@@ -63,7 +69,8 @@ await writeFile(
     {
       source: fork.source,
       commit: fork.commit,
-      packaging: "unchanged committed app/vendor artifacts",
+      packaging: "pinned app/vendor artifacts with qualified relay credential rotation",
+      adaptations: ["scripts/runtime-relay-rotation.mjs"],
       core: "2.0.67-alpha.2",
       controller: "0.0.14",
       hashes,

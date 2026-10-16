@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { server as wisp, logging } from "@mercuryworkshop/wisp-js/server";
 import { Socket } from "node:net";
+import { WebSocket, WebSocketServer } from "ws";
 import { createDestinationResolver } from "./destination-resolver.mjs";
 export { isPublicIp } from "./destination-resolver.mjs";
 import { resolve } from "node:path";
@@ -105,6 +106,7 @@ export async function createRuntime({
   baseline = false,
   authorize,
   health,
+  relayMaintenance = {},
 }) {
   const app = Fastify({
     logger: false,
@@ -134,6 +136,13 @@ export async function createRuntime({
   const sockets = new Set();
   const sessions = new Map();
   const authorizations = new Map();
+  const relays = new Map();
+  const websocketServer = new WebSocketServer({ noServer: true });
+  const maintenanceNow = relayMaintenance.now || Date.now;
+  const retiredIdleMs = relayMaintenance.retiredIdleMs ?? 60000;
+  const pongTimeoutMs = relayMaintenance.pongTimeoutMs ?? 65000;
+  const maintenanceIntervalMs = relayMaintenance.intervalMs ?? 10000;
+  const relayTotals = { rejectedCapacity: 0, reclaimedRetired: 0, deadPeers: 0 };
   const getAuthorization = (req, origin, purpose = "runtime", options) => {
     const raw =
       req.headers.authorization?.replace(/^Bearer /, "") ||
@@ -181,7 +190,8 @@ export async function createRuntime({
     const sessionKey = assignment?.session;
     const sessionCount = sessionKey ? sessions.get(sessionKey) || 0 : 0;
     if ((!authorize && n >= 24) || sessionCount >= 12 || sockets.size >= 200) {
-      socket.end("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+      relayTotals.rejectedCapacity++;
+      socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 5\r\n\r\n");
       return;
     }
     sockets.add(socket);
@@ -196,6 +206,7 @@ export async function createRuntime({
     socket.on("close", () => {
       sockets.delete(socket);
       authorizations.delete(socket);
+      relays.delete(socket);
       if (sessionKey) {
         const left = (sessions.get(sessionKey) || 1) - 1;
         if (left) sessions.set(sessionKey, left);
@@ -207,8 +218,101 @@ export async function createRuntime({
         else perIp.delete(ip);
       }
     });
-    wisp.routeRequest(req, socket, head, { TCPSocket: Tcp });
+    // The package's routeRequest hides its WebSocket/ServerConnection. Own only
+    // the upgrade adapter, retaining the same pinned Wisp protocol and guarded
+    // TCP implementation, so lifecycle checks can inspect real live streams.
+    try {
+      websocketServer.handleUpgrade(req, socket, head, (ws) => {
+        ws.binaryType = "arraybuffer";
+        ws.on("error", () => {});
+        const now = maintenanceNow();
+        const connection = new wisp.ServerConnection(ws, req.url, {
+          TCPSocket: Tcp,
+          wisp_version:
+            req.headers["sec-websocket-protocol"] && wisp.options.wisp_version === 2
+              ? 2
+              : 1,
+        });
+        const relay = {
+          ws,
+          connection,
+          session: sessionKey,
+          generation: assignment?.generation,
+          ticketExpiresAt: assignment?.ticketExpiresAt,
+          ready: false,
+          lastActivity: now,
+          lastPong: now,
+        };
+        relays.set(socket, relay);
+        ws.on("message", () => { relay.lastActivity = maintenanceNow(); });
+        ws.on("pong", () => { relay.lastPong = maintenanceNow(); });
+        void (async () => {
+          try {
+            await connection.setup();
+            relay.ready = true;
+            await connection.run();
+          } catch {
+            await connection.cleanup().catch(() => {});
+          } finally {
+            clearInterval(connection.ping_task);
+            ws.terminate();
+          }
+        })();
+      });
+    } catch {
+      socket.destroy();
+    }
   });
+  const maintainConnections = () => {
+    const now = maintenanceNow();
+    for (const relay of relays.values()) {
+      if (relay.ws.readyState !== WebSocket.OPEN) continue;
+      // Protocol pongs, not application traffic, establish peer liveness. A
+      // quiet but healthy website WebSocket/media stream is never idle-closed.
+      if (now - relay.lastPong > pongTimeoutMs) {
+        relayTotals.deadPeers++;
+        relay.ws.terminate();
+        continue;
+      }
+      if (
+        !relay.ready ||
+        !relay.session ||
+        !Number.isFinite(relay.ticketExpiresAt) ||
+        Object.keys(relay.connection.streams).length ||
+        now - relay.lastActivity < retiredIdleMs
+      ) continue;
+      // Old httpengine builds cache a relay by its ticket-bearing URL. Reap
+      // only an empty superseded relay after its replacement is established.
+      // Unique idle relays and every relay containing a live TCP stream stay.
+      const replacement = [...relays.values()].some((next) =>
+        next !== relay && next.ready && next.ws.readyState === WebSocket.OPEN &&
+        next.session === relay.session && next.generation === relay.generation &&
+        next.ticketExpiresAt > relay.ticketExpiresAt &&
+        now - next.lastPong <= pongTimeoutMs,
+      );
+      if (replacement) {
+        relayTotals.reclaimedRetired++;
+        relay.ws.terminate();
+      }
+    }
+  };
+  const maintenanceTimer = setInterval(maintainConnections, maintenanceIntervalMs);
+  maintenanceTimer.unref();
+  app.decorate("maintainConnections", maintainConnections);
+  app.decorate("connectionStats", () => ({
+    connections: sockets.size,
+    sessions: sessions.size,
+    maxConnectionsPerSession: Math.max(0, ...sessions.values()),
+    emptyConnections: [...relays.values()].filter((relay) =>
+      relay.ready && !Object.keys(relay.connection.streams).length,
+    ).length,
+    activeStreams: [...relays.values()].reduce((total, relay) =>
+      total + Object.keys(relay.connection.streams).length, 0,
+    ),
+    capacity: 200,
+    perSessionCapacity: 12,
+    ...relayTotals,
+  }));
   const recheckConnections = () => {
     for (const [socket, check] of authorizations) {
       try {
@@ -225,7 +329,9 @@ export async function createRuntime({
   app.decorate("recheckConnections", recheckConnections);
   app.addHook("onClose", () => {
     if (authorizationTimer) clearInterval(authorizationTimer);
+    clearInterval(maintenanceTimer);
     for (const s of sockets) s.destroy();
+    websocketServer.close();
   });
   app.addHook("onRequest", async (req, reply) => {
     reply

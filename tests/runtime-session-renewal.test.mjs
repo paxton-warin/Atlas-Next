@@ -92,23 +92,15 @@ test("old in-flight 401 cannot override a newer credential", async () => {
     cleanup();
   }
 });
-test("relay rotation initializes replacement before swapping; leaves prior transport and frames intact", async () => {
+test("relay rotation reuses the client, HTTP pool, live socket and frames", async () => {
   const cleanup = installGlobals(),
     calls = [],
-    old = { socket: "live" },
+    old = {
+      socket: "live",
+      updateRelay(relay) { calls.push(relay); },
+    },
     frame = { identity: "unchanged" };
   try {
-    globalThis.window.HttpEngineTransport = {
-      HttpEngineClient: class {
-        constructor(options) {
-          this.options = options;
-          calls.push("construct");
-        }
-        async init() {
-          calls.push("init");
-        }
-      },
-    };
     const controller = {
       transport: old,
       frames: [frame],
@@ -122,13 +114,10 @@ test("relay rotation initializes replacement before swapping; leaves prior trans
       "https://relay.example",
       "fresh.ticket",
     );
-    assert.deepEqual(calls, ["construct", "init", "swap"]);
+    assert.deepEqual(calls, ["wss://relay.example/relay/fresh.ticket/"]);
     assert.equal(controller.frames[0], frame);
     assert.equal(old.socket, "live");
-    assert.equal(
-      controller.transport.options.relay,
-      "wss://relay.example/relay/fresh.ticket/",
-    );
+    assert.equal(controller.transport, old);
   } finally {
     cleanup();
   }
@@ -144,7 +133,7 @@ test("relay rotation rejects non-origin addresses and HTTPS downgrades", async (
       "javascript:alert(1)",
     ])
       await assert.rejects(
-        refreshRelayCredentials({ setTransport() {} }, origin, "ticket"),
+        refreshRelayCredentials({ transport: { updateRelay() {} } }, origin, "ticket"),
       );
   } finally {
     cleanup();

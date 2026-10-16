@@ -1,6 +1,6 @@
 # Third-party source
 
-- Active runtime: Scramjet-LS-Bypass https://github.com/paxton-warin/Scramjet-LS-Bypass/tree/4f452feec4d6804730b903294d0f9bec8002a635 — fork of Scramjet; existing AGPL notices retained. The eight committed app/vendor artifacts are copied without modification. `/source/scramjet-source.tar.gz` contains this exact fork revision.
+- Active runtime: Scramjet-LS-Bypass https://github.com/paxton-warin/Scramjet-LS-Bypass/tree/23f410dd46d6bfc66cef5cf51e98bb550251d265 — fork of Scramjet; existing AGPL notices retained. `/source/scramjet-source.tar.gz` contains this exact pinned fork revision. Seven committed app/vendor artifacts are copied unchanged. The HTTP engine artifact receives the hash-qualified credential-rotation adaptation in `scripts/runtime-relay-rotation.mjs`; its complete adaptation source is included in `/source/atlas-source.tar.gz`, and final asset hashes are recorded in `runtime/public/manifest.json`.
 
 - Scramjet demo/core/controller/helpers: https://github.com/MercuryWorkshop/scramjet/tree/e9ff92d1ec98ba140cb4bca840fb40c2b9b52ebf — package licenses AGPL-3.0-only. Original demo is retained under upstream/demo-original. Full pinned source is available through scripts/build-upstream.sh.
 - Libcurl transport 2.0.5: https://github.com/MercuryWorkshop/CurlTransport — AGPL-3.0-only.

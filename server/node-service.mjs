@@ -140,6 +140,7 @@ export async function createNodeService({
         id,
         status: "ok",
         connections: app.connectionCount(),
+        relay: app.connectionStats(),
         capabilities: [...NODE_RUNTIME_CAPABILITIES],
       };
     },

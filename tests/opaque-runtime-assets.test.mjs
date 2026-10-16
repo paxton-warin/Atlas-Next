@@ -16,6 +16,7 @@ import { buildOpaqueRuntime } from "../scripts/build-opaque-runtime.mjs";
 import { installOpaqueRuntimeAssets } from "../server/opaque-runtime-assets.mjs";
 import { createHash } from "node:crypto";
 import { OPAQUE_HTTPENGINE_SOURCE_SHA256 } from "../server/runtime-capabilities.mjs";
+import { HTTP_ENGINE_ROTATION_SHA256 } from "../scripts/runtime-relay-rotation.mjs";
 test("opaque assets are reproducible, pin-checked and hash-allowlisted; dynamic relay CSP is never immutable", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "atlas-asset-manifest-"));
   const app = Fastify({ logger: false });
@@ -46,7 +47,7 @@ test("opaque assets are reproducible, pin-checked and hash-allowlisted; dynamic 
     createHash("sha256")
       .update(await readFile("runtime/public/clients/httpengine-client.js"))
       .digest("hex"),
-    one.engineSourceSHA256,
+    HTTP_ENGINE_ROTATION_SHA256,
   );
   let relays = ["https://first.node.example"];
   const assets = installOpaqueRuntimeAssets(app, {
