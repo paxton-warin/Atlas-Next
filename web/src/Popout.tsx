@@ -345,7 +345,10 @@ export default function Popout() {
           setLoading(false);
           setMessage("");
         }
-        if (event.type === "error" || event.type === "slow") {
+        if (event.type === "slow") {
+          setMessage("Still loading. You can keep waiting and using this page.");
+        }
+        if (event.type === "error") {
           setLoading(false);
           setMessage(event.message || "The website did not load.");
         }
@@ -603,7 +606,10 @@ export default function Popout() {
         setLoading(false);
         setMessage("");
       }
-      if (data.type === "error" || data.type === "slow") {
+      if (data.type === "slow") {
+        setMessage("Still loading. You can keep waiting and using this page.");
+      }
+      if (data.type === "error") {
         setLoading(false);
         setMessage(
           String(

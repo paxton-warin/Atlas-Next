@@ -14,7 +14,7 @@ import {
   refreshRelayCredentials,
 } from "./relay-controller";
 import { orderedCredentialUpdates } from "./credential-updates";
-import { migrateCookies, activateWorker } from "./runtime-migration";
+import { migrateCookies, activateWorker, waitForRuntimeStartup } from "./runtime-migration";
 import { loadRuntimeConfig, watchRuntimeSession } from "./connection";
 import { watchFavicon } from "./favicon";
 import { matchesShortcut, normalizeShortcut } from "./panic-shortcut";
@@ -41,6 +41,10 @@ import { createVerifiedStylesheetPlugin } from "./verified-stylesheet";
 import { createDiscordScriptSelectorPlugin } from "./discord-script-selector";
 import { checkpointControllerRoot } from "./website-checkpoint";
 const globals = window as any;
+const runtimeLifetime = new AbortController();
+window.addEventListener("pagehide", (event) => {
+  if (!event.persisted) runtimeLifetime.abort();
+});
 const submitManagedForm = createManagedFormSubmitter(window);
 const installLocalDownloads = createLocalDownloadInstaller(window);
 const opaqueRequests = new WeakMap<
@@ -182,6 +186,7 @@ const config = await loadRuntimeConfig(ticket).catch((error) => {
   }
   throw error;
 });
+runtimeLifetime.signal.throwIfAborted();
 let relayQuery = ticket ? encodeURIComponent(ticket) + "/" : "";
 let standaloneExpired = false;
 const notify = (type: string, data: Record<string, unknown> = {}) => {
@@ -278,19 +283,53 @@ const panicDocuments = new WeakSet<Document>();
 let controller: any;
 let initialization: Promise<void> | undefined;
 const container = document.getElementById("frames")!;
+// Closing/superseding a request while shared startup is still pending must
+// never recreate its iframe when a slow worker or local engine eventually readies.
+const navigationOwners = new Map<string, object>();
+let startupSlowMessage: string | undefined;
+const controllerCleanups = new WeakMap<object, () => void>();
+const disposedControllers = new WeakSet<object>();
+function startupSlow(message: string) {
+  startupSlowMessage = message;
+  for (const id of navigationOwners.keys()) notify("slow", { id, message });
+}
+function disposeController(value: any) {
+  if (!value || disposedControllers.has(value)) return;
+  disposedControllers.add(value);
+  const cleanup = value && controllerCleanups.get(value);
+  if (cleanup) {
+    controllerCleanups.delete(value);
+    try { cleanup(); } catch {}
+  }
+  try { value?.disposeRequestChannel?.(); } catch {}
+  try { value?.transport?.session?.close?.(); } catch {}
+}
+runtimeLifetime.signal.addEventListener("abort", () => {
+  sessionWatch.dispose();
+  navigationOwners.clear();
+  disposeController(controller);
+}, { once: true });
 async function init() {
-  if (!profileBridge) await migrateCookies();
-  const sw = await activateWorker("/worker.js");
-  // Use the fork's shipped bootstrap and matching HTTP transport unchanged.
-  // loadRest avoids its init() returning the old active worker during an update.
-  const bootstrapPath = "/bootstrap/bootstrap-client.js";
-  const { loadRest } = await import(/* @vite-ignore */ bootstrapPath);
-  if (profileBridge && (!config.relayOrigin || !config.relayTicket))
-    throw Error("PROFILE_RUNTIME_RELAY_MISSING");
-  controller =
-    config.relayOrigin && config.relayTicket
-      ? await createRelayController(sw, config.relayOrigin, config.relayTicket, profileBridge ? neutralizeScramjetCookies : undefined)
-      : await loadRest(sw, {
+  const signal = runtimeLifetime.signal;
+  signal.throwIfAborted();
+  const initialize = async () => {
+    if (!profileBridge) await migrateCookies();
+    signal.throwIfAborted();
+    const sw = await activateWorker("/worker.js", {
+      signal,
+      onSlow: () => startupSlow("Preparing the browsing worker is taking longer than usual. Still working…"),
+    });
+    signal.throwIfAborted();
+    // Use the fork's shipped bootstrap and matching HTTP transport unchanged.
+    // loadRest avoids its init() returning the old active worker during an update.
+    const bootstrapPath = "/bootstrap/bootstrap-client.js";
+    const { loadRest } = await import(/* @vite-ignore */ bootstrapPath);
+    signal.throwIfAborted();
+    if (profileBridge && (!config.relayOrigin || !config.relayTicket))
+      throw Error("PROFILE_RUNTIME_RELAY_MISSING");
+    const creating = config.relayOrigin && config.relayTicket
+      ? createRelayController(sw, config.relayOrigin, config.relayTicket, profileBridge ? neutralizeScramjetCookies : undefined, signal)
+      : loadRest(sw, {
           transport: "http",
           workerPath: "/worker.js",
           streamRelayPath: "/relay/" + relayQuery,
@@ -302,27 +341,54 @@ async function init() {
           runtimekitControllerInjectPath: "/controller/controller.inject.js",
           runtimekitControllerWorkerPath: "/controller/controller.worker.js",
         });
-  window.addEventListener("pagehide", (event) => {
-    if (!event.persisted) controller?.disposeRequestChannel?.();
+    const created = await creating;
+    if (signal.aborted) {
+      disposeController(created);
+      signal.throwIfAborted();
+    }
+    controller = created;
+    controller.config.codec = { encode: encodeTarget, decode: decodeTarget };
+    if (profileBridge) {
+      // Keep original worker code in its normal script/module URL. The pin's
+      // data: encapsulation has no hierarchical base for rewritten /~/ imports.
+      controller.runtimekitConfig.flags.encapsulateWorkers = false;
+      const disposeSockets = installProfileWebSocketTransport(controller.transport, profileBridge);
+      const cleanup = () => {
+        signal.removeEventListener("abort", cleanup);
+        disposeSockets();
+      };
+      controllerCleanups.set(created, cleanup);
+      signal.addEventListener("abort", cleanup, { once: true });
+    }
+    // Native WASM/cookie/asset failures remain real errors. A busy renderer or
+    // a delayed ready RPC is not a failure merely because 25 seconds elapsed.
+    try {
+      await created.wait();
+      signal.throwIfAborted();
+    } catch (error) {
+      // A late completion belongs to this exact construction, never a retry's
+      // global controller. Real startup errors release the profile wrapper too.
+      disposeController(created);
+      throw error;
+    }
+  };
+  await waitForRuntimeStartup(initialize(), {
+    signal,
+    slowAfterMs: 25000,
+    onSlow: () => startupSlow("Starting the browsing engine is taking longer than usual. Still working…"),
   });
-  controller.config.codec = { encode: encodeTarget, decode: decodeTarget };
-  if (profileBridge) {
-    // Keep original worker code in its normal script/module URL. The pin's
-    // data: encapsulation has no hierarchical base for rewritten /~/ imports.
-    controller.runtimekitConfig.flags.encapsulateWorkers = false;
-    const disposeSockets = installProfileWebSocketTransport(controller.transport, profileBridge);
-    window.addEventListener("pagehide", (event) => { if (!event.persisted) disposeSockets(); });
-  }
-  await Promise.race([
-    controller.wait(),
-    new Promise((_, reject) =>
-      setTimeout(
-        () => reject(Error("Atlas connection initialization timed out.")),
-        25000,
-      ),
-    ),
-  ]);
+  startupSlowMessage = undefined;
 }
+function ensureInitialization() {
+  return initialization ??= init().catch((error) => {
+    initialization = undefined;
+    startupSlowMessage = undefined;
+    disposeController(controller);
+    controller = undefined;
+    throw error;
+  });
+}
+
 function publicUrl(value: unknown) {
   if (typeof value !== "string" || value.length > 8192)
     throw Error("Invalid URL.");
@@ -344,6 +410,7 @@ function publicUrl(value: unknown) {
   return u.href;
 }
 function destroy(id: string) {
+  navigationOwners.delete(id);
   const record = records.get(id);
   if (!record) return;
   clearTimeout(record.timer);
@@ -819,32 +886,40 @@ function createRecord(id: string, engine: string) {
 
 async function navigate(id: string, url: string, engine: string) {
   engine = "runtime";
-  await (initialization ??= init().catch((error) => {
-    initialization = undefined;
-    throw error;
-  }));
-  let record = records.get(id);
-  if (record && record.engine !== engine) {
-    destroy(id);
-    record = undefined;
+  const owner = {};
+  navigationOwners.set(id, owner);
+  if (startupSlowMessage) notify("slow", { id, message: startupSlowMessage });
+  try {
+    await ensureInitialization();
+    if (runtimeLifetime.signal.aborted || navigationOwners.get(id) !== owner) return;
+    let record = records.get(id);
+    if (record && record.engine !== engine) {
+      destroy(id);
+      navigationOwners.set(id, owner);
+      record = undefined;
+    }
+    if (!record) record = createRecord(id, engine);
+    for (const [key, item] of records) item.element.hidden = key !== id;
+    clearTimeout(record.timer);
+    record.disposeFavicon?.();
+    notify("favicon", { id, favicon: "" });
+    record.timer = setTimeout(
+      () =>
+        notify("slow", {
+          id,
+          message:
+            "This page is taking longer than expected. You can wait, reload, or reconnect the node.",
+        }),
+      30000,
+    );
+    record.diagnostics?.record("navigation", { origin: new URL(url).origin });
+    notify("loading", { id });
+    await record.frame.go(url);
+  } catch (error) {
+    if (!runtimeLifetime.signal.aborted && navigationOwners.get(id) === owner) throw error;
+  } finally {
+    if (navigationOwners.get(id) === owner) navigationOwners.delete(id);
   }
-  if (!record) record = createRecord(id, engine);
-  for (const [key, item] of records) item.element.hidden = key !== id;
-  clearTimeout(record.timer);
-  record.disposeFavicon?.();
-  notify("favicon", { id, favicon: "" });
-  record.timer = setTimeout(
-    () =>
-      notify("slow", {
-        id,
-        message:
-          "This page is taking longer than expected. You can wait, reload, or reconnect the node.",
-      }),
-    30000,
-  );
-  record.diagnostics?.record("navigation", { origin: new URL(url).origin });
-  notify("loading", { id });
-  await record.frame.go(url);
 }
 const updateRuntimeCredentials = orderedCredentialUpdates<{
   ticket: string;
@@ -852,7 +927,7 @@ const updateRuntimeCredentials = orderedCredentialUpdates<{
   relayTicket: string;
   assignedOrigin: string;
 }>({ ticket, ticketExpiresAt: config.ticketExpiresAt || 0 }, async (update) => {
-  await (initialization ??= init());
+  await ensureInitialization();
   await refreshRelayCredentials(
     controller,
     update.assignedOrigin,

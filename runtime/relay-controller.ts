@@ -6,6 +6,7 @@ export async function createRelayController(
   relayOrigin: string,
   relayTicket: string,
   beforeConstruct?: (globals: any) => void,
+  signal?: AbortSignal,
 ) {
   const globals = window as any;
   const origin = new URL(relayOrigin);
@@ -21,18 +22,27 @@ export async function createRelayController(
     !relayTicket
   )
     throw Error("Invalid assigned relay.");
+  signal?.throwIfAborted();
   const load = (src: string) =>
     new Promise<void>((resolve, reject) => {
       const script = document.createElement("script");
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        script.onload = null;
+        script.onerror = null;
+        script.remove();
+        signal?.removeEventListener("abort", abort);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const abort = () => finish(signal!.reason);
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) { abort(); return; }
       script.src = src;
-      script.onload = () => {
-        script.remove();
-        resolve();
-      };
-      script.onerror = () => {
-        script.remove();
-        reject(Error("Browsing asset failed to load."));
-      };
+      script.onload = () => finish();
+      script.onerror = () => finish(Error("Browsing asset failed to load."));
       document.head.appendChild(script);
     });
   for (const src of [
@@ -42,6 +52,7 @@ export async function createRelayController(
     "/clients/httpengine-client.js",
   ])
     await load(src);
+  signal?.throwIfAborted();
   const relay = new URL(
     "/relay/" + encodeURIComponent(relayTicket) + "/",
     origin,
@@ -52,6 +63,7 @@ export async function createRelayController(
   });
   const { Controller, config } = globals.$runtimekitController;
   beforeConstruct?.(globals);
+  signal?.throwIfAborted();
   config.injectPath = "/controller/controller.inject.js";
   config.wasmPath = "/runtime/runtimekit.wasm";
   config.runtimekitPath = "/runtime/runtimekit-normal.js";

@@ -1268,6 +1268,26 @@ kbd {
   text-align: center;
   padding: 35px;
 }
+.runtime-slow {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100% - 16px));
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: none;
+}
+.runtime-slow button {
+  pointer-events: auto;
+  flex-shrink: 0;
+}
 .runtime-error h2 {
   margin-top: 22px;
 }

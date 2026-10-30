@@ -1881,19 +1881,28 @@ export default function App() {
             {current &&
               !current.local &&
               !profileHandoff &&
+              current.status === "slow" &&
+              !connectionExpired && !config?.connectionError && !runtimeError && (
+                <div className="runtime-slow" role="status">
+                  <span>Still loading. You can keep using this page.</span>
+                  <button type="button" aria-label="Dismiss loading notice" onClick={() =>
+                    setTabs((old) => patchTab(old, current.id, (tab) => tab.status === "slow" ? { status: "loading", message: undefined } : {}))
+                  }>Dismiss</button>
+                </div>
+              )}
+            {current &&
+              !current.local &&
+              !profileHandoff &&
               (connectionExpired ||
                 config?.connectionError ||
                 runtimeError ||
-                current.status === "error" ||
-                current.status === "slow") && (
+                current.status === "error") && (
                 <div className="runtime-error">
                   <Globe2 size={26} />
                   <h2>
                     {connectionExpired
                       ? "Browsing session expired"
-                      : current.status === "slow"
-                        ? "Page is taking longer than expected"
-                        : "Page could not load"}
+                      : "Page could not load"}
                   </h2>
                   <p>
                     {connectionExpired

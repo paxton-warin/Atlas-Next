@@ -1,4 +1,5 @@
 import { acquireSharedProfileOwner } from "./shared-profile-owner.ts";
+import { watchPageLoad } from "./page-load-watchdog.ts";
 import { acquireSharedAssignmentCoordinator } from "./shared-assignment-coordinator.ts";
 import { createScramjetWebsiteDocument, type ScramjetRuntimeEvent } from "./scramjet-document.ts";
 import { getActiveProfile, getActiveProfileContext, prepareProfileDocument, getActiveLocalAuthority } from "./profile-context.ts";
@@ -358,18 +359,27 @@ export async function createFrontendBrowser(options: Options) {
     const cancel = () => {
       if (completed) return;
       completed = true;
-      owner.clearTimeout(timer);
+      stopLoadWatch();
       reject(failure("FRONTEND_NAVIGATION_STALE"));
     };
-    const timer = owner.setTimeout(() => {
-      if (completed) return;
-      completed = true;
-      reject(failure("FRONTEND_DOCUMENT_CONTENT_TIMEOUT"));
-      if (mounted?.binding === binding) {
-        removeDocument();
-        state({ status: "error", code: "FRONTEND_DOCUMENT_CONTENT_TIMEOUT" });
-      }
-    }, timeout);
+    const stopLoadWatch = watchPageLoad({
+      clock: owner,
+      delayMs: timeout,
+      kind: assets.engine === "scramjet-controller" ? "website" : "opaque-proof",
+      slow() {
+        if (!completed && live && version === navigationEpoch)
+          options.onRuntimeEvent?.({ type: "slow", message: "Still loading. You can keep waiting and using this page." });
+      },
+      expired() {
+        if (completed) return;
+        completed = true;
+        reject(failure("FRONTEND_DOCUMENT_CONTENT_TIMEOUT"));
+        if (mounted?.binding === binding) {
+          removeDocument();
+          state({ status: "error", code: "FRONTEND_DOCUMENT_CONTENT_TIMEOUT" });
+        }
+      },
+    });
     let binding: Document;
     try {
       const makeDocument = assets.engine === "scramjet-controller"
@@ -562,7 +572,7 @@ export async function createFrontendBrowser(options: Options) {
         onContentState: (status, detail) => {
           if (version !== navigationEpoch || !live || completed) return;
           completed = true;
-          owner.clearTimeout(timer);
+          stopLoadWatch();
           if (status === "ready") {
             finish();
             state({ status: "ready" });
