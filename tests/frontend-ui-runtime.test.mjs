@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  setActiveProfile,
+  setActiveProfileContext,
+  setProfileDocumentGuard,
+} from "../runtime/profile-context.ts";
+import {
   frontendRuntimeEnabled,
   createFrontendWorkspace,
   claimFrontendWindow,
@@ -29,6 +34,12 @@ function ownerFixture() {
     },
   };
   const owner = {
+    BroadcastChannel: class {
+      constructor(name) {
+        this.name = name;
+      }
+      close() {}
+    },
     crypto: globalThis.crypto,
     location: { origin: "https://front.test" },
     navigator: { locks },
@@ -60,6 +71,38 @@ function ownerFixture() {
   };
   return { owner, container, held };
 }
+test("transport cache and channel belong to branch sign-in context, not just stable profile", async (t) => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  setActiveProfile(id);
+  setActiveProfileContext("first-signin");
+  setProfileDocumentGuard(async () => {});
+  t.after(() => {
+    setActiveProfile(null);
+    setActiveProfileContext(undefined);
+    setProfileDocumentGuard(undefined);
+  });
+  const first = fixture(t);
+  await first.workspace.navigate("one", "https://site.test/");
+  await tick();
+  await tick();
+  const before = first.browsers[0].options.coordinatorOptions;
+  before.storage.setItem("atlas.frontendAssignment.v2", "old-session");
+  assert.match(before.channelName, /:first-signin$/);
+  assert.equal(before.channel, undefined, "the master constructs its own fresh channel on demand");
+  setActiveProfileContext("second-signin");
+  const second = fixture(t);
+  second.owner.localStorage = first.owner.localStorage;
+  await second.workspace.navigate("two", "https://site.test/");
+  await tick();
+  await tick();
+  const after = second.browsers[0].options.coordinatorOptions;
+  assert.equal(after.storage.getItem("atlas.frontendAssignment.v2"), null);
+  assert.notEqual(after.channelName, before.channelName);
+  assert.equal(
+    before.storage.getItem("atlas.frontendAssignment.v2"),
+    "old-session",
+  );
+});
 function fixture(t, extra = {}) {
   const f = ownerFixture(),
     browsers = [],
@@ -339,4 +382,57 @@ test("Page options filter all-site preferences into current logical origin boole
   unsubscribe();
   f.browsers[0].options.onTelemetry({ type: "title", title: "Updated" });
   assert.equal(events.length, before);
+});
+
+test("profile-backed same-origin requires its own exact activated version2 capability", () => {
+  assert.equal(frontendRuntimeEnabled({runtimeProtocols:{profile:{version:2,activated:true,documentOrigin:"same-origin"},opaque:{version:2,activated:false}}}), true);
+  for (const profile of [{version:1,activated:true,documentOrigin:"same-origin"},{version:2,activated:false,documentOrigin:"same-origin"},{version:2,activated:true,documentOrigin:"opaque"},{version:2,activated:"true",documentOrigin:"same-origin"},{version:2,activated:true}])
+    assert.equal(frontendRuntimeEnabled({runtimeProtocols:{profile}}), false);
+});
+
+test("normal controller toolbar traverses its mounted frame history without a new navigation or allocation", async (t) => {
+  const f = fixture(t);
+  await f.workspace.navigate("normal", "https://site.test/start");
+  const browser = f.browsers[0];
+  browser.historyCommand = (type) => { browser.calls.push(["native-history", type]); return true; };
+  const before = browser.calls.filter(([type]) => ["start", "navigate", "connect"].includes(type));
+  await f.workspace.command("back");
+  await f.workspace.command("forward");
+  await f.workspace.command("reload");
+  assert.deepEqual(browser.calls.filter(([type]) => type === "native-history"), [["native-history", "back"], ["native-history", "forward"], ["native-history", "reload"]]);
+  assert.deepEqual(browser.calls.filter(([type]) => ["start", "navigate", "connect"].includes(type)), before);
+  assert.equal(browser.disposed, false);
+});
+
+test("normal controller popup aliases preserve one owner, events, native controls and live children when the opener closes", async (t) => {
+  const f = fixture(t);
+  await f.workspace.navigate("opener", "https://site.test/start");
+  const browser = f.browsers[0];
+  browser.runtimeCommand = (type, id, extra = {}) => { browser.calls.push(["runtime",type,id,extra]); return true; };
+  await f.workspace.command("panic-key", { key: "escape" });
+  browser.options.onRuntimeEvent({type:"popup-created",id:"popup",url:"about:blank"});
+  await tick();
+  assert.equal(f.events.at(-1).type,"popup-created");
+  assert.equal(f.events.at(-1).openerId,"opener");
+  browser.options.onRuntimeEvent({type:"navigation",id:"popup",url:"https://oauth.test/authorize"});
+  browser.options.onRuntimeEvent({type:"title",id:"popup",title:"Sign in"});
+  browser.options.onRuntimeEvent({type:"favicon",id:"popup",favicon:"data:image/png;base64,AA=="});
+  browser.options.onRuntimeEvent({type:"focus-search",id:"popup"});
+  browser.options.onRuntimeEvent({type:"panic",id:"popup",key:"escape"});
+  assert.deepEqual(f.events.slice(-5).map(event=>event.type),["navigation","title","favicon","focus-search","panic"]);
+  await f.workspace.command("back",{id:"popup"});
+  await f.workspace.command("reload",{id:"popup"});
+  await f.workspace.navigate("popup","https://oauth.test/return");
+  assert.equal(f.browsers.length,1);
+  assert.equal(browser.calls.filter(call=>call[0]==="start").length,1);
+  assert.equal(browser.calls.filter(call=>call[0]==="navigate").length,0);
+  assert.ok(browser.calls.some(call=>call[0]==="runtime"&&call[1]==="back"&&call[2]==="popup"));
+  assert.ok(browser.calls.some(call=>call[0]==="runtime"&&call[1]==="navigate"&&call[2]==="popup"&&call[3].url==="https://oauth.test/return"));
+  f.workspace.close("opener"); await tick();
+  assert.equal(browser.disposed,false);
+  f.workspace.activate("popup"); await tick();
+  assert.equal(f.container.children[0].hidden,false);
+  assert.equal(f.workspace.frame,browser.document.frame);
+  f.workspace.close("popup"); await tick();
+  assert.equal(browser.disposed,true);
 });

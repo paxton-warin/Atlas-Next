@@ -1,0 +1,4 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {completedBackupSelection as select} from '../web/src/backup-v2-latest.ts';
+test('only explicit successful checkpoint:null can start an empty workspace',()=>assert.deepEqual(select({checkpoint:null}),{checkpoint:null}));
+test('empty malformed and missing checkpoint responses cannot silently produce setup',()=>{for(const result of [undefined,null,{},[],false,'',{checkpoint:undefined},{checkpoint:{}},{checkpoint:{checkpointId:'bad'}}])assert.throws(()=>select(result),/BACKUP_LATEST_RESPONSE_INVALID/);});
+test('validated completed identity is selected without consuming any native data',()=>{const checkpointId='11111111-1111-4111-8111-111111111111';assert.deepEqual(select({checkpoint:{checkpointId},receipt:{opaque:'not interpreted here'}}),{checkpoint:{checkpointId}});});

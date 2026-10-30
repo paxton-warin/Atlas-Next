@@ -16,13 +16,14 @@ const bad = (code, message, status = 409, retryable = false) =>
   connectionError(message, status, code, retryable);
 export function createFrontendAssignments(
   store,
-  { node, listNodes, prune, grant, localSecret },
+  { node, listNodes, prune, grant, localSecret, bindLease, preferredNode = () => "", nodeForBinding = n => n },
 ) {
   const { db } = store;
   db.exec(`CREATE TABLE IF NOT EXISTS frontend_assignments (
   hash TEXT PRIMARY KEY, previous_hash TEXT, reservation_nonce TEXT, reservation_expires INTEGER,
   created INTEGER NOT NULL);
-  CREATE INDEX IF NOT EXISTS frontend_assignments_previous ON frontend_assignments(previous_hash);`);
+  CREATE INDEX IF NOT EXISTS frontend_assignments_previous ON frontend_assignments(previous_hash);
+  CREATE INDEX IF NOT EXISTS frontend_assignments_reservation_expires ON frontend_assignments(reservation_expires) WHERE reservation_expires IS NOT NULL;`);
   const row = (hash) =>
     db.prepare("SELECT * FROM browse_leases WHERE hash=?").get(hash);
   const mode = (hash) =>
@@ -171,7 +172,7 @@ export function createFrontendAssignments(
     (n.id === "local" ||
       (Date.now() - n.seen < FRESH &&
         OPAQUE_RUNTIME_PROTOCOL.requiredNodeCapabilities.every((capability) =>
-          (store.get("nodeCapabilities") || {})[n.id]?.includes(capability),
+          (n.qualificationCapabilities || (store.get("nodeCapabilities") || {})[n.id])?.includes(capability),
         )));
   function cleanup() {
     prune();
@@ -210,11 +211,14 @@ export function createFrontendAssignments(
   }
   function validate(owner) {
     if (!owner || typeof owner.hash !== "string") return false;
-    cleanup();
-    const lease = row(owner.hash);
+    // Cookie/storage markers are a hot path. Validate this live row directly;
+    // global expiration sweeps remain on assignment allocation/identity paths.
+    // Never run full-table DELETE/cleanup on every synchronous cookie read.
+    const lease = row(owner.hash), record = mode(owner.hash);
     return !!(
       lease &&
-      mode(owner.hash) &&
+      record &&
+      (record.reservation_expires == null || record.reservation_expires > Date.now()) &&
       lease.origin === owner.origin &&
       lease.generation === owner.generation &&
       lease.seen > Date.now() - TTL
@@ -231,10 +235,10 @@ export function createFrontendAssignments(
       "Browsing session is no longer current.",
     );
   }
-  function choose(preferred = "") {
+  function choose(preferred = "", binding) {
     const candidates = listNodes().filter(
       (n) =>
-        available(node(n.id)) &&
+        available(nodeForBinding(node(n.id), binding)) &&
         (preferred ? n.id === preferred : n.state === "active"),
     );
     const order = store.get("nodeAssignmentOrder") || {};
@@ -254,13 +258,14 @@ export function createFrontendAssignments(
         503,
         true,
       );
-    return node(candidates[0].id);
+    return nodeForBinding(node(candidates[0].id), binding);
   }
-  async function describe(raw, origin) {
+  async function describe(raw, origin, binding) {
     const hash = digest(raw),
       lease = row(hash),
       record = mode(hash);
     if (!lease || !record || lease.origin !== origin) missing(hash, origin);
+    if (binding) bindLease?.(hash, binding);
     const result = await grant(raw, origin, lease.generation);
     const current = row(hash),
       currentMode = mode(hash);
@@ -288,7 +293,13 @@ export function createFrontendAssignments(
       reservationExpiresAt: currentMode.reservation_expires || undefined,
     };
   }
-  async function reserve(previousRaw, origin, preferred = "", initialRaw) {
+  async function reserve(
+    previousRaw,
+    origin,
+    preferred = "",
+    initialRaw,
+    binding,
+  ) {
     cleanup();
     const previousHash = previousRaw ? digest(previousRaw) : null;
     if (previousHash) {
@@ -311,7 +322,7 @@ export function createFrontendAssignments(
           throw bad("INVALID_SESSION", "Invalid reservation.");
         const next = row(pending.hash);
         if (!preferred || next?.node === preferred)
-          return describe(raw, origin);
+          return describe(raw, origin, binding);
         throw bad(
           "SESSION_BUSY",
           "A replacement is already awaiting confirmation.",
@@ -320,7 +331,7 @@ export function createFrontendAssignments(
         );
       }
     }
-    const selected = choose(preferred),
+    const selected = choose(preferred || preferredNode(binding), binding),
       nonce = previousHash ? randomUUID() : null,
       raw = previousHash ? derive(previousRaw, nonce) : (initialRaw ?? token()),
       hash = digest(raw),
@@ -347,7 +358,7 @@ export function createFrontendAssignments(
       throw error;
     }
     try {
-      return await describe(raw, origin);
+      return await describe(raw, origin, binding);
     } catch (error) {
       // The initial assignment may have committed even if its reply/remote grant
       // failed. Keep its deterministic pin so the same request cannot allocate
@@ -360,7 +371,14 @@ export function createFrontendAssignments(
     }
   }
   const operations = new Map();
-  async function operate(input = {}, origin, { browserSessionId } = {}) {
+  async function operate(
+    input = {},
+    origin,
+    { browserSessionId, hubGrant, hubValidatedAt } = {},
+  ) {
+    const binding = hubGrant
+      ? { grant: hubGrant, validatedAt: hubValidatedAt }
+      : undefined;
     const {
       intent = input.session ? "restore" : "new",
       session: raw = "",
@@ -414,13 +432,13 @@ export function createFrontendAssignments(
             if (existing) {
               if (existing.origin !== origin || !mode(hash))
                 missing(hash, origin);
-              return describe(initialRaw, origin);
+              return describe(initialRaw, origin, binding);
             }
             if (mode(hash) || tombstone(hash, origin)) missing(hash, origin);
           }
           // Unkeyed calls remain an internal compatibility seam. The production
           // controller route requires a signed request for every initial new.
-          return reserve("", origin, "", initialRaw);
+          return reserve("", origin, "", initialRaw, binding);
         }
         const hash = digest(raw),
           lease = row(hash),
@@ -441,7 +459,7 @@ export function createFrontendAssignments(
         if (intent === "new") {
           if (!lease && !old) missing(hash, origin);
           if (old?.reason === "revoked" && !lease) missing(hash, origin);
-          return reserve(raw, origin);
+          return reserve(raw, origin, "", undefined, binding);
         }
         if (!lease) {
           if (!old || old.reason !== "expired" || intent !== "restore")
@@ -453,14 +471,14 @@ export function createFrontendAssignments(
               409,
               true,
             );
-          return reserve(raw, origin, old.node);
+          return reserve(raw, origin, old.node, undefined, binding);
         }
         if (!record) {
           // New frontend adopts a legacy owner without changing its traffic pin.
           // Legacy frame/socket remains authorized until explicit controller commit.
-          return reserve(raw, origin, lease.node);
+          return reserve(raw, origin, lease.node, undefined, binding);
         }
-        if (!available(node(lease.node)))
+        if (!available(nodeForBinding(node(lease.node), binding, lease)))
           throw bad(
             "NODE_UNAVAILABLE",
             "Your selected node is unavailable. Retry it or choose a node change explicitly.",
@@ -471,7 +489,7 @@ export function createFrontendAssignments(
           Date.now(),
           hash,
         );
-        return describe(raw, origin);
+        return describe(raw, origin, binding);
       })
       .finally(() => operations.delete(key));
     operations.set(key, { intent, generation, promise });
@@ -531,7 +549,7 @@ export function createFrontendAssignments(
       (previous
         ? previous.origin !== origin
         : !old || old.reason !== "expired") ||
-      !available(node(current.node))
+      !available(nodeForBinding(node(current.node), undefined, current))
     )
       throw bad(
         "SESSION_REVOKED",

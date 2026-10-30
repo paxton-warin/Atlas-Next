@@ -58,9 +58,26 @@ export function installFrontendDocumentReservations(
       typeof input !== "object" ||
       Array.isArray(input) ||
       Object.keys(input).some(
-        (name) => !["session", "generation", "documentId"].includes(name),
+        (name) =>
+          ![
+            "session",
+            "generation",
+            "documentId",
+            "parentDocumentId",
+            "bootstrapNonce",
+            "kind",
+          ].includes(name),
       ) ||
-      !idPattern.test(input.documentId)
+      !idPattern.test(input.documentId) ||
+      (input.bootstrapNonce !== undefined &&
+        (typeof input.bootstrapNonce !== "string" ||
+          !/^[a-f0-9-]{64,128}$/.test(input.bootstrapNonce))) ||
+      (input.kind !== undefined && input.kind !== "popup") ||
+      ((input.parentDocumentId || input.kind === "popup") &&
+        !input.bootstrapNonce) ||
+      (input.parentDocumentId !== undefined &&
+        (!idPattern.test(input.parentDocumentId) ||
+          input.parentDocumentId === input.documentId))
     )
       throw invalid("INVALID_DOCUMENT_RESERVATION");
     const owner = pool.frontendAssignments.identity(
@@ -75,6 +92,25 @@ export function installFrontendDocumentReservations(
       existing &&
       (existing.owner.hash !== owner.hash ||
         existing.owner.generation !== owner.generation)
+    )
+      throw invalid("DOCUMENT_ALREADY_BOUND", 409);
+    if (input.parentDocumentId) {
+      const parent = entries.get(key(frontendOrigin, input.parentDocumentId));
+      if (
+        !parent ||
+        !valid(parent) ||
+        parent.owner.hash !== owner.hash ||
+        parent.owner.generation !== owner.generation
+      )
+        throw invalid("NESTED_PARENT_REQUIRED", 403);
+    }
+    if (
+      existing &&
+      ((input.parentDocumentId &&
+        existing.parentDocumentId !== input.parentDocumentId) ||
+        (input.bootstrapNonce &&
+          existing.bootstrapNonce !== input.bootstrapNonce) ||
+        (input.kind && existing.kind !== input.kind))
     )
       throw invalid("DOCUMENT_ALREADY_BOUND", 409);
     const grant = await pool.resourceOwner(
@@ -127,13 +163,25 @@ export function installFrontendDocumentReservations(
       frontendOrigin,
       nodeId: grant.nodeId,
       resourceOrigin: resource.origin,
+      parentDocumentId: concurrent?.parentDocumentId ?? input.parentDocumentId,
+      bootstrapNonce: concurrent?.bootstrapNonce ?? input.bootstrapNonce,
+      kind: concurrent?.kind ?? input.kind,
+      controllerOpenerDepth:
+        concurrent?.controllerOpenerDepth ??
+        (input.parentDocumentId
+          ? (entries.get(key(frontendOrigin, input.parentDocumentId))
+              ?.controllerOpenerDepth ?? 0)
+          : 0) + (input.kind === "popup" ? 1 : 0),
       expiresAt: Math.min(Date.now() + ttlMs, grant.expiresAt),
     };
     if (!valid(record)) throw invalid("SESSION_REVOKED", 409);
     entries.set(key(frontendOrigin, input.documentId), record);
     return {
       documentId: input.documentId,
-      frameURL: frontendOrigin + "/browse/frame/" + input.documentId,
+      frameURL:
+        frontendOrigin +
+        (record.kind === "popup" ? "/browse/popup/" : "/browse/frame/") +
+        input.documentId,
       resourceOrigin: record.resourceOrigin,
       expiresAt: record.expiresAt,
     };
@@ -148,7 +196,15 @@ export function installFrontendDocumentReservations(
       typeof input !== "object" ||
       Array.isArray(input) ||
       Object.keys(input).some(
-        (name) => !["session", "generation", "documentId"].includes(name),
+        (name) =>
+          ![
+            "session",
+            "generation",
+            "documentId",
+            "parentDocumentId",
+            "bootstrapNonce",
+            "kind",
+          ].includes(name),
       ) ||
       !idPattern.test(input.documentId)
     )
@@ -171,6 +227,42 @@ export function installFrontendDocumentReservations(
   });
   app.addHook("onClose", () => entries.clear());
   return Object.freeze({
+    /** A nested opaque navigation deliberately has no SameSite Hub cookie.
+     * This authorizes only its pre-reserved physical bootstrap, not API access,
+     * upstream bytes or ports. The one-document nonce/port handshake is unchanged.
+     */
+    documentNavigation(req, documentId, kind) {
+      const origin = originFor(req),
+        record = entries.get(key(origin, documentId));
+      if (
+        !record ||
+        !record.bootstrapNonce ||
+        !valid(record) ||
+        typeof pool.validHubLease !== "function" ||
+        !pool.validHubLease(record.owner.hash) ||
+        (kind === "popup"
+          ? record.kind !== "popup"
+          : kind !== "frame" ||
+            record.kind === "popup" ||
+            !record.parentDocumentId)
+      )
+        return false;
+      let parentId = record.parentDocumentId,
+        depth = 0;
+      while (parentId) {
+        if (++depth > 16) return false;
+        const parent = entries.get(key(origin, parentId));
+        if (
+          !parent ||
+          !valid(parent) ||
+          parent.owner.hash !== record.owner.hash ||
+          parent.owner.generation !== record.owner.generation
+        )
+          return false;
+        parentId = parent.parentDocumentId;
+      }
+      return true;
+    },
     resourceOrigin(req, documentId) {
       prune();
       const id = key(originFor(req), documentId),
@@ -181,21 +273,66 @@ export function installFrontendDocumentReservations(
       return undefined;
     },
     rendererOwner(req, documentId) {
-      const origin = originFor(req), raw = req.headers["x-atlas-browse-session"], generation = req.headers["x-atlas-browse-generation"];
-      if (req.headers.origin !== origin || typeof raw !== "string" || typeof generation !== "string" || !/^[1-9][0-9]*$/.test(generation)) return undefined;
-      const owner = pool.frontendAssignments.identity(raw, origin, Number(generation));
+      const origin = originFor(req),
+        raw = req.headers["x-atlas-browse-session"],
+        generation = req.headers["x-atlas-browse-generation"];
+      if (
+        req.headers.origin !== origin ||
+        typeof raw !== "string" ||
+        typeof generation !== "string" ||
+        !/^[1-9][0-9]*$/.test(generation)
+      )
+        return undefined;
+      const owner = pool.frontendAssignments.identity(
+        raw,
+        origin,
+        Number(generation),
+      );
       const record = entries.get(key(origin, documentId));
-      if (!owner || !record || !valid(record) || record.owner.hash !== owner.hash || record.owner.generation !== owner.generation) return undefined;
-      return Object.freeze({ documentId, origin, hash: owner.hash, generation: owner.generation });
+      if (
+        !owner ||
+        !record ||
+        !valid(record) ||
+        record.owner.hash !== owner.hash ||
+        record.owner.generation !== owner.generation
+      )
+        return undefined;
+      return Object.freeze({
+        documentId,
+        origin,
+        hash: owner.hash,
+        generation: owner.generation,
+      });
     },
     rendererOwnerValid(binding) {
       if (!binding || !idPattern.test(binding.documentId)) return false;
       const record = entries.get(key(binding.origin, binding.documentId));
-      return !!record && valid(record) && record.owner.hash === binding.hash && record.owner.generation === binding.generation;
+      return (
+        !!record &&
+        valid(record) &&
+        record.owner.hash === binding.hash &&
+        record.owner.generation === binding.generation
+      );
+    },
+    nestedPolicy(req, documentId) {
+      const origin = originFor(req),
+        record = entries.get(key(origin, documentId));
+      return record && valid(record)
+        ? {
+            nested: !!record.parentDocumentId && record.kind !== "popup",
+            prefix: origin + "/browse/frame/",
+            bootstrapNonce: record.bootstrapNonce,
+            kind: record.kind,
+            controllerOpenerDepth: record.controllerOpenerDepth,
+          }
+        : undefined;
     },
     rendererPrefix(req, documentId) {
-      const origin = originFor(req), record = entries.get(key(origin, documentId));
-      return record && valid(record) ? origin + "/browse/renderer/v1/" + documentId + "/" : undefined;
+      const origin = originFor(req),
+        record = entries.get(key(origin, documentId));
+      return record && valid(record)
+        ? origin + "/browse/renderer/v1/" + documentId + "/"
+        : undefined;
     },
     get size() {
       prune();

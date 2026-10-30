@@ -136,6 +136,15 @@ export function installSandboxCookieWorker(scope: Scope) {
         jar = new SandboxCookieJar({
           factory: scope.indexedDB,
           browserSessionId: data.browserSessionId,
+          profileId: data.profileId,
+          profileContextId: data.profileContextId,
+          onNativeCommit: (origin) =>
+            send({
+              type: "profile-native-change",
+              profileId: data.profileId,
+              origin,
+              kind: "cookies",
+            }),
           forbiddenOrigins: [frontend.origin, ...(data.forbiddenOrigins ?? [])],
         });
         socket = new WebSocket(url);

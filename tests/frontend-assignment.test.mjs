@@ -1126,8 +1126,8 @@ test("transient initial retirement failure retains unresolved intent and never a
       1,
     );
     assert.equal(
-      f.app.store.db.prepare("SELECT count(*) AS n FROM browse_leases").get().n,
-      0, // ordinary 12h pruning already expired it; no replacement allocated.
+      f.app.store.db.prepare("SELECT count(*) AS n FROM browse_leases WHERE seen>?").get(Date.now() - 12 * 3600000).n,
+      0, // intercepted503 made no server request; retained original is expired.
     );
     assert.equal(f.calls.filter((x) => x.body.intent === "new").length, 2);
     f.intercept(undefined);

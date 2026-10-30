@@ -3,6 +3,7 @@
  * frontend-owned IndexedDB, then acknowledges an opaque document's sequence.
  * Not registered in the application until the complete release is qualified.
  */
+import { onlyNativeResourceEnrollmentCookies } from "./opaque-ambient-cookies.mjs";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 
@@ -25,6 +26,7 @@ export function installSandboxStorageRendezvous(
     originFor,
     authorizeOwner,
     validateOwner,
+    documentOrigin = "opaque",
     timeoutMs = 8000,
     receiptTTL = 10000,
     idleMs = 12 * 3600000,
@@ -41,6 +43,8 @@ export function installSandboxStorageRendezvous(
     throw TypeError(
       "Storage rendezvous requires explicit trusted owner authorization.",
     );
+  if (!["opaque", "same-origin"].includes(documentOrigin))
+    throw TypeError("Invalid storage document origin mode.");
   const owners = new Map(),
     documents = new Map();
   const wss = new WebSocketServer({
@@ -106,7 +110,9 @@ export function installSandboxStorageRendezvous(
       const origin = sameOrigin(request),
         identity = await authorizeOwner(request);
       if (!identity) throw fail(401, "storage_owner_authentication_required");
-      if (!ownKeys(request.body || {}, []))
+      if (!ownKeys(request.body || {}, []) ||
+          (request.headers["x-atlas-local-receipts"] !== undefined &&
+           request.headers["x-atlas-local-receipts"] !== "1"))
         throw fail(400, "invalid_storage_owner_request");
       if (owners.size >= maxOwners) throw fail(429, "storage_owner_limit");
       const capability = token();
@@ -115,6 +121,7 @@ export function installSandboxStorageRendezvous(
         origin,
         identity,
         seen: Date.now(),
+        localReceipts: request.headers["x-atlas-local-receipts"] === "1",
         documents: new Map(),
         socket: null,
         expiryTimer: undefined,
@@ -126,7 +133,8 @@ export function installSandboxStorageRendezvous(
       );
       owner.expiryTimer.unref();
       reply.header("Cache-Control", "no-store");
-      return { capability, websocket: ROOT + "owner/" + capability };
+      return { capability, websocket: ROOT + "owner/" + capability,
+        ...(owner.localReceipts ? { localReceipts: true } : {}) };
     },
   );
   const authenticatedOwner = async (request) => {
@@ -205,9 +213,9 @@ export function installSandboxStorageRendezvous(
         .header("Access-Control-Allow-Origin", "*")
         .header("Vary", "Origin");
       if (
-        request.headers.origin !== "null" ||
+        request.headers.origin !== (documentOrigin === "same-origin" ? originFor(request) : "null") ||
         request.headers.authorization ||
-        request.headers.cookie
+        (documentOrigin === "opaque" && !onlyNativeResourceEnrollmentCookies(request.headers.cookie))
       )
         return reply.code(403).send({
           ok: false,
@@ -241,7 +249,9 @@ export function installSandboxStorageRendezvous(
       if (
         !ownKeys(body, ["sequence"]) ||
         !sequence(body.sequence) ||
-        body.sequence !== doc.last + 1
+        (doc.owner.localReceipts
+          ? body.sequence <= doc.last
+          : body.sequence !== doc.last + 1)
       )
         return reply.code(409).send({
           ok: false,
@@ -347,9 +357,14 @@ export function installSandboxStorageRendezvous(
         ws.on("error", () => {});
         ws.on("message", (data, isBinary) => {
           if (owner.socket !== ws) return;
-          try {
+          // Local browser receipts no longer need an HTTP marker for every
+          // durable write. Keep the live assignment check on this authenticated
+          // owner channel, including heartbeats and every resulting receipt.
+          void (async () => { try {
             if (isBinary) throw Error();
             const value = JSON.parse(data.toString());
+            if (!(await valid(owner)) || owner.socket !== ws ||
+                ws.readyState !== WebSocket.OPEN) return;
             if (ownKeys(value, ["type"]) && value.type === "ping") {
               owner.seen = Date.now();
               ownerSend(owner, { type: "pong" });
@@ -393,19 +408,19 @@ export function installSandboxStorageRendezvous(
                   }),
             };
             if (finish(doc, value.sequence, result)) return;
-            if (
-              value.sequence <= doc.last ||
-              value.sequence > doc.last + 64 ||
-              doc.receipts.size >= 64
-            )
-              return;
+            if (value.sequence <= doc.last) return;
             doc.receipts.set(value.sequence, {
               value: result,
               created: Date.now(),
             });
+            // Keep the most recent bounded receipts, not the first64 after a
+            // network marker. A local-only run may advance far beyond64 before
+            // a later operation needs the unchanged HTTP fallback.
+            if (doc.receipts.size > 64)
+              doc.receipts.delete(Math.min(...doc.receipts.keys()));
           } catch {
             ws.close(1008, "Invalid storage receipt");
-          }
+          } })();
         });
         ws.on("close", () => {
           if (owner.socket !== ws) return;

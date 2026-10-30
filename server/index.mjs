@@ -11,6 +11,8 @@ const runtime = await createRuntime({
 });
 app.nodePool.setLocalConnections(() => runtime.connectionCount());
 app.nodePool.setLocalRelayStats(() => runtime.connectionStats());
+app.nodePool.setLocalRelaySessionIds(() => runtime.connectionSessionIds());
+app.nodePool.setLocalPerformance(() => runtime.performanceSnapshot());
 await runtime.listen({
   port: Number(process.env.RUNTIME_PORT || 4181),
   host: process.env.HOST || "127.0.0.1",

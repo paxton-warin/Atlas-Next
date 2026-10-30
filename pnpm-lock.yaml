@@ -74,9 +74,15 @@ importers:
       remark-math:
         specifier: 6.0.0
         version: 6.0.0
+      remark-parse:
+        specifier: 11.0.0
+        version: 11.0.0
       tldts:
         specifier: 7.4.18
         version: 7.4.18
+      unified:
+        specifier: 11.0.5
+        version: 11.0.5
       ws:
         specifier: 8.21.1
         version: 8.21.1(bufferutil@4.1.0)

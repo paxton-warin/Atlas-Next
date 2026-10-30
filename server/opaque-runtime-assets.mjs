@@ -11,8 +11,12 @@ import {
 const sha = (v) => createHash("sha256").update(v).digest("hex");
 export function installOpaqueRuntimeAssets(
   app,
-  { directory, originFor, relayOrigins = () => [], nativeResourceOrigin, rendererHelperPrefix },
+  { directory, originFor, relayOrigins = () => [], nativeResourceOrigin, rendererHelperPrefix, nestedFramePolicy, documentOrigin = "opaque", documents = true, engine },
 ) {
+  if (!["opaque", "same-origin"].includes(documentOrigin))
+    throw TypeError("Invalid runtime document origin mode.");
+  if (engine !== undefined && engine !== "scramjet-controller")
+    throw TypeError("Invalid runtime engine.");
   const manifest = JSON.parse(
     readFileSync(join(directory, "manifest.json"), "utf8"),
   );
@@ -45,6 +49,25 @@ export function installOpaqueRuntimeAssets(
       !name.includes(metadata.sha256.slice(0, 16))
     )
       throw Error("Opaque runtime asset hash mismatch");
+    assets.set(name, bytes);
+  }
+  // Previously loaded frontend graphs can retain a manifest-selected storage
+  // worker URL. Serve only explicitly pinned prior storage workers; never use
+  // arbitrary disk fallback or broaden the seven active capability assets.
+  const previous = manifest.previousStorageWorkers ?? {};
+  if (!previous || typeof previous !== "object" || Array.isArray(previous) ||
+      Object.keys(previous).length > 8)
+    throw Error("Invalid previous storage worker manifest");
+  for (const [name, metadata] of Object.entries(previous)) {
+    if (!/^storage-[a-f0-9]{16}\.js$/.test(name) || assets.has(name) ||
+        !metadata || typeof metadata !== "object" || Array.isArray(metadata) ||
+        Object.keys(metadata).some(key => key !== "sha256") ||
+        !/^[a-f0-9]{64}$/.test(metadata.sha256) ||
+        !name.includes(metadata.sha256.slice(0, 16)))
+      throw Error("Invalid previous storage worker asset");
+    const bytes = readFileSync(join(directory, name));
+    if (bytes.length > 4 * 1024 * 1024 || sha(bytes) !== metadata.sha256)
+      throw Error("Previous storage worker asset hash mismatch");
     assets.set(name, bytes);
   }
   if (
@@ -94,7 +117,8 @@ export function installOpaqueRuntimeAssets(
         .send(bytes)
     );
   });
-  installSandboxFramePrototype(app, {
+  if (documents) installSandboxFramePrototype(app, {
+    documentOrigin,
     capabilities: true,
     bootstrapURL: (req) =>
       new URL("/browse/assets/" + manifest.bootstrap, originFor(req)).href,
@@ -102,9 +126,12 @@ export function installOpaqueRuntimeAssets(
     cookieEndpointOrigin: originFor,
     nativeResourceOrigin,
     rendererHelperPrefix,
+    nestedFramePolicy,
   });
   return Object.freeze({
     version: 2,
+    ...(engine ? { engine, runtimePath: "/browse/runtime/" } : {}),
+    ...(documentOrigin === "same-origin" ? { documentOrigin } : {}),
     bootstrap: "/browse/assets/" + manifest.bootstrap,
     trustedRewriter: "/browse/assets/" + manifest.trustedRewriter,
     workers: Object.fromEntries(

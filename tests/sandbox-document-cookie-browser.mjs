@@ -58,7 +58,7 @@ const wasm = fs
   .toString("base64");
 const bootstrap = `${core}\n${childBundle}\nwindow.nativeOriginBeforeRuntime=window.origin;const nativeEval=window.eval, wasm=Uint8Array.from(atob(${JSON.stringify(wasm)}),c=>c.charCodeAt(0));
 addEventListener('atlas:document-capabilities',event=>{const grant=event.detail;grant.control.onmessage=async event=>{if(event.data.type!=='initialize')return;try{
- const api=fixtureCookieAPI,data=event.data,cookies=await api.createSandboxDocumentCookie({documentId:grant.documentId,endpoint:data.cookieEndpoint,port:grant.cookies});
+ const api=fixtureCookieAPI,data=event.data,cookies=await api.createSandboxDocumentCookie({documentId:grant.documentId,endpoint:data.cookieEndpoint,port:grant.cookies,batchReads:${JSON.stringify(process.env.ATLAS_COOKIE_CACHE==='1')}});
  const storage=()=>{const m=new Map();return {getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,v),removeItem:k=>m.delete(k),clear:()=>m.clear(),key:n=>[...m.keys()][n]??null,get length(){return m.size}}};
  const network=api.createOpaqueNetworkClient({port:grant.network,documentId:grant.documentId,documentURL:data.website});
  const boot=api.bootOpaqueRuntimeClient({global:window,core:$runtimekit,wasm,documentURL:data.website,prefix:location.origin+'/~/app/cookie-fixture/',network,localStorage:storage(),sessionStorage:storage(),installIndexedDB:()=>{},cookies,onNavigate:()=>{},sendSetCookie:async()=>{throw Error('stock cookie path must never run')}});
@@ -208,6 +208,16 @@ const network = async (
 try {
   await initialize();
   let f = await child();
+  if(process.env.ATLAS_COOKIE_CACHE === '1') {
+    const before = wire.length;
+    const proof = await f.evaluate(() => runFixture(`(()=>{const values=[];for(let i=0;i<60;i++)values.push(document.cookie);document.cookie='batch_proof=acknowledged; Path=/';const after=document.cookie;return {same:values.every(v=>v===values[0]),after}})()`));
+    assert.equal(proof.same,true);assert.match(proof.after,/batch_proof=acknowledged/);
+    assert.equal(wire.length-before,2,'one authoritative initial read plus one completed write, no redundant reads');
+    await f.evaluate(() => Promise.resolve());
+    const again=wire.length;await f.evaluate(()=>document.cookie);assert.equal(wire.length-again,1,'next job reads the current worker authority');
+    await f.evaluate(()=>{document.cookie='batch_proof=; Path=/; Max-Age=0'});
+    record('same-job reads share only acknowledged results; write/read ordering and next-job refresh retained');
+  }
   assert.equal(new URL(f.url()).origin, frontend);
   record(
     "frontend frame URL and browser-enforced opaque origin",

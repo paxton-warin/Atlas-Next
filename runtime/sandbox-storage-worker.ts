@@ -1,3 +1,13 @@
+import {
+  profileDatabaseName,
+  checkedProfile,
+  appendProfileJournal,
+} from "./profile-journal.ts";
+import {
+  assertProfileWrite,
+  assertProfileWriteCached,
+} from "./profile-permissions.ts";
+import { createStorageLocalReceiptWriter } from "./storage-local-receipt.ts";
 /** Trusted dedicated-worker storage owner for opaque website documents.
  *
  * Website keys/values stay on browser-local MessagePorts and native IndexedDB.
@@ -45,6 +55,7 @@ type DocumentBinding = {
   tail: Promise<void>;
   pending: Map<number, Operation>;
   cancelled: Set<number>;
+  localReceipt: ReturnType<typeof createStorageLocalReceiptWriter>;
 };
 type WorkerScope = {
   location: { origin: string };
@@ -61,7 +72,8 @@ type WorkerScope = {
 };
 const MAX_DOCUMENTS = 32;
 const MAX_PENDING = 8;
-const MAX_QUOTA = 5 * 1024 * 1024;
+const MAX_QUOTA = 32 * 1024 * 1024;
+const DEFAULT_QUOTA = 5 * 1024 * 1024;
 const DOCUMENT_ID = /^[A-Za-z0-9_-]{16,96}$/;
 const SESSION_ID = /^[A-Za-z0-9_-]{16,128}$/;
 const ownKeys = (
@@ -106,6 +118,9 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
     connected = false,
     socket: WebSocket | undefined,
     heartbeat: ReturnType<typeof setInterval> | undefined;
+  let profileId: string | null = null;
+  let profileContextId: string | undefined;
+  let localReceipts = false;
   let database: Promise<IDBDatabase> | undefined;
   let channel: BroadcastChannel | undefined;
   const sendOwner = (message: unknown) => {
@@ -113,7 +128,10 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
   };
   function openDatabase(): Promise<IDBDatabase> {
     return (database ??= new Promise((resolve, reject) => {
-      const request = scope.indexedDB.open(SANDBOX_DATABASE, 1);
+      const request = scope.indexedDB.open(
+        profileDatabaseName(SANDBOX_DATABASE, profileId),
+        1,
+      );
       request.onupgradeneeded = () => {
         if (!request.result.objectStoreNames.contains("origins"))
           request.result.createObjectStore("origins");
@@ -164,6 +182,20 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
     error?: Failure,
     revision?: number,
   ) {
+    // This is a transport for the existing result, not a second commit or an
+    // optimistic save. Success callers run only after strict native completion.
+    if (binding.live && (!ok || (connected && socket?.readyState === WebSocket.OPEN))) {
+      try {
+        binding.localReceipt?.write(number, {
+          ok,
+          ...(error ? { error } : {}),
+          ...(revision !== undefined ? { revision } : {}),
+        });
+      } catch {
+        try { binding.localReceipt?.dispose(); } catch { /* Optional transport cleanup. */ }
+        binding.localReceipt = null;
+      }
+    }
     if (socket?.readyState === WebSocket.OPEN)
       socket.send(
         JSON.stringify({
@@ -197,26 +229,33 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
         target.live &&
         matches(target, binding.origin, kind, binding.sessionId)
       )
-        target.port.postMessage({
+        try { target.port.postMessage({
           type: "snapshot",
           documentId: target.documentId,
           kind,
           snapshot: value,
           change,
-        });
+        }); } catch { /* A failed peer notification does not undo the commit. */ }
     }
-    channel?.postMessage({
+    try { channel?.postMessage({
       origin: binding.origin,
       kind,
       sessionId: binding.sessionId,
       change,
-    });
+    }); } catch { /* Cross-owner delivery is best effort after native commit. */ }
   }
   function commit(binding: DocumentBinding, operation: Operation) {
     return new Promise<void>(async (finish) => {
       const { message } = operation;
       let db: IDBDatabase;
       try {
+        if (message.kind === "local")
+          await assertProfileWrite(
+            scope.indexedDB,
+            profileId,
+            binding.origin,
+            profileContextId,
+          );
         db = await openDatabase();
       } catch (error) {
         status(
@@ -268,6 +307,13 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
         changed = false;
       request.onsuccess = () => {
         try {
+          if (message.kind === "local")
+            assertProfileWriteCached(
+              scope.indexedDB,
+              profileId,
+              binding.origin,
+              profileContextId,
+            );
           if (!binding.live || operation.cancelled || !connected)
             throw new DOMException(
               "Storage operation was cancelled",
@@ -278,6 +324,10 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
             entries: [],
           };
           const entries = new Map(previous.entries);
+          const previousBytes = previous.entries.reduce(
+            (n, [key, value]) => n + 2 * (key.length + value.length),
+            0,
+          );
           const change = message.change;
           const key = change.op === "clear" ? null : change.key;
           const oldValue = key === null ? null : (entries.get(key) ?? null);
@@ -290,7 +340,7 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
           let bytes = 0;
           for (const [key, value] of entries)
             bytes += 2 * (key.length + value.length);
-          if (bytes > binding.quotaBytes)
+          if (bytes > binding.quotaBytes && bytes > previousBytes)
             throw new DOMException(
               "Website storage quota exceeded",
               "QuotaExceededError",
@@ -306,7 +356,26 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
             oldValue,
             newValue,
           };
-          if (changed) store.put(next, storageKey(binding, message.kind));
+          if (changed) {
+            store.put(next, storageKey(binding, message.kind));
+            if (message.kind === "local") store.put({format:2,revision:next.revision,
+              bytes:bytes+entries.size*64+128,count:entries.size},["local-migration-size-v2",binding.origin]);
+            if (profileId && message.kind === "local")
+              appendProfileJournal(
+                store,
+                {
+                  profileId,
+                  kind: "local",
+                  origin: binding.origin,
+                  payload: { change: message.change, revision: next.revision },
+                  bytes: Math.max(
+                    64,
+                    2 * JSON.stringify(message.change).length,
+                  ),
+                },
+                "array",
+              );
+          }
         } catch (error) {
           aborted = failure(error, "storage_write_failed");
           transaction.abort();
@@ -314,21 +383,33 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
       };
       transaction.oncomplete = () => {
         if (next && event) {
+          // Native completion is the acknowledgement authority. Optional
+          // notification transports must never turn this durable write into
+          // an HTTP timeout or leave this document's operation tail pending.
+          try { status(binding, message.sequence, true, undefined, next.revision); }
+          finally { finish(); }
+          if (changed && profileId && message.kind === "local")
+            try { sendOwner({
+              type: "profile-native-change",
+              profileId,
+              origin: binding.origin,
+              kind: "local",
+            }); } catch { /* The committed journal remains available to sync. */ }
           if (changed) notify(binding, message.kind, next, event);
           else
-            binding.port.postMessage({
+            try { binding.port.postMessage({
               type: "snapshot",
               documentId: binding.documentId,
               kind: message.kind,
               snapshot: next,
-            });
-          status(binding, message.sequence, true, undefined, next.revision);
-        } else
+            }); } catch { /* No-op notification failure cannot suppress its ACK. */ }
+        } else {
           status(binding, message.sequence, false, {
             name: "UnknownError",
             code: "storage_empty_transaction",
           });
-        finish();
+          finish();
+        }
       };
       transaction.onabort = () => {
         status(
@@ -364,6 +445,8 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
   function revoke(binding: DocumentBinding) {
     if (!binding.live) return;
     binding.live = false;
+    try { binding.localReceipt?.dispose(); } catch { /* Revocation remains authoritative. */ }
+    binding.localReceipt = null;
     documents.delete(binding.documentId);
     for (const number of binding.pending.keys()) cancel(binding, number);
     binding.port.postMessage({
@@ -399,8 +482,7 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
     }
     if (
       message.change.op === "set" &&
-      2 * (message.change.key.length + message.change.value.length) >
-        binding.quotaBytes
+      2 * (message.change.key.length + message.change.value.length) > MAX_QUOTA
     ) {
       status(binding, message.sequence, false, {
         name: "QuotaExceededError",
@@ -453,7 +535,7 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
         "Frontend storage is not a website capability",
         "SecurityError",
       );
-    const quotaBytes = value.quotaBytes ?? MAX_QUOTA;
+    const quotaBytes = value.quotaBytes ?? DEFAULT_QUOTA;
     if (
       !Number.isSafeInteger(quotaBytes) ||
       quotaBytes < 1 ||
@@ -472,6 +554,9 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
       tail: Promise.resolve(),
       pending: new Map(),
       cancelled: new Set(),
+      localReceipt: localReceipts
+        ? createStorageLocalReceiptWriter(scope, value.documentId)
+        : null,
     };
     documents.set(binding.documentId, binding);
     try {
@@ -487,6 +572,7 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
         type: "ready",
         documentId: binding.documentId,
         snapshots: { local, session },
+        ...(binding.localReceipt ? { localReceipt: binding.localReceipt.grant } : {}),
       });
       sendOwner({ type: "document-bound", documentId: binding.documentId });
     } catch (error) {
@@ -533,7 +619,13 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
     const value = event.data;
     try {
       if (
-        ownKeys(value, ["type", "socketURL"]) &&
+        ownKeys(value, [
+          "type",
+          "socketURL",
+          "profileId",
+          "profileContextId",
+          "localReceipts",
+        ]) &&
         value.type === "initialize" &&
         !initialized
       ) {
@@ -552,6 +644,15 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
             "Storage owner URL is not a trusted endpoint",
             "SecurityError",
           );
+        profileId = checkedProfile(value.profileId);
+        profileContextId =
+          typeof value.profileContextId === "string"
+            ? value.profileContextId
+            : undefined;
+        if (value.localReceipts !== undefined && typeof value.localReceipts !== "boolean")
+          throw new TypeError("Invalid local storage receipt option");
+        // Opaque/unprofiled legacy owners retain the original network protocol.
+        localReceipts = value.localReceipts === true && !!profileId && !!profileContextId;
         initialized = true;
         socket = new WebSocket(url);
         socket.onmessage = receiveSocket;
@@ -573,7 +674,9 @@ export function installSandboxStorageWorker(scope: WorkerScope) {
             socket.send(JSON.stringify({ type: "ping" }));
         }, 30000);
         if (typeof BroadcastChannel !== "undefined") {
-          channel = new BroadcastChannel("atlas.browsing.storage.v2");
+          channel = new BroadcastChannel(
+            profileDatabaseName("atlas.browsing.storage.v2", profileId),
+          );
           channel.onmessage = async (event) => {
             const message = event.data;
             if (

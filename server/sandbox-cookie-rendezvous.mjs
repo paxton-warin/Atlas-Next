@@ -3,6 +3,7 @@
  * plaintext cookie views. This is NOT the marker-only storage channel.
  * Not registered in the application until the complete release is qualified.
  */
+import { onlyNativeResourceEnrollmentCookies } from "./opaque-ambient-cookies.mjs";
 import { randomBytes } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 
@@ -25,6 +26,7 @@ export function installSandboxCookieRendezvous(
     originFor,
     authorizeOwner,
     validateOwner,
+    documentOrigin = "opaque",
     timeoutMs = 8000,
     validationTimeoutMs = 2000,
     receiptTTL = 10000,
@@ -42,6 +44,8 @@ export function installSandboxCookieRendezvous(
     throw TypeError(
       "Cookie rendezvous requires explicit trusted owner authorization.",
     );
+  if (!["opaque", "same-origin"].includes(documentOrigin))
+    throw TypeError("Invalid cookie document origin mode.");
   if (
     !Number.isSafeInteger(validationTimeoutMs) ||
     validationTimeoutMs <= 0 ||
@@ -52,6 +56,27 @@ export function installSandboxCookieRendezvous(
     );
   const owners = new Map(),
     documents = new Map();
+  // An unaware client cannot invalidate a cross-task view. Scope this fallback
+  // conservatively to its whole frontend origin: clearing a native session
+  // cookie must not make an already-live legacy worker disappear from it.
+  const legacyViews = new Map();
+  const viewNames = origin => {
+    const secure = new URL(origin).protocol === "https:";
+    return { name: (secure ? "__Host-" : "") + "atlas-cookie-view-fence-v1", attributes: "; Path=/; SameSite=Strict; Max-Age=2592000" + (secure ? "; Secure" : "") };
+  };
+  const viewFence = (request, origin) => {
+    const { name } = viewNames(origin);
+    const values = (request.headers.cookie || "").split(";").map(v => v.trim()).filter(v => v.startsWith(name + "="));
+    const value = values.length === 1 ? values[0].slice(name.length + 1) : "";
+    return /^[a-f\d]{32}$/i.test(value) ? value : undefined;
+  };
+  const allowView = (request, reply, owner) => {
+    if (documentOrigin !== "same-origin" || !owner.viewCoherent || legacyViews.has(owner.viewContext)) return;
+    const fence = viewFence(request, owner.origin);
+    // This echoes the request's fence, never overwrites it with a late response.
+    // A newer legacy registration therefore defeats even an in-flight grant.
+    if (fence) reply.header("x-atlas-cookie-view-epoch", fence);
+  };
   let receiptBytes = 0;
   const MAX_RECEIPT_BYTES = 32 * 1024 * 1024;
   function discardReceipts(doc) {
@@ -96,6 +121,11 @@ export function installSandboxCookieRendezvous(
   function revokeOwner(owner, code = "cookies_owner_revoked", failure) {
     if (owners.get(owner.capability) !== owner) return;
     owners.delete(owner.capability);
+    if (documentOrigin === "same-origin" && !owner.viewCoherent) {
+      const count = (legacyViews.get(owner.viewContext) || 1) - 1;
+      if (count) legacyViews.set(owner.viewContext, count);
+      else legacyViews.delete(owner.viewContext);
+    }
     if (failure) owner.validationFailure = failure;
     owner.cancelValidation?.();
     clearTimeout(owner.expiryTimer);
@@ -191,12 +221,22 @@ export function installSandboxCookieRendezvous(
         capability,
         origin,
         identity,
+        viewCoherent: documentOrigin === "same-origin" && request.headers["x-atlas-cookie-view"] === "1",
+        viewContext: origin,
         seen: Date.now(),
         documents: new Map(),
         socket: null,
         expiryTimer: undefined,
       };
       owners.set(capability, owner);
+      if (documentOrigin === "same-origin" && !owner.viewCoherent) {
+        legacyViews.set(owner.viewContext, (legacyViews.get(owner.viewContext) || 0) + 1);
+        const { name, attributes } = viewNames(origin);
+        const fence = name + "=" + randomBytes(16).toString("hex") + attributes;
+        const prior = reply.getHeader("set-cookie");
+        reply.header("set-cookie", prior ? [...(Array.isArray(prior) ? prior : [String(prior)]), fence] : fence);
+      }
+      allowView(request, reply, owner);
       owner.expiryTimer = setTimeout(
         () => revokeOwner(owner),
         disconnectedGraceMs,
@@ -287,9 +327,9 @@ export function installSandboxCookieRendezvous(
         .header("Access-Control-Allow-Origin", "*")
         .header("Vary", "Origin");
       if (
-        request.headers.origin !== "null" ||
+        request.headers.origin !== (documentOrigin === "same-origin" ? originFor(request) : "null") ||
         request.headers.authorization ||
-        request.headers.cookie
+        (documentOrigin === "opaque" && !onlyNativeResourceEnrollmentCookies(request.headers.cookie))
       )
         return reply.code(403).send({
           ok: false,
@@ -346,8 +386,10 @@ export function installSandboxCookieRendezvous(
       const early = doc.receipts.get(number);
       doc.receipts.delete(number);
       if (early) receiptBytes -= early.bytes;
-      if (early && Date.now() - early.created <= receiptTTL)
+      if (early && Date.now() - early.created <= receiptTTL) {
+        allowView(request, reply, doc.owner);
         return reply.send(early.value);
+      }
       if (doc.pending.size >= 8)
         return reply.code(429).send({
           ok: false,
@@ -396,6 +438,7 @@ export function installSandboxCookieRendezvous(
           sequence: number,
         });
       });
+      if (result.ok && (!result.status || result.status === 200)) allowView(request, reply, doc.owner);
       return reply.code(result.status || 200).send(result);
     },
   );

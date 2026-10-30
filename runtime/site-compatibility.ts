@@ -137,6 +137,10 @@ export function installDocumentGuard(
     }, 125);
   });
   function observe() {
+    // Parent-realm observers can materialize parser-created nodes in the wrong
+    // realm before a website reads them. Presentation work already waits for
+    // DOMContentLoaded, so do not observe an unfinished document either.
+    if (doc.readyState === "loading") return;
     if (!disposed && (doc.head || doc.documentElement))
       observer.observe(doc.head || doc.documentElement, {
         subtree: true,

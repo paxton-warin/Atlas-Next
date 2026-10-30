@@ -1,3 +1,4 @@
+import {compileRuntimeFixture} from "./runtime-fixture.mjs";
 /** Real assigned-node joint component proof: actual copied RuntimeKit + real durable synchronous
  * storage worker/rendezvous + real native-backed IDB facade. This uses an
  * two real local authorized Wisp nodes; not a deployed fleet or public game.
@@ -34,8 +35,11 @@ const blobText = "actual RuntimeKit IDB Blob bytes";
 const markerWire = [],
   requests = [];
 let frontend;
-const compiled = new Map();
-for (const name of [
+const compiled=compileRuntimeFixture([
+  "profile-journal",
+  "profile-idb-catalog", "profile-idb-quota",
+  "profile-permissions",
+  "hub-contracts",
   "sandbox-relay",
   "sandbox-relay-protocol",
   "sandbox-relay-worker",
@@ -49,21 +53,8 @@ for (const name of [
   "sandbox-network",
   "sandbox-idb",
   "opaque-runtime-adapter",
-]) {
-  const source = fs.readFileSync(
-    new URL(`../runtime/${name}.ts`, import.meta.url),
-    "utf8",
-  );
-  const text = ts
-    .transpileModule(source, {
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.ESNext,
-      },
-    })
-    .outputText.replaceAll(/(from\s+["'])\.\/([^"']+)\.ts/g, "$1./$2.js")
-    .replace('from "tldts"', 'from "/tldts.js"');
-  compiled.set(name, text);
+]);
+for(const [name,text]of compiled){
   app.get(`/${name}.js`, (_request, reply) =>
     reply
       .header("Cache-Control", "no-store")
@@ -88,8 +79,11 @@ app.get("/tldts.js", (_request, reply) =>
     .type("application/javascript")
     .send(fs.readFileSync("node_modules/tldts/dist/index.esm.min.js", "utf8")),
 );
-const exportsFor = (name, names) =>
-  `(()=>{${compiled.get(name).replaceAll(/^export /gm, "")}\nreturn {${names.join(",")}};})()`;
+const exportsFor = (name,names) => {
+  const source=compiled.get(name).replaceAll(/^import[\s\S]*?;$/gm, "").replaceAll(/^export /gm, "");
+  const dependency=(name==="opaque-runtime-adapter"?"const {resourceResponseBudget}="+exportsFor("resource-response-budget",["resourceResponseBudget"])+";":"")+(name==="sandbox-idb"?"const {profileIDBPrefix,checkedProfile,appendProfileJournal}="+exportsFor("profile-journal",["profileIDBPrefix","checkedProfile","appendProfileJournal"])+";":"");
+  return `(()=>{${dependency}${source}\nreturn {${names.join(",")}};})()`;
+};
 const core = adaptPinnedRuntimeBundle(
   fs.readFileSync(
     new URL("../runtime/public/runtime/runtimekit.js", import.meta.url),

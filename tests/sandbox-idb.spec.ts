@@ -6,6 +6,8 @@ import ts from "typescript";
 let origin: string;
 const server = Fastify({ logger: false });
 test.beforeAll(async () => {
+  for (const file of ['local-idb-accounting','local-dirty-v2','local-authority','local-idb-catalog','profile-locks']) server.get('/'+file+'.ts',(_q,r)=>r.header('Access-Control-Allow-Origin','*').type('application/javascript').send(ts.transpileModule(readFileSync(new URL('../runtime/'+file+'.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+
   const source = readFileSync(
     process.env.ATLAS_IDB_SOURCE_PATH ||
       new URL("../runtime/sandbox-idb.ts", import.meta.url),
@@ -17,6 +19,12 @@ test.beforeAll(async () => {
       module: ts.ModuleKind.ESNext,
     },
   }).outputText;
+server.get("/profile-permissions.ts",(_q,r)=>r.header("Access-Control-Allow-Origin","*").type("application/javascript").send(ts.transpileModule(readFileSync(new URL("../runtime/profile-permissions.ts",import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+server.get("/profile-idb-catalog.ts",(_q,r)=>r.header("Access-Control-Allow-Origin","*").type("application/javascript").send(ts.transpileModule(readFileSync(new URL("../runtime/profile-idb-catalog.ts",import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+server.get("/profile-idb-quota.ts",(_q,r)=>r.header("Access-Control-Allow-Origin","*").type("application/javascript").send(ts.transpileModule(readFileSync(new URL("../runtime/profile-idb-quota.ts",import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+server.get("/hub-contracts.ts",(_q,r)=>r.header("Access-Control-Allow-Origin","*").type("application/javascript").send(ts.transpileModule(readFileSync(new URL("../runtime/hub-contracts.ts",import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+server.get("/tldts.js",(_q,r)=>r.header("Access-Control-Allow-Origin","*").type("application/javascript").send(readFileSync("node_modules/tldts/dist/index.esm.min.js","utf8")));
+  server.get("/profile-journal.ts",(_request,reply)=>reply.header("Access-Control-Allow-Origin","*").type("application/javascript").send(ts.transpileModule(readFileSync(new URL("../runtime/profile-journal.ts",import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText));
   server.get("/sandbox-idb.js", (_request, reply) =>
     reply
       .header("Access-Control-Allow-Origin", "*")
@@ -1233,7 +1241,7 @@ test("atomic quota ledger counts Blob writes and cursor mutations; rejection pre
 }) => {
   const website = "https://quota.idb.example/";
   const frame = await bind(page, website, undefined, {
-    quotaBytes: 8192,
+    quotaBytes: 4096,
     maxDatabases: 2,
   });
   await page.evaluate(async () => {
@@ -1310,7 +1318,7 @@ test("atomic quota ledger counts Blob writes and cursor mutations; rejection pre
     savedCount: 1,
     savedMarker: "saved",
     savedBlob: 1000,
-    allowance: { quotaBytes: 8192, sliceBytes: 4096, maxDatabases: 2 },
+    allowance: { quotaBytes: 4096, sliceBytes: 4096, maxDatabases: 2 },
   });
   expect(
     await page.evaluate(async () => {
@@ -1437,15 +1445,12 @@ test("origin reservation serializes simultaneous opens and delete-recreate races
         };
       });
     }, name);
-  expect(
-    await Promise.all([
-      open(frame, "one"),
-      open(second, "two"),
-      open(frame, "three"),
-    ]),
-  ).toEqual(["opened", "opened", "QuotaExceededError"]);
-  // Separate native metadata transactions serialize deletion with reopening the
-  // same logical name; neither ordering can release an in-use reservation.
+  expect(await open(frame,"one")).toBe("opened");
+  const raced=await Promise.all([open(second,"two"),open(frame,"three")]);
+  expect([...raced].sort()).toEqual(["QuotaExceededError","opened"]);
+  const unallocated=raced[0]==="QuotaExceededError"?"two":"three";
+  // The origin lifecycle lock permits either delete/open order. Both return
+  // success, but open-first legitimately leaves the database deleted last.
   const deleted = frame.evaluate(
     async () =>
       new Promise<string>((resolve) => {
@@ -1458,7 +1463,9 @@ test("origin reservation serializes simultaneous opens and delete-recreate races
     "deleted",
     "opened",
   ]);
-  expect(await open(frame, "three")).toBe("QuotaExceededError");
+  // Establish an explicit post-race state instead of assuming which won.
+  expect(await open(second, "one")).toBe("opened");
+  expect(await open(frame, unallocated)).toBe("QuotaExceededError");
   await frame.evaluate(
     async () =>
       new Promise<void>((resolve, reject) => {
@@ -1467,7 +1474,7 @@ test("origin reservation serializes simultaneous opens and delete-recreate races
         request.onerror = () => reject(request.error);
       }),
   );
-  expect(await open(frame, "three")).toBe("opened");
+  expect(await open(frame, unallocated)).toBe("opened");
   expect(
     await page.evaluate(async () => {
       const prefix =

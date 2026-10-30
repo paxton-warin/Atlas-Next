@@ -20,7 +20,13 @@ test.beforeAll(async () => {
         "Content-Security-Policy": SANDBOX_CSP,
       });
       reply.raw.write(
-        "<!doctype html><script>" + SANDBOX_CAPABILITY_BOOTSTRAP + "</script>",
+        // Deliberately offer before load in this adversarial streaming fixture.
+        // Production now waits for load, but an early original-document offer
+        // must still not transfer its private endpoints to a replacement realm.
+        "<!doctype html><script>" + SANDBOX_CAPABILITY_BOOTSTRAP.replace(
+          "if(document.readyState==='complete')ready();else addEventListener('load',ready,{once:true});",
+          "ready();",
+        ) + "</script>",
       );
       streams.push(reply.raw);
     }
@@ -159,8 +165,10 @@ test("one-shot document grants preserve opaque origin and prehydrate before exec
     initial: { revision: 1, entries: [["save", "hydrated"]] },
   });
   expect(await page.locator("iframe").getAttribute("sandbox")).toBe(
-    "allow-scripts",
+    "allow-scripts allow-popups",
   );
+  expect(await page.locator("iframe").getAttribute("sandbox")).not.toContain("allow-same-origin");
+  expect(await page.locator("iframe").getAttribute("sandbox")).not.toContain("allow-popups-to-escape-sandbox");
   expect(
     await frame.evaluate(() => {
       try {

@@ -23,6 +23,8 @@ type Natives = {
 const failure = (code: string) => Object.assign(new TypeError(code), { code });
 export function createFrontendDocumentSource(options: {
   frontendOrigin: string;
+  /** Explicit trusted runtime mode; default retains original-policy enforcement. */
+  enforceOriginalPolicy?: boolean;
   forbiddenOrigins?: string[];
   selectedNodeOrigin: () => string;
   fetch: Fetch;
@@ -309,7 +311,7 @@ export function createFrontendDocumentSource(options: {
           const coeps = values("cross-origin-embedder-policy");
           let coep: "unsafe-none" | "require-corp" | "credentialless" =
             "unsafe-none";
-          if (coeps.length) {
+          if (options.enforceOriginalPolicy !== false && coeps.length) {
             if (coeps.length !== 1)
               throw failure("document_source_invalid_coep");
             const value = coeps[0].split(";")[0].trim();
@@ -319,7 +321,9 @@ export function createFrontendDocumentSource(options: {
               throw failure("document_source_invalid_coep");
             coep = value as typeof coep;
           }
-          const contentPolicies = policies(response.headers, html);
+          const contentPolicies = options.enforceOriginalPolicy === false
+            ? Object.freeze([] as string[]) : policies(response.headers, html);
+          if (options.enforceOriginalPolicy === false) coep = "unsafe-none";
           check();
           return Object.freeze({ url: url.href, html, contentPolicies, coep });
         }

@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 
+import { openLegacyStandalone } from "./popout-fixture";
+
 test("generic popout title and compact routes keep literal site names out of wrapper URLs", async ({
   page,
   context,
@@ -20,12 +22,10 @@ test("generic popout title and compact routes keep literal site names out of wra
   await expect(
     site.getByRole("heading", { name: "Proxy fixture ready" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Connection options" }).click();
-  const link = page.getByRole("menuitem", { name: "Open direct node tab" });
-  expect(await link.getAttribute("href")).not.toMatch(/coolmathgames|games=/i);
-  const opened = context.waitForEvent("page");
-  await link.click();
-  const direct = await opened;
+  // Main exposes only the frontend Popout. The anonymous compatibility
+  // wrapper advertises its explicitly separate direct-node link.
+  const direct = await openLegacyStandalone(page, context);
+  expect(direct.url()).not.toMatch(/coolmathgames|games=/i);
   const directSite = direct.frameLocator('iframe[title="Proxied website"]');
   await expect(
     directSite.getByRole("heading", { name: "Proxy fixture ready" }),

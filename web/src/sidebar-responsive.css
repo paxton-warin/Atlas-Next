@@ -1,0 +1,102 @@
+/* CSS viewport, never hardware resolution/DPR or global zoom. Website frames
+   stay in the same 56px grid track while the header previews above them. */
+body.atlas-v21 .atlas.sidebar-adaptive .main-nav { flex:none; max-height:none; overflow:visible; }
+body.atlas-v21 .atlas.sidebar-adaptive .main-nav svg { flex:none; overflow:visible; }
+body.atlas-v21 .atlas.sidebar-adaptive .rail-utilities-content { display:flex; flex-direction:inherit; align-items:center; justify-content:inherit; flex-wrap:inherit; width:100%; gap:6px; }
+body.atlas-v21 .atlas.sidebar-adaptive :is(.rail-utilities-toggle,.compact-history,.rail-tool-label) { display:none; }
+/* Horizontal tabs have no sidebar footer: keep history in the top toolbar. */
+body.atlas-v21 .atlas.sidebar-adaptive.top-tabs .compact-history { display:inline-flex; flex:none; align-items:center; justify-content:center; width:44px; min-width:44px; height:44px; min-height:44px; padding:0; }
+body.atlas-v21 .atlas.sidebar-adaptive.top-tabs .compact-history>span { display:none; }
+
+@media(min-width:600px) {
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs) { --rail-open-width:232px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.browser-section[data-rail-collapsed="true"]:not(.top-tabs) { --v21-rail:56px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.browser-section[data-rail-collapsed="true"]:not(.top-tabs)>.topbar { width:56px; transition:width 160ms ease-out,box-shadow 160ms ease-out; }
+ body.atlas-v21 .atlas.sidebar-adaptive.browser-section.sidebar-peeking[data-rail-collapsed="true"]:not(.top-tabs)>.topbar { width:var(--rail-open-width); z-index:35; box-shadow:10px 0 28px #0004; border-right-color:var(--border-strong); }
+ /* Pinned and preview states use the same expanded visual contract. */
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) { --rail-open-width:232px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs)[data-rail-collapsed="false"] { --v21-rail:var(--rail-open-width); }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"])>.topbar { padding-inline:10px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .brand { justify-content:flex-start; padding:0 8px; gap:10px; font-size:15px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .main-nav button { width:100%; justify-content:flex-start; padding:0 10px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .main-nav button>span { display:inline; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .topbar>.sidebar { width:100%!important; flex-basis:0!important; padding:0!important; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .sidebar-heading { position:relative; width:100%; flex-direction:row; justify-content:space-between; padding:0 0 6px!important; gap:6px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .sidebar-heading .eyebrow { position:static; display:inline; font-size:10px; width:auto; max-width:none; text-align:left; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .sidebar-heading .eyebrow::after { content:none; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .sidebar-toggle { display:inline-flex; flex-direction:row; width:auto; min-width:88px; height:36px; min-height:36px; padding:0 8px; gap:6px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .sidebar-toggle-label { font-size:10px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .new-tab { width:100%!important; justify-content:flex-start; padding:6px 10px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .new-tab>span { display:inline; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .tab { width:100%!important; height:auto; min-height:44px!important; padding:0 4px 0 8px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .tab-main { min-height:44px; justify-content:flex-start; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .tab-main>span:not(.spinner) { display:inline!important; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .tab :is(.tab-actions,.close-tab) { display:inline-flex!important; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .tab-tools { flex-direction:row; width:100%; padding:6px 0; align-items:center; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .tab-tools button { width:36px; height:36px; }
+ body.atlas-v21 .atlas.sidebar-adaptive:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .rail-tab-actions { display:none!important; }
+ body.atlas-v21 .atlas.sidebar-adaptive .tab-search-undo { justify-content:flex-start; margin-bottom:12px; }
+
+ /* Compact chrome reserves space for actual tabs instead of making the six
+    Atlas destinations scroll inside a one-icon-high strip. */
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs)>.topbar { padding-block:8px; gap:6px; min-height:0; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .brand { flex:none; height:30px; min-height:30px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .brand-mark { width:28px; height:28px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .main-nav { gap:2px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .main-nav button { height:32px; min-height:32px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .topbar>.sidebar { display:flex; flex:1 1 0; min-height:80px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .tabs-list { display:flex; flex-direction:column; flex:1 1 0; min-height:0; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .tab-items { min-height:44px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .sidebar-bottom { display:none; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .sidebar-heading { position:relative; padding:0!important; gap:0; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .sidebar-heading .eyebrow { position:absolute; z-index:1; top:-3px; right:-2px; min-width:14px; max-width:24px; width:auto; padding:1px 3px; background:var(--surface-raised); border-radius:8px; font-size:9px; pointer-events:none; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .sidebar-toggle { display:flex; flex-direction:column; align-items:center; justify-content:center; width:44px; min-width:44px; height:36px; min-height:36px; padding:2px 0; gap:1px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .sidebar-toggle-label { font-size:9px; line-height:1.1; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .new-tab { min-height:36px; height:36px; margin:4px 0; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .tab-tools { flex:none; padding:4px 0; margin:0; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .tab-tools button { min-height:36px; height:36px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .tab-tools :is(.rail-tab-actions,button[aria-label="Reopen closed tab"]) { display:none!important; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .main-nav { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .main-nav button { height:36px; padding:0 8px; font-size:12px; gap:8px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .topbar-end { flex:none; margin-top:0; width:100%; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .rail-utilities-content { display:grid; grid-template-columns:repeat(4,44px); justify-content:space-between; gap:2px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .rail-utilities-content :is(.profile-status,.profile-trigger,.hub-support-trigger,.icon-button) { display:inline-flex; justify-content:center; align-items:center; width:44px!important; min-width:44px!important; max-width:44px; height:44px; min-height:44px; padding:0!important; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .profile-trigger [role="status"] { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .compact-history { display:inline-flex; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .compact-history>span { display:none; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs):is(.sidebar-peeking,[data-rail-collapsed="false"]) .rail-utilities-toggle { display:none!important; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .rail-utilities-toggle { display:flex; width:44px; height:44px; }
+ /* The bell remains a primary control; only secondary tools go into More. */
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .rail-utilities-content { display:contents; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .rail-utilities[data-open="false"] .rail-utilities-content>:not(.hub-support-trigger):not(.hub-notifications):not(.hub-support-toast) { display:none!important; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .rail-utilities[data-open="true"] .rail-utilities-content { position:absolute; bottom:6px; left:calc(100% + 8px); z-index:45; display:flex; flex-direction:column; align-items:stretch; width:224px; padding:10px; gap:4px; border:1px solid var(--border); border-radius:14px; background:var(--surface-overlay); box-shadow:var(--elev-2); }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .rail-utilities[data-open="true"] .rail-utilities-content :is(.profile-status,.profile-trigger,.hub-support-trigger,.icon-button) { width:100%!important; min-width:0!important; max-width:none; justify-content:flex-start; padding:0 10px!important; gap:10px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .rail-utilities[data-open="true"] :is(.compact-history>span,.rail-tool-label) { display:inline; font-size:12px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .rail-utilities[data-open="true"] .profile-trigger [role="status"] { position:static; width:auto; height:auto; padding:0; clip-path:none; white-space:normal; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .rail-utilities[data-open="true"] .hub-support-trigger::after { content:"Notifications"; font-size:12px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.focus-mode) .browser-toolbar { height:48px; min-height:48px; padding:4px 12px; gap:6px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact .home-page { padding:40px 24px 16px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact .newtab-clock { font-size:48px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact .home-hero h1 { margin-bottom:24px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact .shortcuts { margin-block:24px; gap:12px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact .shortcut-target,body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact .add-shortcut { height:96px; }
+}
+@media(max-width:599px) {
+ body.atlas-v21 .atlas.sidebar-adaptive .main-nav.mobile-open button { width:100%!important; justify-content:flex-start!important; gap:12px; padding:0 12px!important; }
+ body.atlas-v21 .atlas.sidebar-adaptive .main-nav.mobile-open button>span { display:inline!important; }
+}
+@media(min-width:600px) and (max-height:560px) {
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs)>.topbar>.brand,
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .tabs-list>.new-tab { display:none; }
+}
+@media(pointer:coarse) and (min-width:600px) {
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .main-nav button { min-height:44px; height:44px; }
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact:not(.top-tabs) .sidebar-toggle { min-height:44px; }
+}
+@media(pointer:coarse) and (min-width:600px) and (max-height:700px) {
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs)>.topbar>.brand,
+ body.atlas-v21 .atlas.sidebar-adaptive.chrome-compact.sidebar-collapsed:not(.top-tabs) .tabs-list>.new-tab { display:none; }
+}
+@media(prefers-reduced-motion:reduce) {
+ body.atlas-v21 .atlas.sidebar-adaptive>.topbar { transition:none!important; }
+}

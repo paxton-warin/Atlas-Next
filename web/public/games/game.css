@@ -1,108 +1,29 @@
-* {
-  box-sizing: border-box;
-}
-body {
-  margin: 0;
-  background: #131b16;
-  color: #e7eddf;
-  font:
-    15px -apple-system,
-    BlinkMacSystemFont,
-    Segoe UI,
-    sans-serif;
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 25px;
-}
-.game {
-  text-align: center;
-  max-width: 460px;
-  width: 100%;
-}
-h1 {
-  font:
-    52px Georgia,
-    serif;
-  margin: 0 0 14px;
-  color: #bce39b;
-}
-p {
-  color: #9ca991;
-  line-height: 1.6;
-  font-size: 13px;
-}
-button {
-  font: inherit;
-  padding: 12px 20px;
-  border: 1px solid #ffffff20;
-  border-radius: 10px;
-  color: #152219;
-  background: #bce39b;
-  cursor: pointer;
-}
-button:focus-visible {
-  outline: 3px solid #fff;
-  outline-offset: 3px;
-}
-.board {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 9px;
-  background: #233127;
-  padding: 12px;
-  border-radius: 16px;
-  aspect-ratio: 1;
-  touch-action: none;
-  margin: 25px auto;
-}
-.cell {
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: #ffffff06;
-  font-size: 31px;
-  color: #17251b;
-  font-weight: 600;
-}
-.cell.filled {
-  background: #c5d9ae;
-}
-.tic-board {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 9px;
-  margin: 25px auto;
-}
-.tic-board button {
-  height: 104px;
-  background: #25332a;
-  font-size: 46px;
-  color: #bce39b;
-  border: 0;
-}
-.controls {
-  display: flex;
-  gap: 10px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-canvas {
-  display: block;
-  border-radius: 16px;
-  background: #1d2b22;
-  width: 100%;
-  margin: 24px auto;
-}
-.status {
-  min-height: 24px;
-}
-a {
-  color: #bce39b;
-}
-.footer {
-  margin-top: 23px;
-  font-size: 11px;
-  color: #788774;
-}
+@import url("/fonts.css");
+* { box-sizing:border-box; }
+:root { color-scheme:dark; font-family:Inter,system-ui,sans-serif; background:#0b100d; color:#ecf0e9; }
+body { display:grid; place-items:center; min-height:100dvh; margin:0; padding:32px 24px; background:#0b100d; color:#ecf0e9; font-size:14px; -webkit-font-smoothing:antialiased; }
+.game { display:flex; flex-direction:column; align-items:center; width:min(100%,480px); text-align:center; }
+h1 { margin:0 0 10px; font-family:"Inter Tight",Inter,system-ui,sans-serif; font-size:30px; font-weight:650; line-height:1.2; letter-spacing:-1px; color:#ecf0e9; }
+p { margin:0; color:#aab4ac; font-size:13px; line-height:1.65; }
+#instructions { max-width:400px; }
+.status { display:flex; align-items:center; justify-content:center; min-height:36px; margin-top:20px; padding:8px 14px; border:1px solid #27332d; border-radius:10px; background:#171f1a; color:#ecf0e9; font-size:13px; font-weight:550; font-variant-numeric:tabular-nums; }
+#board { width:100%; }
+.board { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; width:100%; margin:20px auto; padding:12px; border:1px solid #27332d; border-radius:18px; background:#121814; aspect-ratio:1; touch-action:none; }
+.cell { display:grid; place-items:center; min-width:0; border-radius:10px; background:#1d2721; color:#17251b; font-family:"Inter Tight",Inter,system-ui,sans-serif; font-size:clamp(22px,6vw,36px); font-weight:650; line-height:1; font-variant-numeric:tabular-nums; }
+.cell.filled { background:#b4e090; }
+.controls { display:flex; justify-content:center; align-items:center; flex-wrap:wrap; gap:8px; width:100%; }
+button { display:inline-flex; align-items:center; justify-content:center; min-width:44px; min-height:44px; padding:10px 16px; border:1px solid #27332d; border-radius:10px; background:#171f1a; color:#ecf0e9; font:550 13px Inter,system-ui,sans-serif; cursor:pointer; }
+button:hover { background:#22302a; border-color:#3a4a42; }
+button:focus-visible { outline:2px solid #9fd37a; outline-offset:2px; }
+button:disabled { cursor:default; }
+#reset { background:#9fd37a; color:#0b100d; border-color:transparent; }
+#reset:hover { background:#b4e090; }
+.tic-board { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; max-width:360px; width:100%; margin:24px auto; }
+.tic-board button { width:100%; height:auto; aspect-ratio:1; min-height:0; padding:0; border:1px solid #27332d; border-radius:14px; background:#171f1a; color:#9fd37a; font-family:"Inter Tight",Inter,system-ui,sans-serif; font-size:clamp(32px,12vw,56px); font-weight:500; }
+.tic-board button:hover:not(:disabled) { background:#22302a; }
+.tic-board button:disabled { opacity:1; }
+canvas { display:block; width:100%; height:auto; margin:20px auto; border:1px solid #27332d; border-radius:18px; background:#0e1310; }
+a { color:#b4e090; }
+.footer { margin-top:24px; color:#7f8e83; font-size:11px; }
+@media(max-width:480px) { body { padding:24px 16px; } h1 { font-size:26px; } .board { gap:7px; padding:9px; border-radius:14px; } .cell { border-radius:7px; } .tic-board { gap:8px; } .tic-board button { border-radius:11px; } }
+@media(prefers-reduced-motion:reduce) { * { animation:none!important; transition:none!important; } }

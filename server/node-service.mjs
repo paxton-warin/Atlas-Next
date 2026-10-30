@@ -1,3 +1,4 @@
+import { createSystemCollector } from "./hub-system.mjs";
 import { NODE_RUNTIME_CAPABILITIES } from "./runtime-capabilities.mjs";
 import { digest } from "./store.mjs";
 import { verifyTicket, connectionError } from "./node-ticket.mjs";
@@ -18,6 +19,9 @@ export async function createNodeService({
 }) {
   if (!pairing && (!id || typeof secret !== "string" || secret.length < 32))
     throw Error("NODE_ID and NODE_TOKEN are required.");
+  const collectSystem = createSystemCollector({
+    dataDir: process.env.DATA_DIR || ".",
+  });
   let lastRevision = -1;
   const resourceOriginFor = createUpgradeOrigin(
     runtimeOrigin,
@@ -140,7 +144,12 @@ export async function createNodeService({
         id,
         status: "ok",
         connections: app.connectionCount(),
-        relay: app.connectionStats(),
+        relay: {
+          ...app.connectionStats(),
+          activeSessionIds: app.connectionSessionIds(),
+        },
+        system: collectSystem(),
+        performance: app.performanceSnapshot(),
         capabilities: [...NODE_RUNTIME_CAPABILITIES],
       };
     },

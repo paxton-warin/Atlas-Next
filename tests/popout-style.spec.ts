@@ -1,5 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
+import { openLegacyStandalone } from "./popout-fixture";
+
 const fixture = "http://127.0.0.1:4199/fixture";
 const stage = process.env.UI_STAGE || "modified";
 async function launch(page: Page, width: number) {
@@ -74,10 +76,7 @@ for (const width of [1440, 390]) {
     context,
   }) => {
     await launch(page, width);
-    const opened = context.waitForEvent("page");
-    await page.getByRole("button", { name: "Connection options" }).click();
-    await page.getByRole("menuitem", { name: "Open direct node tab" }).click();
-    const direct = await opened;
+    const direct = await openLegacyStandalone(page, context);
     await direct.setViewportSize({ width, height: 850 });
     const site = direct.frameLocator('iframe[title="Proxied website"]');
     await expect(

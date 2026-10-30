@@ -1,6 +1,6 @@
 {
   "name": "atlas-next",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.15.0",
@@ -18,7 +18,8 @@
     "check": "pnpm typecheck && pnpm test && pnpm build && pnpm test:browser",
     "format": "prettier --write web/src web/public runtime/host.ts runtime/index.html server tests scripts *.json *.ts *.yaml *.md docs",
     "runtime:fetch": "node scripts/fetch-runtime.mjs",
-    "node:start": "node --env-file-if-exists=.env server/node.mjs"
+    "node:start": "node --env-file-if-exists=.env server/node.mjs",
+    "test:backup-restore": "node --test tests/backup-latest-response.test.mjs tests/restore-progress.test.mjs tests/restore-actor-progress.test.mjs tests/restore-proxy-compression.test.mjs tests/backup-restore-transport.test.mjs && node tests/restore-measurement-browser.mjs && node tests/restore-multipart-browser.mjs && node tests/restore-cross-link-browser.mjs && node tests/restore-progress-ui-browser.mjs"
   },
   "dependencies": {
     "@fastify/proxy-addr": "5.1.0",
@@ -43,7 +44,9 @@
     "rehype-katex": "7.0.1",
     "remark-gfm": "4.0.1",
     "remark-math": "6.0.0",
+    "remark-parse": "11.0.0",
     "tldts": "7.4.18",
+    "unified": "11.0.5",
     "ws": "8.21.1"
   },
   "devDependencies": {

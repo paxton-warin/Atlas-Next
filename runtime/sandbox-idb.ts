@@ -1,3 +1,27 @@
+import {
+  profileIDBPrefix,
+  checkedProfile,
+  appendProfileJournal,
+} from "./profile-journal.ts";
+import {
+  resolveProfileIDBDatabase,
+  deleteProfileIDBDatabase,
+  listProfileIDBDatabases,
+} from "./profile-idb-catalog.ts";
+import {
+  assertProfileWrite,
+  assertProfileWriteCached,
+} from "./profile-permissions.ts";
+import {
+  withQuotaLifecycle,
+  reserveQuotaDatabase,
+  removeQuotaDatabase,
+  reconcileQuotaSources,
+  reconcileQuotaSource,
+  reserveQuotaCommit,
+  finishQuotaCommit,
+  type QuotaIntent,
+} from "./profile-idb-quota.ts";
 /** Real native IndexedDB transactions behind an origin-bound MessagePort.
  * Website code never receives a native database or a frontend namespace.
  * Request commands are run only in active native request callbacks. The native
@@ -10,7 +34,7 @@ const TIMEOUT = 30000;
 type Any = any;
 export const SANDBOX_IDB_LIMITS = Object.freeze({
   quotaBytes: 64 * 1024 * 1024,
-  maxDatabases: 8,
+  maxDatabases: 64,
   maxConnections: 16,
   maxTransactions: 16,
   maxPendingRequests: 128,
@@ -78,7 +102,11 @@ export function boundedIDBValueBytes(
     }
     seen.add(item);
     add(32);
-    if (item instanceof Blob) {
+    // A normal Scramjet document has another JS realm. Use native brand
+    // accessors after the tag check; parent instanceof would reject its valid
+    // Blob/Date/Map/etc. before the native structured clone can normalize it.
+    const brand = Object.prototype.toString.call(item);
+    if (item instanceof Blob || brand === '[object Blob]' || brand === '[object File]') {
       const size = Object.getOwnPropertyDescriptor(
         Blob.prototype,
         "size",
@@ -88,7 +116,7 @@ export function boundedIDBValueBytes(
         "type",
       )!.get!.call(item);
       add(size + 256 + 2 * mime.length);
-      if (typeof File !== "undefined" && item instanceof File) {
+      if (typeof File !== "undefined" && (item instanceof File || brand === '[object File]')) {
         const name = Object.getOwnPropertyDescriptor(
           File.prototype,
           "name",
@@ -97,7 +125,7 @@ export function boundedIDBValueBytes(
       }
       return;
     }
-    if (item instanceof ArrayBuffer) {
+    if (item instanceof ArrayBuffer || brand === '[object ArrayBuffer]') {
       add(
         Object.getOwnPropertyDescriptor(
           ArrayBuffer.prototype,
@@ -108,7 +136,7 @@ export function boundedIDBValueBytes(
     }
     if (ArrayBuffer.isView(item)) {
       const prototype =
-        item instanceof DataView
+        (item instanceof DataView || brand === '[object DataView]')
           ? DataView.prototype
           : Object.getPrototypeOf(Uint8Array.prototype);
       // Structured clone stores the WHOLE backing buffer, not only the view.
@@ -121,12 +149,12 @@ export function boundedIDBValueBytes(
       walk(buffer, depth + 1);
       return;
     }
-    if (item instanceof Date) {
+    if (item instanceof Date || brand === '[object Date]') {
       Date.prototype.getTime.call(item); // reject forged Date.prototype objects
       add(16);
       return;
     }
-    if (item instanceof RegExp) {
+    if (item instanceof RegExp || brand === '[object RegExp]') {
       add(
         32 +
           2 *
@@ -137,7 +165,7 @@ export function boundedIDBValueBytes(
       );
       return;
     }
-    if (item instanceof Map) {
+    if (item instanceof Map || brand === '[object Map]') {
       if (
         Object.getOwnPropertyDescriptor(Map.prototype, "size")!.get!.call(
           item,
@@ -150,7 +178,7 @@ export function boundedIDBValueBytes(
       });
       return;
     }
-    if (item instanceof Set) {
+    if (item instanceof Set || brand === '[object Set]') {
       if (
         Object.getOwnPropertyDescriptor(Set.prototype, "size")!.get!.call(
           item,
@@ -160,7 +188,7 @@ export function boundedIDBValueBytes(
       Set.prototype.forEach.call(item, (v: any) => walk(v, depth + 1));
       return;
     }
-    if (item instanceof Error) {
+    if (item instanceof Error || brand === '[object Error]') {
       // Genuine Errors serialize hidden fields; forged Error.prototype objects
       // may instead clone as ordinary objects, so also charge every own field.
       for (const name of ["name", "message", "stack", "cause"]) {
@@ -192,7 +220,8 @@ export function boundedIDBValueBytes(
     if (
       !Array.isArray(item) &&
       prototype !== null &&
-      prototype !== Object.prototype
+      prototype !== Object.prototype &&
+      !(brand === '[object Object]' && Object.getPrototypeOf(prototype) === null)
     )
       throw new DOMException(
         "Unsupported storage value type",
@@ -239,7 +268,11 @@ const names = (values: string[]) =>
       return [...values].sort()[index] ?? null;
     },
   });
-function identity(website: string, frontendOrigin: string) {
+function identity(
+  website: string,
+  frontendOrigin: string,
+  profileId?: string | null,
+) {
   const url = new URL(website),
     frontend = new URL(frontendOrigin);
   if (
@@ -249,7 +282,7 @@ function identity(website: string, frontendOrigin: string) {
     url.hostname === frontend.hostname
   )
     throw new TypeError("Invalid website storage capability");
-  return PREFIX + encodeURIComponent(url.origin) + ":";
+  return profileIDBPrefix(url.origin, profileId);
 }
 function copySchema(input: Any) {
   const result = Object.create(null);
@@ -307,11 +340,17 @@ export function bindSandboxIndexedDB(binding: {
   website: string;
   frontendOrigin: string;
   factory: IDBFactory;
+  profileId?: string | null;
+  profileContextId?: string;
   timeoutMs?: number;
   limits?: Partial<SandboxIDBLimits>;
 }) {
   const { port, documentId, factory } = binding,
-    prefix = identity(binding.website, binding.frontendOrigin);
+    prefix = identity(
+      binding.website,
+      binding.frontendOrigin,
+      binding.profileId,
+    );
   const limits = { ...SANDBOX_IDB_LIMITS, ...binding.limits };
   for (const value of Object.values(limits))
     if (!Number.isSafeInteger(value) || value < 1)
@@ -321,185 +360,66 @@ export function bindSandboxIndexedDB(binding: {
       typeof (globalThis.IDBObjectStore?.prototype as Any)?.getAllRecords ===
       "function",
   };
-  const sliceBytes = Math.floor(limits.quotaBytes / limits.maxDatabases);
-  if (sliceBytes < 256)
-    throw new TypeError("IndexedDB quota slice is too small");
+  // This is one origin allowance, not maxDatabases equally sized slices.
+  const sliceBytes = limits.quotaBytes; // compatibility field: maximum single DB budget
+  if (sliceBytes < 256) throw new TypeError("IndexedDB quota is too small");
   const metadataName = prefix + "#quota";
-  let metadata: Promise<IDBDatabase> | undefined;
-  const reservations = new Set<IDBTransaction>();
-  const metadataDatabase = () =>
-    (metadata ??= new Promise<IDBDatabase>((resolve, reject) => {
-      const open = factory.open(metadataName, 1);
-      let settled = false;
-      open.onupgradeneeded = () => open.result.createObjectStore("databases");
-      open.onerror = () => {
-        settled = true;
-        reject(open.error);
-      };
-      open.onblocked = () => {
-        settled = true;
-        reject(new DOMException("Quota database blocked", "InvalidStateError"));
-      };
-      open.onsuccess = () => {
-        const db = open.result;
-        if (settled || !live) {
-          db.close();
-          return;
-        }
-        settled = true;
-        db.onversionchange = () => {
-          db.close();
-          terminate(
-            new DOMException("Quota database changed", "InvalidStateError"),
-          );
-        };
-        resolve(db);
-      };
-    }));
-  const reserveDurably = (name: string) =>
-    metadataDatabase().then(
-      (db) =>
-        new Promise<void>((resolve, reject) => {
-          if (!live) {
-            reject(new DOMException("Document closed", "AbortError"));
-            return;
-          }
-          const tx = db.transaction("databases", "readwrite"),
-            store = tx.objectStore("databases");
-          reservations.add(tx);
-          let failure: Any;
-          tx.oncomplete = () => {
-            reservations.delete(tx);
-            resolve();
-          };
-          tx.onabort = () => {
-            reservations.delete(tx);
-            reject(
-              failure ||
-                tx.error ||
-                new DOMException("Reservation aborted", "AbortError"),
-            );
-          };
-          tx.onerror = () => {};
-          const request = store.get(name);
-          request.onsuccess = () => {
-            if (request.result) {
-              if (
-                request.result.sliceBytes !== sliceBytes ||
-                request.result.maxDatabases !== limits.maxDatabases
-              ) {
-                failure = quotaError(
-                  "Website quota policy differs from its reserved allowance",
-                );
-                tx.abort();
-              }
-              return;
-            }
-            const count = store.count();
-            count.onsuccess = () => {
-              if (count.result >= limits.maxDatabases) {
-                failure = quotaError("Website database allowance exhausted");
-                tx.abort();
-              } else
-                store.add(
-                  { sliceBytes, maxDatabases: limits.maxDatabases },
-                  name,
-                );
-            };
-          };
-        }),
+  const logicalNames = new WeakMap<IDBDatabase, string>();
+  const assertWrite = () =>
+    assertProfileWrite(
+      factory,
+      binding.profileId,
+      new URL(binding.website).origin,
+      binding.profileContextId,
     );
-  /** A reservation is committed BEFORE the physical database may be created.
-   * A second native metadata transaction serializes open/delete lifecycles. If a
-   * concurrent delete wins between those phases, retry the durable reservation
-   * before creating anything. A crash/disposal can retain a conservative empty
-   * reservation, but cannot leave committed data uncounted. User data native
-   * transactions remain independent of this bounded lifecycle lock. */
-  const RETRY_RESERVATION = Symbol("reservation removed by concurrent delete");
+  const assertWriteCached = () =>
+    assertProfileWriteCached(
+      factory,
+      binding.profileId,
+      new URL(binding.website).origin,
+      binding.profileContextId,
+    );
+  let reconciled = false;
   const reservedOperation = <T>(
     name: string,
     remove: boolean,
-    action: () => Promise<T>,
+    action: (physical: string) => Promise<T>,
   ): Promise<T> =>
-    (remove ? Promise.resolve() : reserveDurably(name))
-      .then(() => metadataDatabase())
-      .then(
-        (db) =>
-          new Promise<T | symbol>((resolve, reject) => {
-            if (!live) {
-              reject(new DOMException("Document closed", "AbortError"));
-              return;
-            }
-            const tx = db.transaction("databases", "readwrite"),
-              store = tx.objectStore("databases");
-            reservations.add(tx);
-            let failure: Any,
-              result: T | symbol,
-              done = false;
-            tx.oncomplete = () => {
-              reservations.delete(tx);
-              resolve(result);
-            };
-            tx.onabort = () => {
-              reservations.delete(tx);
-              reject(
-                failure ||
-                  tx.error ||
-                  new DOMException("Database lifecycle aborted", "AbortError"),
-              );
-            };
-            tx.onerror = () => {};
-            const pump = () => {
-              if (!live) {
-                tx.abort();
-                return;
-              }
-              if (done) {
-                if (failure) tx.abort();
-                else if (remove) store.delete(name);
-                return;
-              }
-              const keep = store.get(name);
-              keep.onsuccess = pump;
-            };
-            const start = () => {
-              void Promise.resolve()
-                .then(() => {
-                  if (!live)
-                    throw new DOMException("Document closed", "AbortError");
-                  return action();
-                })
-                .then(
-                  (value) => {
-                    result = value;
-                    done = true;
-                  },
-                  (error) => {
-                    failure = error;
-                    done = true;
-                  },
-                );
-              pump();
-            };
-            if (remove) {
-              start();
-              return;
-            }
-            const existing = store.get(name);
-            existing.onsuccess = () => {
-              if (!existing.result) {
-                result = RETRY_RESERVATION;
-                return;
-              }
-              start();
-            };
-          }),
-      )
-      .then((result) =>
-        result === RETRY_RESERVATION
-          ? reservedOperation(name, remove, action)
-          : (result as T),
+    withQuotaLifecycle(prefix, async () => {
+      if (!live) throw new DOMException("Document closed", "AbortError");
+      if (!reconciled) {
+        const sources = (
+          await listProfileIDBDatabases(factory, binding.profileId ?? null)
+        )
+          .filter(
+            (d) =>
+              d.origin === new URL(binding.website).origin &&
+              d.physical &&
+              !d.deleted &&
+              !d.deleting,
+          )
+          .map((d) => ({ name: d.name, physical: d.physical! }));
+        await reconcileQuotaSources(factory, prefix, sources);
+        reconciled = true;
+      }
+      const physical = await resolveProfileIDBDatabase(
+        factory,
+        binding.profileId,
+        new URL(binding.website).origin,
+        name,
       );
+      if (!remove)
+        await reserveQuotaDatabase(
+          factory,
+          prefix,
+          name,
+          physical,
+          limits.maxDatabases,
+        );
+      const result = await action(physical);
+      if (remove) await removeQuotaDatabase(factory, prefix, name);
+      return result;
+    });
 
   // Pre-resource prototype databases are not silently trusted or erased. Only
   // databases committed through this quota ledger may produce result arrays.
@@ -516,9 +436,7 @@ export function bindSandboxIndexedDB(binding: {
         const usage = request.result;
         if (
           !usage ||
-          usage.sliceBytes !== sliceBytes ||
           !Number.isSafeInteger(usage.bytes) ||
-          usage.bytes > sliceBytes ||
           usage.bytes < 0 ||
           usage.records > limits.maxRecords ||
           usage.indexEntries > limits.maxIndexEntries
@@ -527,7 +445,16 @@ export function bindSandboxIndexedDB(binding: {
             "Database storage ledger is absent or exceeds policy",
           );
       };
-      tx.oncomplete = () => (failure ? reject(failure) : resolve());
+      tx.oncomplete = () => {
+        if (failure) {
+          reject(failure);
+          return;
+        }
+        void reconcileQuotaSource(factory, prefix, {
+          name: logicalNames.get(db)!,
+          physical: db.name,
+        }).then(resolve, reject);
+      };
       tx.onabort = () =>
         reject(
           tx.error || new DOMException("Ledger audit aborted", "AbortError"),
@@ -566,11 +493,6 @@ export function bindSandboxIndexedDB(binding: {
     port.removeEventListener("messageerror", messageError);
     for (const timer of openTimers) clearTimeout(timer);
     openTimers.clear();
-    for (const tx of reservations)
-      try {
-        tx.abort();
-      } catch {}
-    reservations.clear();
     pendingOpens = pendingControls = 0;
     for (const state of transactions.values())
       try {
@@ -581,7 +503,6 @@ export function bindSandboxIndexedDB(binding: {
     connections.clear();
     cursors.clear();
     queuedBytes = retainedResultBytes = 0;
-    void metadata?.then((db) => db.close()).catch(() => {});
     port.close();
   }
   function terminate(error: Any) {
@@ -671,23 +592,49 @@ export function bindSandboxIndexedDB(binding: {
       finished: false,
       started: Date.now(),
       checkingQuota: false,
+      profileChanges: [] as Any[],
+      profileJournaled: false,
       quotaValid: false,
+      baseUsage: 0,
+      quotaIntent: undefined as QuotaIntent | undefined,
       commandBytes: 0,
       resultBytes: new Map(),
     };
     transactions.set(id, state);
     tx.oncomplete = () => {
       state.finished = true;
+      if (state.quotaIntent)
+        void finishQuotaCommit(factory, prefix, state.quotaIntent, true).catch(
+          () => {},
+        );
       for (const bytes of state.resultBytes.values())
         retainedResultBytes = Math.max(0, retainedResultBytes - bytes);
       state.resultBytes.clear();
       for (const [key, cursor] of cursors)
         if (cursor.request.transaction === tx) cursors.delete(key);
       transactions.delete(id);
+      if (
+        binding.profileId &&
+        tx.mode !== "readonly" &&
+        typeof window !== "undefined"
+      )
+        window.dispatchEvent(
+          new CustomEvent("atlas:profile-native-change", {
+            detail: {
+              profileId: binding.profileId,
+              origin: new URL(binding.website).origin,
+              kind: "idb",
+            },
+          }),
+        );
       send({ type: "complete", transaction: id });
     };
     tx.onabort = () => {
       state.finished = true;
+      if (state.quotaIntent)
+        void finishQuotaCommit(factory, prefix, state.quotaIntent, false).catch(
+          () => {},
+        );
       for (const bytes of state.resultBytes.values())
         retainedResultBytes = Math.max(0, retainedResultBytes - bytes);
       state.resultBytes.clear();
@@ -713,6 +660,7 @@ export function bindSandboxIndexedDB(binding: {
     };
     const checkQuota = () => {
       state.checkingQuota = true;
+      const auditBudget = Math.max(limits.quotaBytes, state.baseUsage);
       let total = 128,
         records = 0,
         indexEntries = 0;
@@ -728,7 +676,7 @@ export function bindSandboxIndexedDB(binding: {
           total +=
             128 +
             2 * name.length +
-            boundedIDBValueBytes(store.keyPath, sliceBytes);
+            boundedIDBValueBytes(store.keyPath, auditBudget);
           if (store.indexNames.length > limits.maxIndexes)
             throw quotaError("Index allowance exhausted");
           work.push({ source: store, record: true });
@@ -737,7 +685,7 @@ export function bindSandboxIndexedDB(binding: {
             total +=
               128 +
               2 * indexName.length +
-              boundedIDBValueBytes(index.keyPath, sliceBytes);
+              boundedIDBValueBytes(index.keyPath, auditBudget);
             work.push({ source: index, record: false });
           }
         }
@@ -748,19 +696,71 @@ export function bindSandboxIndexedDB(binding: {
       const nextSource = () => {
         if (state.finished) return;
         if (!work.length) {
-          if (total > sliceBytes) {
-            abortQuota(quotaError("Website database quota slice exceeded"));
+          if (total > auditBudget) {
+            abortQuota(
+              quotaError(
+                "Website database exceeds its current or retained allowance",
+              ),
+            );
             return;
           }
-          const ledger = tx
-            .objectStore(KEEP)
-            .put({ bytes: total, sliceBytes, records, indexEntries }, "usage");
-          ledger.onsuccess = () => {
-            state.checkingQuota = false;
-            state.quotaValid = true;
-            pump();
+          let ready = false,
+            reservationError: unknown;
+          void reserveQuotaCommit(
+            factory,
+            prefix,
+            { name: logicalNames.get(tx.db)!, physical: tx.db.name },
+            state.baseUsage,
+            total,
+            limits.quotaBytes,
+          ).then(
+            (intent) => {
+              if (state.finished) {
+                void finishQuotaCommit(factory, prefix, intent, false).catch(
+                  () => {},
+                );
+                return;
+              }
+              state.quotaIntent = intent;
+              ready = true;
+            },
+            (error) => {
+              reservationError = error;
+            },
+          );
+          // Native requests keep this source TX alive while a DIFFERENT native
+          // metadata TX durably reserves its growth. Never auto-commit early.
+          const hold = () => {
+            if (state.finished) return;
+            if (reservationError) {
+              abortQuota(reservationError);
+              return;
+            }
+            if (ready) {
+              const ledger = tx
+                .objectStore(KEEP)
+                .put(
+                  {
+                    bytes: total,
+                    sliceBytes: limits.quotaBytes,
+                    records,
+                    indexEntries,
+                  },
+                  "usage",
+                );
+              ledger.onsuccess = () => {
+                state.checkingQuota = false;
+                state.quotaValid = true;
+                pump();
+              };
+              ledger.onerror = () => abortQuota(ledger.error);
+              return;
+            }
+            const keep = tx.objectStore(KEEP).get(0);
+            keep.onsuccess = hold;
+            keep.onerror = () => abortQuota(keep.error);
           };
-          ledger.onerror = () => abortQuota(ledger.error);
+          hold();
           return;
         }
         const item = work.shift(),
@@ -786,10 +786,10 @@ export function bindSandboxIndexedDB(binding: {
                 throw quotaError("Record allowance exhausted");
               total +=
                 64 +
-                boundedIDBValueBytes(value.primaryKey, sliceBytes - total) +
+                boundedIDBValueBytes(value.primaryKey, auditBudget - total) +
                 boundedIDBValueBytes(
                   value.value,
-                  sliceBytes - total,
+                  auditBudget - total,
                   limits.maxValueNodes,
                   limits.maxValueDepth,
                 );
@@ -798,11 +798,13 @@ export function bindSandboxIndexedDB(binding: {
                 throw quotaError("Index entry allowance exhausted");
               total +=
                 32 +
-                boundedIDBValueBytes(value.key, sliceBytes - total) +
-                boundedIDBValueBytes(value.primaryKey, sliceBytes - total);
+                boundedIDBValueBytes(value.key, auditBudget - total) +
+                boundedIDBValueBytes(value.primaryKey, auditBudget - total);
             }
-            if (total > sliceBytes)
-              throw quotaError("Website database quota slice exceeded");
+            if (total > auditBudget)
+              throw quotaError(
+                "Website database exceeds its current or retained allowance",
+              );
             value.continue();
           } catch (error) {
             abortQuota(error);
@@ -836,18 +838,63 @@ export function bindSandboxIndexedDB(binding: {
           if (!state.checkingQuota) checkQuota();
           return;
         }
+        if (
+          binding.profileId &&
+          tx.mode !== "readonly" &&
+          !state.profileJournaled
+        ) {
+          state.profileJournaled = true;
+          try {
+            assertWriteCached();
+            // Failed requests whose errors were prevented leave empty reserved
+            // slots. Only successful native mutations belong in the outbox.
+            const changes = state.profileChanges.filter((change: Any) => change !== undefined);
+            appendProfileJournal(tx.objectStore(KEEP), {
+              profileId: checkedProfile(binding.profileId)!,
+              kind: "idb",
+              origin: new URL(binding.website).origin,
+              name:
+                logicalNames.get(tx.db) ??
+                decodeURIComponent(tx.db.name.slice(prefix.length)),
+              payload: {
+                transactionId: state.id,
+                version: tx.db.version,
+                changes,
+              },
+              bytes: boundedIDBValueBytes(changes, 8 * 1024 * 1024),
+            });
+          } catch (error) {
+            abortQuota(error);
+            return;
+          }
+          return; // Native auto-commit waits for the queued atomic outbox writes.
+        }
         if (!upgrade && typeof tx.commit === "function") tx.commit();
         return;
       }
       try {
         const keep = tx.objectStore(KEEP).get(0);
         keep.onsuccess = pump;
-        keep.onerror = () => tx.abort();
+        keep.onerror = () => {
+          // Aborting a transaction also aborts its outstanding keepalive
+          // request. Its error event must not abort the finished TX again.
+          try { tx.abort(); } catch { /* native abort owns final status */ }
+        };
       } catch {
         /* native completion/abort owns final status */
       }
     };
-    pump();
+    const initial = tx.objectStore(KEEP).get("usage");
+    initial.onsuccess = () => {
+      const bytes = initial.result?.bytes ?? 0;
+      if (!Number.isSafeInteger(bytes) || bytes < 0) {
+        abortQuota(quotaError("Invalid native usage ledger"));
+        return;
+      }
+      state.baseUsage = bytes;
+      pump();
+    };
+    initial.onerror = () => abortQuota(initial.error);
     return state;
   };
   const execute = (state: Any, message: Any) => {
@@ -858,6 +905,11 @@ export function bindSandboxIndexedDB(binding: {
     )
       state.quotaValid = false;
     try {
+      if (
+        message.type === "schema" ||
+        ["put", "add", "delete", "clear", "update"].includes(message.action)
+      )
+        assertWriteCached();
       if (message.type === "schema") {
         const db = tx.db;
         if (
@@ -888,9 +940,20 @@ export function bindSandboxIndexedDB(binding: {
           tx.objectStore(message.store).index(message.index).name =
             message.name;
         else throw new TypeError("Unknown schema operation");
+        if (binding.profileId)
+          state.profileChanges.push({
+            type: "schema",
+            action: message.action,
+            store: message.store,
+            index: message.index,
+            name: message.name,
+            options: message.options,
+            keyPath: message.keyPath,
+          });
         return;
       }
       let request: IDBRequest;
+      let profileMutation: Any | undefined;
       if (message.type === "cursor") {
         const cursor = cursors.get(message.cursor);
         if (!cursor || cursor.request.transaction !== tx)
@@ -915,6 +978,23 @@ export function bindSandboxIndexedDB(binding: {
             message.args[1],
           );
           return;
+        }
+        if (
+          binding.profileId &&
+          ["update", "delete"].includes(message.action)
+        ) {
+          const source = cursor.source as IDBObjectStore | IDBIndex;
+          profileMutation = {
+            type: "operation",
+            action: message.action === "update" ? "put" : "delete",
+            store:
+              "objectStore" in source ? source.objectStore.name : source.name,
+            args:
+              message.action === "update"
+                ? [message.args[0], cursor.primaryKey]
+                : [cursor.primaryKey],
+            key: cursor.primaryKey,
+          };
         }
         if (message.action === "update")
           request = (cursor as IDBCursorWithValue).update(message.args[0]);
@@ -983,9 +1063,25 @@ export function bindSandboxIndexedDB(binding: {
           );
         request = source[message.action](...args);
       }
+      // Schema operations execute synchronously, while mutation success arrives
+      // later. Reserve the mutation's position now so upgrades with renames,
+      // deletes or re-created names replay in the same order as native IDB.
+      const mutationIndex = binding.profileId &&
+        ["put", "add", "delete", "clear", "update"].includes(message.action)
+        ? state.profileChanges.push(undefined) - 1
+        : -1;
       state.inflight++;
       request!.onsuccess = () => {
         state.inflight--;
+        if (mutationIndex >= 0)
+          state.profileChanges[mutationIndex] =
+            profileMutation || {
+              type: message.type,
+              action: message.action,
+              store: message.store,
+              args: message.args,
+              key: request!.result,
+            };
         const eventId = ++eventSerial;
         state.waiting.add(eventId);
         state.fenced = false;
@@ -1058,7 +1154,7 @@ export function bindSandboxIndexedDB(binding: {
       }
     }
   };
-  const receive = (event: MessageEvent) => {
+  const handle = async (event: MessageEvent) => {
     const m = event.data;
     if (
       !live ||
@@ -1088,6 +1184,11 @@ export function bindSandboxIndexedDB(binding: {
     }
     next++;
     try {
+      if (
+        m.type === "deleteDatabase" ||
+        (m.type === "begin" && m.mode !== "readonly")
+      )
+        await assertWrite();
       boundedIDBValueBytes(
         m,
         limits.maxPayloadBytes,
@@ -1141,6 +1242,11 @@ export function bindSandboxIndexedDB(binding: {
           binding.timeoutMs || TIMEOUT,
         );
         openTimers.add(timer);
+        // Opening an existing database is allowed for readers. A creation or
+        // upgrade still requires the cached write fence below.
+        try {
+          await assertWrite();
+        } catch {}
         const finish = () => {
           if (finished) return;
           finished = true;
@@ -1151,7 +1257,7 @@ export function bindSandboxIndexedDB(binding: {
         void reservedOperation(
           name,
           false,
-          () =>
+          (physical) =>
             new Promise<IDBDatabase>((resolve, reject) => {
               if (!live) {
                 reject(new DOMException("Document closed", "AbortError"));
@@ -1160,8 +1266,8 @@ export function bindSandboxIndexedDB(binding: {
               let upgradeState: Any;
               const request =
                 m.version === undefined
-                  ? factory.open(prefix + encodeURIComponent(name))
-                  : factory.open(prefix + encodeURIComponent(name), m.version);
+                  ? factory.open(physical)
+                  : factory.open(physical, m.version);
               request.onupgradeneeded = (event) => {
                 // Native transaction liveness now owns the upgrade deadline.
                 clearTimeout(timer);
@@ -1177,6 +1283,13 @@ export function bindSandboxIndexedDB(binding: {
                   return;
                 }
                 const db = request.result;
+                logicalNames.set(db, name);
+                try {
+                  assertWriteCached();
+                } catch (error) {
+                  request.transaction!.abort();
+                  return;
+                }
                 connect(db, connection);
                 if (!db.objectStoreNames.contains(KEEP))
                   db.createObjectStore(KEEP);
@@ -1201,6 +1314,7 @@ export function bindSandboxIndexedDB(binding: {
                 });
               };
               request.onsuccess = () => {
+                logicalNames.set(request.result, name);
                 if (!live) {
                   request.result.close();
                   reject(new DOMException("Document closed", "AbortError"));
@@ -1282,39 +1396,81 @@ export function bindSandboxIndexedDB(binding: {
         };
         const result =
           m.type === "databases"
-            ? factory.databases().then((dbs) =>
-                dbs
-                  .filter(
-                    (db) =>
-                      db.name?.startsWith(prefix) && db.name !== metadataName,
-                  )
-                  .map((db) => ({
-                    name: decodeURIComponent(db.name!.slice(prefix.length)),
-                    version: db.version,
-                  })),
-              )
-            : reservedOperation(
-                String(m.name),
-                true,
-                () =>
-                  new Promise<void>((resolve, reject) => {
-                    const request = factory.deleteDatabase(
-                      prefix + encodeURIComponent(m.name),
-                    );
-                    request.onsuccess = () => resolve();
-                    request.onerror = () => reject(request.error);
-                    request.onblocked = (event) =>
-                      send({
-                        type: "blocked",
-                        request: m.request,
-                        oldVersion: event.oldVersion,
-                        newVersion: event.newVersion,
-                      });
-                  }),
-              );
+            ? binding.profileId
+              ? listProfileIDBDatabases(factory, binding.profileId).then(
+                  async (dbs) => {
+                    const native = await factory.databases();
+                    return dbs
+                      .filter((d) => d.physical && !d.deleted && !d.deleting)
+                      .map((d) => ({
+                        name: d.name,
+                        version:
+                          native.find((n) => n.name === d.physical)?.version ||
+                          1,
+                      }));
+                  },
+                )
+              : factory.databases().then((dbs) =>
+                  dbs
+                    .filter(
+                      (db) =>
+                        db.name?.startsWith(prefix) && db.name !== metadataName,
+                    )
+                    .map((db) => ({
+                      name: decodeURIComponent(db.name!.slice(prefix.length)),
+                      version: db.version,
+                    })),
+                )
+            : binding.profileId
+              ? deleteProfileIDBDatabase(
+                  factory,
+                  binding.profileId,
+                  new URL(binding.website).origin,
+                  String(m.name),
+                  (oldVersion, newVersion) =>
+                    send({
+                      type: "blocked",
+                      request: m.request,
+                      oldVersion,
+                      newVersion,
+                    }),
+                )
+              : reservedOperation(
+                  String(m.name),
+                  true,
+                  () =>
+                    new Promise<void>((resolve, reject) => {
+                      const request = factory.deleteDatabase(
+                        prefix + encodeURIComponent(m.name),
+                      );
+                      request.onsuccess = () => resolve();
+                      request.onerror = () => reject(request.error);
+                      request.onblocked = (event) =>
+                        send({
+                          type: "blocked",
+                          request: m.request,
+                          oldVersion: event.oldVersion,
+                          newVersion: event.newVersion,
+                        });
+                    }),
+                );
         void result.then(
           (value) => {
             finish();
+            if (
+              m.type === "deleteDatabase" &&
+              binding.profileId &&
+              typeof window !== "undefined"
+            )
+              window.dispatchEvent(
+                new CustomEvent("atlas:profile-native-change", {
+                  detail: {
+                    profileId: binding.profileId,
+                    origin: new URL(binding.website).origin,
+                    kind: "idb",
+                  },
+                }),
+              );
             send({ type: "result", request: m.request, value });
           },
           (error) => {
@@ -1454,11 +1610,18 @@ export function bindSandboxIndexedDB(binding: {
       else send({ type: "protocol-error", error: errorValue(error) });
     }
   };
+  let receiveTail = Promise.resolve();
+  const receive = (event: MessageEvent) => {
+    receiveTail = receiveTail
+      .then(() => handle(event))
+      .catch((error) => terminate(error));
+  };
   port.addEventListener("message", receive);
   port.addEventListener("messageerror", messageError);
   port.start();
   return {
     async flush() {
+      await receiveTail;
       while (transactions.size || pendingOpens || pendingControls)
         await new Promise((resolve) => setTimeout(resolve, 5));
     },
@@ -1478,18 +1641,32 @@ export function bindSandboxIndexedDB(binding: {
   };
 }
 
+// A prepared document can also initialize inherited website windows. Give each
+// installed Factory its own target-realm clone while retaining the one private
+// transport and request sequence. Result identity is fixed at delivery, not at
+// getters; a later window installation cannot change an earlier request's realm.
+type IDBResultClone = (value: Any) => Any;
+const realmFactories = new WeakMap<object, (win: Window & typeof globalThis) => Any>();
+
 /** Website-facing asynchronous IDB facade with its own realm prototypes. */
-export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
+export function createSandboxIndexedDB(port: MessagePort, documentId: string, transport: {
+  data?: (this: MessageEvent) => any;
+  post?: MessagePort["postMessage"];
+  add?: EventTarget["addEventListener"];
+  remove?: EventTarget["removeEventListener"];
+  start?: MessagePort["start"];
+  close?: MessagePort["close"];
+} = {}) {
   const applyPrivate = Reflect.apply,
-    privateData = Object.getOwnPropertyDescriptor(
+    privateData = transport.data ?? Object.getOwnPropertyDescriptor(
       MessageEvent.prototype,
       "data",
     )!.get!,
-    privatePost = MessagePort.prototype.postMessage,
-    privateAdd = EventTarget.prototype.addEventListener,
-    privateRemove = EventTarget.prototype.removeEventListener,
-    privateStart = MessagePort.prototype.start,
-    privateClose = MessagePort.prototype.close,
+    privatePost = transport.post ?? MessagePort.prototype.postMessage,
+    privateAdd = transport.add ?? EventTarget.prototype.addEventListener,
+    privateRemove = transport.remove ?? EventTarget.prototype.removeEventListener,
+    privateStart = transport.start ?? MessagePort.prototype.start,
+    privateClose = transport.close ?? MessagePort.prototype.close,
     PrivateChannel = MessageChannel,
     channelPort1 = Object.getOwnPropertyDescriptor(
       MessageChannel.prototype,
@@ -1511,6 +1688,8 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
     sourceBrands = new WeakSet<object>(),
     cursorBrands = new WeakSet<object>();
   const recordData = new WeakMap<object, Any>();
+  const resultClones = new WeakMap<object, IDBResultClone>();
+  const unchangedResult: IDBResultClone = value => value;
   const token = {},
     requests = new Map<number, Any>(),
     connections = new Map<string, Any>(),
@@ -1554,8 +1733,9 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
   };
   const key = (value: Any) => {
     boundedIDBValueBytes(value);
-    compareSandboxKeys(value, value);
-    return structuredClone(value);
+    const normalized = structuredClone(value);
+    compareSandboxKeys(normalized, normalized);
+    return normalized;
   };
   const query = (value: Any, optional = false) => {
     if (value === undefined || value === null) {
@@ -1734,10 +1914,12 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
     _source: Any;
     _transaction: Any;
     id: number;
-    constructor(secret: object, source: Any = null, transaction: Any = null) {
+    constructor(secret: object, source: Any = null, transaction: Any = null,
+      cloneResult: IDBResultClone = resultClones.get(transaction) || resultClones.get(source) || unchangedResult) {
       super();
       if (secret !== token) throw new TypeError("Illegal constructor");
       requestBrands.add(this);
+      resultClones.set(this, cloneResult);
       this._source = source;
       this._transaction = transaction;
       this.id = ++serial;
@@ -1818,6 +2000,7 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
       super();
       if (secret !== token) throw new TypeError("Illegal constructor");
       this.db = db;
+      resultClones.set(this, resultClones.get(db) || unchangedResult);
       readonly(this, "db", db);
       this.id = id;
       this.stores = stores;
@@ -1876,6 +2059,7 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
       if (secret !== token) throw new TypeError("Illegal constructor");
       this.tx = tx;
       sourceBrands.add(this);
+      resultClones.set(this, resultClones.get(tx) || unchangedResult);
       this.record = record;
       this.indexRecord = index;
     }
@@ -1962,8 +2146,8 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
         value !== null &&
         typeof value === "object" &&
         !Array.isArray(value) &&
-        !(value instanceof Date) &&
-        !(value instanceof ArrayBuffer) &&
+        !(value instanceof Date) && Object.prototype.toString.call(value) !== '[object Date]' &&
+        !(value instanceof ArrayBuffer) && Object.prototype.toString.call(value) !== '[object ArrayBuffer]' &&
         !ArrayBuffer.isView(value) &&
         !(value instanceof IDBKeyRange);
       if (options || action === "getAllRecords") {
@@ -2129,14 +2313,15 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
     schema: Any;
     upgrade: Any;
     closed = false;
-    constructor(secret: object, m: Any) {
+    constructor(secret: object, m: Any, cloneResult: IDBResultClone = unchangedResult) {
       super();
       if (secret !== token) throw new TypeError("Illegal constructor");
       databaseBrands.add(this);
+      resultClones.set(this, cloneResult);
       this.id = m.connection;
       this._name = m.name;
       this._version = m.version;
-      this.schema = copySchema(m.schema);
+      this.schema = cloneResult(copySchema(m.schema));
       connections.set(this.id, this);
     }
     get name() {
@@ -2453,7 +2638,7 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
       } else {
         tx.error = exception(m.error);
         if (tx.mode === "versionchange") {
-          tx.db.schema = copySchema(tx.beforeSchema);
+          tx.db.schema = (resultClones.get(tx.db) || unchangedResult)(copySchema(tx.beforeSchema));
           tx.db._version = tx.oldVersion;
           tx.db.closed = true;
         }
@@ -2483,7 +2668,7 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
       return;
     }
     if (m.type === "upgrade") {
-      const db = new Database(token, m),
+      const db = new Database(token, m, resultClones.get(request)),
         tx = new Transaction(
           token,
           db,
@@ -2505,8 +2690,8 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
       return;
     }
     if (m.type === "opened") {
-      const db = connections.get(m.connection) || new Database(token, m);
-      db.schema = copySchema(m.schema);
+      const db = connections.get(m.connection) || new Database(token, m, resultClones.get(request));
+      db.schema = (resultClones.get(db) || unchangedResult)(copySchema(m.schema));
       Object.defineProperty(db, "storageAllowance", {
         value: m.limits,
         configurable: true,
@@ -2523,20 +2708,22 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
     const oldCursor =
       request._result instanceof Cursor ? request._result : null;
     request._state = "done";
-    request._error = m.error ? exception(m.error) : null;
-    if (m.value?.__atlasCursor) {
-      if (oldCursor && oldCursor.id === m.value.cursor) {
-        oldCursor.updatePosition(m.value);
+    const cloneResult = resultClones.get(request) || unchangedResult;
+    request._error = m.error ? cloneResult(exception(m.error)) : null;
+    const value = cloneResult(m.value);
+    if (value?.__atlasCursor) {
+      if (oldCursor && oldCursor.id === value.cursor) {
+        oldCursor.updatePosition(value);
         request._result = oldCursor;
       } else
-        request._result = m.value.keyOnly
-          ? new Cursor(token, m.value, request)
-          : new ValueCursor(token, m.value, request);
+        request._result = value.keyOnly
+          ? new Cursor(token, value, request)
+          : new ValueCursor(token, value, request);
     } else {
       if (oldCursor) oldCursor.positioned = false;
       request._result = m.records
-        ? m.value.map((value: Any) => new RecordValue(token, value))
-        : m.value;
+        ? value.map((record: Any) => new RecordValue(token, record))
+        : value;
     }
     const tx = m.transaction ? transactions.get(m.transaction) : null;
     if (!m.transaction && request._transaction?.mode === "versionchange")
@@ -2563,9 +2750,10 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
   applyPrivate(privateAdd, port, ["message", receive]);
   applyPrivate(privateStart, port, []);
   class Factory {
-    constructor(secret: object) {
+    constructor(secret: object, cloneResult: IDBResultClone = unchangedResult) {
       if (secret !== token) throw new TypeError("Illegal constructor");
       factoryBrands.add(this);
+      resultClones.set(this, cloneResult);
     }
     open(name: string, version?: number) {
       if (!factoryBrands.has(this)) throw new TypeError("Illegal invocation");
@@ -2575,21 +2763,21 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
         version = integer(version, 2 ** 64 - 1);
         if (version === 0) throw new TypeError("Invalid database version");
       }
-      const request = new OpenRequest(token);
+      const request = new OpenRequest(token, null, null, resultClones.get(this));
       send({ type: "open", request: request.id, name, version });
       return request;
     }
     deleteDatabase(name: string) {
       if (!factoryBrands.has(this)) throw new TypeError("Illegal invocation");
       required(arguments, 1);
-      const request = new OpenRequest(token);
+      const request = new OpenRequest(token, null, null, resultClones.get(this));
       send({ type: "deleteDatabase", request: request.id, name: string(name) });
       return request;
     }
     databases() {
       if (!factoryBrands.has(this)) throw new TypeError("Illegal invocation");
       return new Promise<Any>((resolve, reject) => {
-        const request = new Request(token);
+        const request = new Request(token, null, null, resultClones.get(this));
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
         send({ type: "databases", request: request.id });
@@ -2626,6 +2814,25 @@ export function createSandboxIndexedDB(port: MessagePort, documentId: string) {
   }
   const facade = new Factory(token);
   Object.defineProperty(facade, "constructors", { value: constructors });
+  const installed = new WeakMap<object, Factory>();
+  const creatorDocument = typeof document === "undefined" ? undefined : document;
+  realmFactories.set(facade, win => {
+    // Facades constructed in their website/worker realm already receive native
+    // MessagePort clones there. Retain their established object identity.
+    if (win === globalThis && (!creatorDocument || win.document === creatorDocument)) return facade;
+    // WindowProxy identity survives navigation, but its Document/realm does not.
+    const owner = win.document || win;
+    let factory = installed.get(owner);
+    if (!factory) {
+      // Capture the target intrinsic before its website can replace globals.
+      // Native structuredClone preserves supported structured values, cycles,
+      // aliases and shared view buffers while adopting that window's realm.
+      const clone = win.structuredClone;
+      factory = new Factory(token, value => applyPrivate(clone, win, [value]));
+      installed.set(owner, factory);
+    }
+    return factory;
+  });
   return facade as Factory & { constructors: typeof constructors };
 }
 export function installSandboxIndexedDB(
@@ -2634,7 +2841,7 @@ export function installSandboxIndexedDB(
 ) {
   Object.defineProperty(win, "indexedDB", {
     configurable: true,
-    value: facade,
+    value: realmFactories.get(facade)?.(win) || facade,
   });
   for (const [name, constructor] of Object.entries(facade.constructors))
     Object.defineProperty(win, name, {
@@ -2651,9 +2858,9 @@ export function compareSandboxKeys(
 ): number {
   const category = (key: any, seen = new Set<any>()): number => {
     if (typeof key === "number" && !Number.isNaN(key)) return 1;
-    if (key instanceof Date && !Number.isNaN(key.getTime())) return 2;
+    if ((key instanceof Date || Object.prototype.toString.call(key) === '[object Date]') && !Number.isNaN(Date.prototype.getTime.call(key))) return 2;
     if (typeof key === "string") return 3;
-    if (key instanceof ArrayBuffer || ArrayBuffer.isView(key)) return 4;
+    if (key instanceof ArrayBuffer || Object.prototype.toString.call(key) === '[object ArrayBuffer]' || ArrayBuffer.isView(key)) return 4;
     if (Array.isArray(key) && !seen.has(key)) {
       seen.add(key);
       for (const entry of key) category(entry, seen);
@@ -2673,7 +2880,7 @@ export function compareSandboxKeys(
     return a < b ? -1 : a > b ? 1 : 0;
   }
   const bytes = (key: any) =>
-    key instanceof ArrayBuffer
+    (key instanceof ArrayBuffer || Object.prototype.toString.call(key) === '[object ArrayBuffer]')
       ? new Uint8Array(key)
       : new Uint8Array(key.buffer, key.byteOffset, key.byteLength);
   const a: any = left === 4 ? bytes(first) : first,

@@ -226,10 +226,12 @@ async function openTarget(page) {
     name: "Same-origin smoke fixture",
     exact: true,
   });
+  if (await site(page).getByRole("heading", {name:"Same-origin smoke fixture",exact:true}).isVisible().catch(()=>false)) return;
   if (await saved.count()) await saved.first().click();
   else {
-    await page.getByLabel("Search the web").fill(target + "/smoke/page");
-    await page.getByLabel("Search the web").press("Enter");
+    const address = page.getByLabel(/^(Search the web|Address bar)$/).first();
+    await address.fill(target + "/smoke/page");
+    await address.press("Enter");
   }
   await expect(
     site(page).getByRole("heading", {

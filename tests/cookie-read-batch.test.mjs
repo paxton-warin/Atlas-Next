@@ -1,0 +1,8 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createCookieReadBatch} from '../runtime/cookie-read-batch.ts';
+const fixture=owner=>{const tasks=[];return {batch:createCookieReadBatch(owner,f=>tasks.push(f)),flush(){for(const f of tasks.splice(0))f()},tasks}};
+test('empty and populated completed views are reused only before the next microtask',()=>{const f=fixture({});assert.equal(f.batch.get('/a',1),undefined);f.batch.remember('','/a',null);assert.equal(f.batch.get('/a',1),'');f.batch.remember('x=1','/a',null);assert.equal(f.tasks.length,1);assert.equal(f.batch.get('/a',1),'x=1');f.flush();assert.equal(f.batch.get('/a',1),undefined)});
+test('path and absolute expiration boundaries never return a cached view',()=>{const f=fixture({});f.batch.remember('x=1','/a',10);assert.equal(f.batch.get('/a',9),'x=1');assert.equal(f.batch.get('/b',9),undefined);assert.equal(f.batch.get('/a',10),undefined)});
+test('a synchronous write invalidates sibling document views owned by the same window',()=>{const owner={},a=fixture(owner),b=fixture(owner);a.batch.remember('x=1','/a',null);b.batch.remember('x=1','/a',null);a.batch.invalidate();assert.equal(a.batch.get('/a',1),undefined);assert.equal(b.batch.get('/a',1),undefined);a.batch.remember('x=2','/a',null);assert.equal(a.batch.get('/a',1),'x=2')});
+test('one window does not invalidate an unrelated window and clearing does not publish data',()=>{const a=fixture({}),b=fixture({});a.batch.remember('a=1','/a',null);b.batch.remember('b=1','/b',null);a.batch.invalidate();assert.equal(b.batch.get('/b',1),'b=1');b.batch.clear();assert.equal(b.batch.get('/b',1),undefined)});

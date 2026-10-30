@@ -31,6 +31,7 @@ export function openStore(dir) {
     CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, ticket TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE, author TEXT NOT NULL, body TEXT NOT NULL, created INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, action TEXT NOT NULL, target TEXT, created INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS limits_reset ON limits(reset);
     CREATE TABLE IF NOT EXISTS catalog (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, url TEXT NOT NULL, artwork TEXT NOT NULL, category TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
   `);
   const catalogColumns = db
@@ -43,8 +44,10 @@ export function openStore(dir) {
     db.exec(
       "ALTER TABLE catalog ADD COLUMN thumbnail TEXT NOT NULL DEFAULT ''",
     );
+  // Synchronous statements are reused without caching mutable setting values.
+  const readSetting = db.prepare("SELECT value FROM settings WHERE key=?");
   const get = (name) => {
-    const row = db.prepare("SELECT value FROM settings WHERE key=?").get(name);
+    const row = readSetting.get(name);
     return row ? JSON.parse(row.value) : null;
   };
   const set = (name, value) =>

@@ -301,7 +301,8 @@ test("same-identity renewal refreshes enrollment without changing bound child au
 });
 test("cancellation aborts stale source and suppresses late URL publication", async (t) => {
   const f = await fixture(t);
-  let resolveFetch;
+  let resolveFetch,started,aborted;
+  const sourceStarted=new Promise(r=>started=r),sourceAborted=new Promise(r=>aborted=r);
   const b = await binding(f, t, {
     fetch: (req, ctx) =>
       new Promise((resolve, reject) => {
@@ -313,16 +314,18 @@ test("cancellation aborts stale source and suppresses late URL publication", asy
             headers: [["content-type", "image/png"]],
             body: new Uint8Array([137, 80, 78, 71]).buffer,
           });
-        ctx.signal.addEventListener("abort", () => reject(Error("aborted")), {
+        started();
+        ctx.signal.addEventListener("abort", () => {aborted();reject(Error("aborted"));}, {
           once: true,
         });
       }),
   });
   const signal = new AbortController(),
     task = b.client.prepare({ url: "/slow", kind: "image" }, signal.signal);
-  await delay(5);
+  await sourceStarted;
   signal.abort();
   await assert.rejects(task);
+  await sourceAborted;
   resolveFetch();
   await delay(10);
   assert.equal(

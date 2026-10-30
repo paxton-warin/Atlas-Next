@@ -1,0 +1,74 @@
+/* Atlas V2.1 canonical presentation tokens. Persisted theme IDs remain unchanged. */
+:where(body.atlas-v21,body.hub-v21,body.v21-reference) {
+ --font-sans:"Inter",system-ui,sans-serif; --font-display:"Inter Tight","Inter",system-ui,sans-serif;
+ --font-serif:"Lora",Georgia,serif; --font-mono:"JetBrains Mono",ui-monospace,monospace;
+ --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-7:32px;--space-8:48px;
+ --radius-sm:8px;--radius-input:10px;--radius-card:14px;--radius-dialog:24px;--radius-hero:28px;
+ --duration-fast:120ms;--duration-base:180ms;--duration-panel:220ms;--ease-out:cubic-bezier(.16,1,.3,1);
+ --canvas:#0b100d;--v21-surface:#121814;--surface-raised:#171f1a;--surface-overlay:#1d2721;--surface-sunken:#0e1310;
+ --surface-hover:#1a2520;--surface-active:#22302a;--border-subtle:#253229;--border:#34483b;--border-strong:#637567;
+ --v21-text:#ecf0e9;--text-muted:#aab4ac;--text-dim:#9ba697;--text-inverse:#0b100d;
+ --v21-theme-accent:#9fd37a;--v21-theme-accent-hover:#b4e090;--v21-theme-accent-text:#b4e090;
+ --success:#a0d79b;--warning:#e8c482;--danger:#f0a695;--info:#9acfe5;
+ --ai:#b9a7f0;--games:#f0b36e;--apps:#78c8d4;--settings-accent:#d4c9a8;
+ --frame-gradient-top:#1a2a20;--shadow:0 16px 40px -8px #0005;
+ --accent:var(--v21-custom-accent,var(--v21-theme-accent));--accent-hover:var(--v21-custom-accent,var(--v21-theme-accent-hover));
+ --accent-wash:color-mix(in srgb,var(--accent) 12%,transparent);--accent-text:var(--v21-custom-accent-text,var(--v21-theme-accent-text));
+ --accent-ink:var(--v21-custom-accent-ink,var(--text-inverse));--surface:var(--v21-surface);--text:var(--v21-text);
+ --base:var(--canvas);--ink:var(--v21-text);--input:var(--surface-sunken);--muted:var(--text-muted);--subtle:var(--text-muted);
+ --line:var(--border-subtle);--line-strong:var(--border);--nav:var(--canvas);--nav-soft:var(--surface-active);
+ --accent-soft:var(--accent-wash);--green:var(--success);--red:var(--danger);--amber:var(--warning);
+ --frame-gradient:linear-gradient(180deg,var(--frame-gradient-top),var(--canvas));
+ font-family:var(--font-sans);color:var(--text);background:var(--canvas);color-scheme:dark;
+}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-mode="light"] {
+ --canvas:#f6f7f3;--v21-surface:#fff;--surface-raised:#fbfcf8;--surface-overlay:#fff;--surface-sunken:#f0f2ec;
+ --surface-hover:#eef1e8;--surface-active:#e5eadd;--border-subtle:#dce2d5;--border:#c5cebc;--border-strong:#84977d;
+ --v21-text:#141a14;--text-muted:#4f5a4e;--text-dim:#626f5e;--text-inverse:#fff;
+ --v21-theme-accent:#406e2e;--v21-theme-accent-hover:#355d25;--v21-theme-accent-text:#3e6d2c;
+ --success:#356b32;--warning:#795c18;--danger:#a13d30;--info:#276886;
+ --ai:#6450a1;--games:#8a511e;--apps:#236c79;--settings-accent:#6c623c;
+ --frame-gradient-top:#eaf0e3;--shadow:0 16px 40px -8px #17281819;color-scheme:light;
+}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="forest"][data-v21-mode="dark"]{--v21-theme-accent:#9FD37A;--v21-theme-accent-hover:#B4E090;--v21-theme-accent-text:#B4E090;--frame-gradient-top:#1A2A20;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="forest"][data-v21-mode="light"]{--v21-theme-accent:#406E2E;--v21-theme-accent-hover:#406E2E;--v21-theme-accent-text:#3E6D2C;--frame-gradient-top:#eaf0e3;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="sand"][data-v21-mode="dark"]{--v21-theme-accent:#E8C586;--v21-theme-accent-hover:#F0D29A;--v21-theme-accent-text:#F0D29A;--frame-gradient-top:#2A2419;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="sand"][data-v21-mode="light"]{--v21-theme-accent:#8B6B2C;--v21-theme-accent-hover:#8B6B2C;--v21-theme-accent-text:#8B6B2C;--frame-gradient-top:#f4ecdd;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="violet"][data-v21-mode="dark"]{--v21-theme-accent:#B4A6F0;--v21-theme-accent-hover:#C7BAFC;--v21-theme-accent-text:#C7BAFC;--frame-gradient-top:#1F1C2E;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="violet"][data-v21-mode="light"]{--v21-theme-accent:#5649A4;--v21-theme-accent-hover:#5649A4;--v21-theme-accent-text:#5649A4;--frame-gradient-top:#eeebf9;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="ocean"][data-v21-mode="dark"]{--v21-theme-accent:#78C0E8;--v21-theme-accent-hover:#8CCEF0;--v21-theme-accent-text:#8CCEF0;--frame-gradient-top:#152635;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="ocean"][data-v21-mode="light"]{--v21-theme-accent:#2B6C99;--v21-theme-accent-hover:#2B6C99;--v21-theme-accent-text:#2B6C99;--frame-gradient-top:#e5f0f8;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="rose"][data-v21-mode="dark"]{--v21-theme-accent:#F0A6B4;--v21-theme-accent-hover:#F6B9C7;--v21-theme-accent-text:#F6B9C7;--frame-gradient-top:#2E1A20;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="rose"][data-v21-mode="light"]{--v21-theme-accent:#984858;--v21-theme-accent-hover:#984858;--v21-theme-accent-text:#984858;--frame-gradient-top:#f8e9ed;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="ink"][data-v21-mode="dark"]{--v21-theme-accent:#C7CDD3;--v21-theme-accent-hover:#D4DAE0;--v21-theme-accent-text:#D4DAE0;--frame-gradient-top:#1C1F23;}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference)[data-v21-theme="ink"][data-v21-mode="light"]{--v21-theme-accent:#3C434D;--v21-theme-accent-hover:#3C434D;--v21-theme-accent-text:#3C434D;--frame-gradient-top:#eceef0;}
+
+
+/* Atlas-only chromatic neutrals: presets change the shell, not only its accent.
+ * Semantic status colors, stored theme IDs and custom accents stay independent. */
+body.atlas-v21[data-v21-theme="forest"][data-v21-mode="dark"]{--canvas:#0b100d;--v21-surface:#121814;--surface-raised:#171f1a;--surface-overlay:#1d2721;--surface-sunken:#0e1310;--surface-hover:#1a2520;--surface-active:#22302a;--border-subtle:#253229;--border:#34483b;--border-strong:#637567;--v21-text:#ecf0e9;--text-muted:#aab4ac;--text-dim:#9ba697;}
+body.atlas-v21[data-v21-theme="forest"][data-v21-mode="light"]{--canvas:#f6f7f3;--v21-surface:#ffffff;--surface-raised:#fbfcf8;--surface-overlay:#ffffff;--surface-sunken:#f0f2ec;--surface-hover:#eef1e8;--surface-active:#e5eadd;--border-subtle:#dce2d5;--border:#c5cebc;--border-strong:#84977d;--v21-text:#141a14;--text-muted:#4f5a4e;--text-dim:#5c6858;}
+body.atlas-v21[data-v21-theme="sand"][data-v21-mode="dark"]{--canvas:#17130f;--v21-surface:#211b15;--surface-raised:#29221b;--surface-overlay:#30271e;--surface-sunken:#130f0b;--surface-hover:#30271f;--surface-active:#3b2f23;--border-subtle:#3c3024;--border:#54422e;--border-strong:#948064;--v21-text:#f2ece2;--text-muted:#bdb1a0;--text-dim:#b5a48e;}
+body.atlas-v21[data-v21-theme="sand"][data-v21-mode="light"]{--canvas:#f8f5ef;--v21-surface:#fffcf7;--surface-raised:#fbf7ef;--surface-overlay:#fffdf9;--surface-sunken:#f1eade;--surface-hover:#f3ebdf;--surface-active:#ebdec9;--border-subtle:#e7dccb;--border:#d3c2a6;--border-strong:#a48c69;--v21-text:#251c10;--text-muted:#65553f;--text-dim:#6e5b43;--v21-theme-accent-text:#785b23;}
+body.atlas-v21[data-v21-theme="violet"][data-v21-mode="dark"]{--canvas:#100e18;--v21-surface:#181421;--surface-raised:#201a2c;--surface-overlay:#292135;--surface-sunken:#0d0b13;--surface-hover:#282032;--surface-active:#33293f;--border-subtle:#33293f;--border:#4a3c5c;--border-strong:#82708f;--v21-text:#efeaf7;--text-muted:#b9afca;--text-dim:#afa1c3;}
+body.atlas-v21[data-v21-theme="violet"][data-v21-mode="light"]{--canvas:#f6f3fa;--v21-surface:#fefcff;--surface-raised:#faf7fd;--surface-overlay:#fffdff;--surface-sunken:#eee8f5;--surface-hover:#eee7f6;--surface-active:#e5daef;--border-subtle:#e1d7ec;--border:#c9b9dd;--border-strong:#9781ac;--v21-text:#20162e;--text-muted:#625271;--text-dim:#69577a;}
+body.atlas-v21[data-v21-theme="ocean"][data-v21-mode="dark"]{--canvas:#0b1118;--v21-surface:#111c25;--surface-raised:#172531;--surface-overlay:#1b2d39;--surface-sunken:#081018;--surface-hover:#192e3b;--surface-active:#223e4c;--border-subtle:#253d4b;--border:#345466;--border-strong:#63899e;--v21-text:#e8f1f7;--text-muted:#a9becb;--text-dim:#9cb5c5;}
+body.atlas-v21[data-v21-theme="ocean"][data-v21-mode="light"]{--canvas:#f0f6fa;--v21-surface:#fafdff;--surface-raised:#f4f9fc;--surface-overlay:#fcfeff;--surface-sunken:#e5eff5;--surface-hover:#e6f0f6;--surface-active:#d7e7f0;--border-subtle:#d3e2ec;--border:#abc4d5;--border-strong:#6f97b0;--v21-text:#142431;--text-muted:#465f70;--text-dim:#4c6578;--v21-theme-accent-text:#265f88;}
+body.atlas-v21[data-v21-theme="rose"][data-v21-mode="dark"]{--canvas:#180e12;--v21-surface:#22151b;--surface-raised:#2b1c23;--surface-overlay:#35232c;--surface-sunken:#130b0f;--surface-hover:#312028;--surface-active:#3e2934;--border-subtle:#3e2933;--border:#5b3d4b;--border-strong:#987887;--v21-text:#f5eaf0;--text-muted:#c9afb9;--text-dim:#bca1ad;}
+body.atlas-v21[data-v21-theme="rose"][data-v21-mode="light"]{--canvas:#fbf2f5;--v21-surface:#fffafb;--surface-raised:#fdf6f8;--surface-overlay:#fffcfd;--surface-sunken:#f5e6ec;--surface-hover:#f6e7ed;--surface-active:#eed6e0;--border-subtle:#ecd7e0;--border:#d5afbf;--border-strong:#ae7b91;--v21-text:#2e1823;--text-muted:#775364;--text-dim:#795668;}
+body.atlas-v21[data-v21-theme="ink"][data-v21-mode="dark"]{--canvas:#101214;--v21-surface:#171b1f;--surface-raised:#1e2328;--surface-overlay:#252b32;--surface-sunken:#0d1012;--surface-hover:#252c32;--surface-active:#303841;--border-subtle:#30383e;--border:#44515c;--border-strong:#7b8995;--v21-text:#ecf0f4;--text-muted:#b0bbc5;--text-dim:#a3aeba;}
+body.atlas-v21[data-v21-theme="ink"][data-v21-mode="light"]{--canvas:#f3f5f7;--v21-surface:#fcfdfe;--surface-raised:#f8fafb;--surface-overlay:#ffffff;--surface-sunken:#e9edf1;--surface-hover:#e9eef2;--surface-active:#dfe6ec;--border-subtle:#d9e0e6;--border:#bdc9d2;--border-strong:#8296a5;--v21-text:#1b242c;--text-muted:#505f6c;--text-dim:#566774;}
+
+/* Explicitly replace only legacy presentation aliases, including inline defaults. */
+body.atlas-v21 #root :is(.atlas,.popout-shell){
+ --base:var(--canvas)!important;--surface:var(--v21-surface)!important;--text:var(--v21-text)!important;
+ --muted:var(--text-muted)!important;--subtle:var(--text-muted)!important;--input:var(--surface-sunken)!important;
+ --line:var(--border-subtle)!important;--panel:var(--v21-surface)!important;--card:var(--surface-raised)!important;
+ --accent:var(--v21-custom-accent,var(--v21-theme-accent))!important;--accent-ink:var(--v21-custom-accent-ink,var(--text-inverse))!important;
+ font-family:var(--font-sans);
+}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference) :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference) :is(h1,h2,h3){font-family:var(--font-display);text-wrap:balance}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference) :is(code,pre,kbd){font-family:var(--font-mono)}
+:where(body.atlas-v21,body.hub-v21,body.v21-reference) [hidden]{display:none!important}
+@media(prefers-reduced-motion:reduce){:where(body.atlas-v21,body.hub-v21,body.v21-reference) *, :where(body.atlas-v21,body.hub-v21,body.v21-reference) *::before,:where(body.atlas-v21,body.hub-v21,body.v21-reference) *::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}

@@ -6,7 +6,6 @@ import { init as initializeLexer, parse } from "es-module-lexer/minimal";
 import { OpaqueImportMap } from "./opaque-import-map.ts";
 import { parseNativeSrcset, serializeNativeSrcset } from "./native-srcset.ts";
 import { qualifyInlineSVG } from "./inline-svg.ts";
-import { rendererTarget } from "./opaque-renderer.ts";
 import { imageResourceMIME } from "./raster-image-mime.ts";
 import { decodeLocalCSSDataResource } from "./local-css-data-resource.ts";
 import {
@@ -1044,10 +1043,15 @@ export function createOpaqueResourceGraph(options: {
           "NotSupportedError",
         );
       Array.from(parsed.querySelectorAll("iframe")).forEach((element,index)=>{
-        const source=rendererSources[index],tokens=(get(element,"sandbox")??"").split(/\s+/);
-        if(!source||!rendererTarget(source,documentURL.href)||!tokens.includes("allow-scripts")||tokens.includes("allow-same-origin")||get(element,"srcdoc")!==null)throw new DOMException("Unqualified nested renderer","NotSupportedError");
-        originalPolicy?.checkURL({url:source,kind:"frame"});
-        nativeRemove.call(element,"src");set(element,"runtimekit-attr-src",source);
+        const source=rendererSources[index];
+        if(get(element,"srcdoc")!==null)throw new DOMException("Inline nested documents require inherited policy","NotSupportedError");
+        nativeRemove.call(element,"src");
+        if(source){
+          const url=new URL(source);
+          if(!/^https?:$/.test(url.protocol)||url.username||url.password)throw new DOMException("Invalid nested document URL","SecurityError");
+          originalPolicy?.checkURL({url:url.href,kind:"frame"});
+          set(element,"runtimekit-attr-src",url.href);
+        }
       });
       for (const element of parsed.querySelectorAll(
         'script[type="importmap"]',

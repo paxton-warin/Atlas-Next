@@ -4,11 +4,17 @@ import {
   test,
   type Browser,
   type Frame,
+  type Page,
   type Route,
 } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { createPopoutUrl } from "../web/src/popout-link";
+
+const savedWindowTabs = (page: Page) =>
+  page.evaluate(() =>
+    localStorage.getItem(`atlas.windows.v1.${window.name.slice(13)}`),
+  );
 
 const frontend = "https://frontend-partition-fixture.cloudfront.net";
 const runtime = "https://runtime-partition-fixture.cloudfront.net";
@@ -256,15 +262,13 @@ test("same-frontend popout preserves runtime storage partition and exact lease; 
     await app.getByLabel("Search the web").press("Enter");
     const originalFrame = await runtimeFrame(app);
     await expect
-      .poll(() =>
-        app.evaluate(
-          () => JSON.parse(localStorage.getItem("atlas.tabs")!)[0]?.title,
-        ),
+      .poll(
+        async () =>
+          JSON.parse((await savedWindowTabs(app)) || '{"tabs":[]}').tabs[0]
+            ?.title,
       )
       .toBe("Partition fixture");
-    const tabsBefore = await app.evaluate(() =>
-      localStorage.getItem("atlas.tabs"),
-    );
+    const tabsBefore = await savedWindowTabs(app);
     const written = await storage(originalFrame, "embedded");
     expect(written.secureContext).toBe(true);
     const popoutLink = app.getByRole("link", {
@@ -291,9 +295,7 @@ test("same-frontend popout preserves runtime storage partition and exact lease; 
       ["POST", { session, intent: "restore" }],
       ["POST", { session, intent: "restore" }],
     ]);
-    expect(await app.evaluate(() => localStorage.getItem("atlas.tabs"))).toBe(
-      tabsBefore,
-    );
+    expect(await savedWindowTabs(app)).toBe(tabsBefore);
     expect(
       await app.evaluate(() =>
         JSON.parse(localStorage.getItem("atlas.nodeSession")!),

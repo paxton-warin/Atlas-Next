@@ -198,6 +198,7 @@ export function createRequestLimits(store, rate, env = process.env) {
       try {
         store.set("ipRequestLimits", next);
         for (const { key } of requestLimitRules) clear.run(key + ":%");
+        clear.run("profile-sync:%");
         store.audit("request-limits.update");
         store.db.exec("COMMIT");
       } catch (error) {
@@ -217,6 +218,29 @@ export function createRequestLimits(store, rate, env = process.env) {
         rule.max,
         rule.windowSeconds * 1000,
       );
+    },
+    limitVerified(subject, key) {
+      if (!["api", "browse"].includes(key)) throw new Error(`Unknown verified request rule: ${key}`);
+      if (typeof subject !== "string" || !subject || subject.length > 256)
+        throw invalid("Verified request subject required.");
+      const rule = policy.rules[key];
+      if (!policy.enabled || !rule.max) return;
+      // Same configured ceiling, per verified account/profile rather than a
+      // school NAT. IP whitelists do not bypass this authenticated allowance.
+      rate(key + ":" + digest("verified\0" + subject), rule.max, rule.windowSeconds * 1000);
+    },
+    limitSubject(subject, key) {
+      if (key !== "profile-sync") throw new Error(`Unknown authenticated request rule: ${key}`);
+      if (typeof subject !== "string" || !subject || subject.length > 256)
+        throw invalid("Verified request subject required.");
+      // Keep the persisted policy format backward compatible. The existing API
+      // control derives a tenfold per-account allowance, capped at 6000. Shared
+      // NAT/IP whitelists never confer unlimited authenticated service traffic.
+      const api = policy.rules.api;
+      const derived = policy.enabled && api.max > 0;
+      const max = derived ? Math.min(6000, api.max * 10) : 6000;
+      const seconds = derived ? api.windowSeconds : 60;
+      rate(key + ":" + digest("subject\0" + subject), max, seconds * 1000);
     },
     aiCapacity(clientIp) {
       return bypass(clientIp) || !policy.aiConcurrent

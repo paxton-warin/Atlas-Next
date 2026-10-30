@@ -73,9 +73,7 @@ test("Main relay uses the current frontend URL, isolated frame, cookies and real
     localStorage.getItem("atlas.nodeSession"),
   );
   await page.reload();
-  await page
-    .getByRole("button", { name: "Atlas fixture", exact: true })
-    .click();
+  await page.getByRole("tab", { name: "Atlas fixture", exact: true }).click();
   await expect(
     website(page).getByRole("heading", { name: "Proxy fixture ready" }),
   ).toBeVisible();

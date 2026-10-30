@@ -1,0 +1,377 @@
+
+.node-ccu {
+  margin: 12px 0 4px;
+}
+.node-ccu strong {
+  color: var(--accent);
+}
+.ai-routing-toggles,
+.ai-provider-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.ai-budget-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+  margin-top: 16px;
+}
+.ai-budget-grid .form-field {
+  min-width: 0;
+}
+.ai-routing-settings .button-row {
+  flex-wrap: wrap;
+}
+@media (max-width: 650px) {
+  .ai-budget-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.node-list {
+  display: grid;
+  gap: 12px;
+  margin: 20px 0;
+}
+.node-health {
+  margin-left: 10px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.node-health.online {
+  color: var(--accent);
+  opacity: 1;
+}
+.node-credentials {
+  margin-top: 20px;
+}
+.node-credentials pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.request-limit-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.request-limit-rules {
+  margin: 18px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.request-limit-rule {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 130px 150px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 16px;
+}
+.request-limit-rule + .request-limit-rule {
+  border-top: 1px solid var(--line);
+}
+.request-limit-rule > strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.request-limit-rule .form-field {
+  margin: 0;
+  min-width: 0;
+}
+.request-limit-settings .button-row {
+  flex-wrap: wrap;
+}
+.request-limit-settings code {
+  overflow-wrap: anywhere;
+}
+.request-limit-settings textarea {
+  font-family: ui-monospace, monospace;
+}
+.request-limit-fields > .form-field {
+  margin-top: 20px;
+}
+@media (max-width: 650px) {
+  .request-limit-rule {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 12px;
+  }
+  .request-limit-rule > strong {
+    grid-column: 1 / -1;
+  }
+}
+.atlas:has(.admin-shell) {
+  overflow: auto;
+  padding: 0;
+}
+.admin-header {
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 38px;
+  border-bottom: 1px solid var(--line);
+}
+.admin-header .brand {
+  gap: 12px;
+}
+.admin-header .badge {
+  font-size: 9px;
+  margin-left: 13px;
+}
+.auth-card {
+  max-width: 430px;
+  margin: 7vh auto;
+  padding: 25px;
+  text-align: center;
+}
+.auth-card > .empty-icon {
+  margin: 0 auto 27px;
+}
+.auth-card h1 {
+  font-family: "Lora", Georgia, serif;
+  font-size: 36px;
+  margin: 17px 0 12px;
+}
+.auth-card > p {
+  font-size: 12px;
+  color: var(--muted);
+}
+.auth-card form {
+  text-align: left;
+}
+.auth-card .wide {
+  margin-top: 10px;
+}
+.qr {
+  width: 180px;
+  height: 180px;
+  display: block;
+  margin: 20px auto;
+  border-radius: 8px;
+}
+.secret-key {
+  font-size: 12px;
+  word-break: break-all;
+  line-height: 1.6;
+}
+.admin-body {
+  display: flex;
+  min-height: calc(100vh - 80px);
+}
+.admin-nav {
+  padding: 30px 20px;
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.admin-nav button {
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  text-align: left;
+  border-radius: 8px;
+  color: var(--muted);
+}
+.admin-nav button.selected {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+.admin-main {
+  max-width: 1060px;
+  padding: 40px;
+  flex: 1;
+  min-width: 0;
+}
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.stat-value {
+  font-size: 35px;
+  font-family: Georgia, serif;
+  font-weight: 400;
+  color: var(--accent);
+}
+.ccu-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.ccu-heading h2 {
+  margin: 0;
+}
+.ccu-summary .ccu-status {
+  margin-bottom: 0;
+}
+.ticket-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 17px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+.ticket-row > span:first-of-type {
+  flex: 1;
+}
+.ticket-row strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.ticket-row small {
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 5px;
+}
+.ticket-row:hover {
+  color: var(--accent);
+}
+.ticket-row:last-child {
+  border: 0;
+}
+@media (max-width: 850px) {
+  .admin-nav {
+    width: 175px;
+    padding: 25px 12px;
+  }
+  .admin-main {
+    padding: 25px;
+  }
+  .stat-grid {
+    gap: 10px;
+  }
+  .stat-grid .setting-card {
+    padding: 15px;
+  }
+}
+@media (max-width: 600px) {
+  .admin-header {
+    padding: 0 18px;
+  }
+  .admin-header .brand .badge {
+    display: none;
+  }
+  .admin-body {
+    display: block;
+  }
+  .admin-nav {
+    flex-direction: row;
+    width: 100%;
+    overflow: auto;
+    padding: 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .admin-nav button {
+    white-space: nowrap;
+    font-size: 11px;
+    padding: 9px;
+  }
+  .admin-main {
+    padding: 22px 16px;
+  }
+  .stat-grid {
+    grid-template-columns: 1fr;
+  }
+  .stat-grid .setting-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0;
+  }
+  .stat-grid {
+    margin-bottom: 20px;
+  }
+  .stat-grid p {
+    margin: 0;
+  }
+  .ticket-row {
+    gap: 8px;
+  }
+  .ticket-row .badge {
+    font-size: 8px;
+  }
+  .auth-card {
+    margin: 35px auto;
+  }
+}
+.node-card {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.node-card input {
+  width: 65px;
+}
+.node-card label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.node-card .small {
+  overflow-wrap: anywhere;
+}
+.ai-provider-heading h3 {
+  margin: 0;
+  flex: 1;
+  font-size: 15px;
+}
+.ai-provider-heading {
+  margin-bottom: 14px;
+}
+.ai-provider-list {
+  display: grid;
+  gap: 14px;
+  margin: 20px 0;
+}
+.ai-provider-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px;
+  min-width: 0;
+}
+.ai-provider-usage {
+  display: grid;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 650px) {
+  .ai-provider-card {
+    padding: 12px;
+  }
+}
+/* V2.1 visual layer; retained legacy owner tools. */
+
+body.atlas-v21 .atlas .admin-shell { width:100%; min-height:100dvh; background:var(--canvas); }
+body.atlas-v21 .atlas:has(.admin-shell) { display:block; overflow:auto; }
+body.atlas-v21 .atlas .admin-header { display:flex; align-items:center; justify-content:space-between; height:64px; padding:12px 32px; border-bottom:1px solid var(--border-subtle); background:var(--surface); }
+body.atlas-v21 .atlas .admin-header .brand { width:auto; }
+body.atlas-v21 .atlas .admin-body { display:grid; grid-template-columns:220px minmax(0,1fr); gap:32px; max-width:1400px; margin:0 auto; padding:32px; }
+body.atlas-v21 .atlas .admin-nav { display:flex; flex-direction:column; align-items:stretch; gap:4px; min-width:0; padding:0 16px 0 0; border-right:1px solid var(--border-subtle); }
+body.atlas-v21 .atlas .admin-nav button { padding:10px 12px; border:0; border-radius:9px; background:transparent; color:var(--text-muted); font-size:13px; text-align:left; }
+body.atlas-v21 .atlas .admin-nav button.selected { background:var(--surface-active); color:var(--text); }
+body.atlas-v21 .atlas .admin-main { min-width:0; padding:0; }
+body.atlas-v21 .atlas .stat-grid { gap:16px; }
+body.atlas-v21 .atlas .stat-grid>div { padding:20px; border:1px solid var(--border); border-radius:14px; background:var(--surface); }
+body.atlas-v21 .atlas .stat-value { font-size:30px; font-weight:650; letter-spacing:-1px; font-variant-numeric:tabular-nums; }
+body.atlas-v21 .atlas .auth-card { width:min(440px,calc(100% - 32px)); margin:80px auto; padding:32px; border:1px solid var(--border); border-radius:24px; background:var(--surface); box-shadow:none; }
+body.atlas-v21 .atlas .auth-card h1 { font-size:26px; }
+@media(max-width:599px) {
+ body.atlas-v21 .atlas .admin-header { padding:12px 16px; }
+ body.atlas-v21 .atlas .admin-body { grid-template-columns:minmax(0,1fr); gap:24px; padding:20px 16px; }
+ body.atlas-v21 .atlas .admin-nav { flex-direction:row; flex-wrap:wrap; padding:0 0 16px; border:0; border-bottom:1px solid var(--border); gap:4px; }
+ body.atlas-v21 .atlas .admin-nav button { flex:1 0 42%; padding:9px; font-size:12px; }
+}

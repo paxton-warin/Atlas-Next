@@ -1,6 +1,8 @@
+import { getActiveProfile, getActiveProfileContext } from "../../runtime/profile-context.ts";
 import TabAppearance from "./TabAppearance";
 import PanicShortcut from "./PanicShortcut";
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { prepareWallpaper } from "./wallpaper-upload";
 import {
   Palette,
   PanelTop,
@@ -17,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   defaults,
+  writeLocal,
   sanitizeSettings,
   themes,
   type Settings as Preferences,
@@ -61,6 +64,48 @@ export function Settings({
 }: Props) {
   const [section, setSection] = useState("Appearance");
   const [query, setQuery] = useState("");
+  const wallpaperHintId = useId();
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const uploadRequest = useRef(0);
+  const live = useRef(true);
+  const latest = useRef(s);
+  latest.current = s;
+  useEffect(() => {
+    live.current = true;
+    return () => { live.current = false; uploadRequest.current++; };
+  }, []);
+  useEffect(() => {
+    if (s.background !== "wallpaper") {
+      uploadRequest.current++;
+      setUploading(false);
+      setUploadError("");
+    }
+  }, [s.background]);
+  async function uploadWallpaper(file: File) {
+    const request = ++uploadRequest.current;
+    const profile = getActiveProfile(), context = getActiveProfileContext();
+    const current = () => live.current && request === uploadRequest.current &&
+      profile === getActiveProfile() && context === getActiveProfileContext() &&
+      latest.current.background === "wallpaper";
+    toast("");
+    setUploading(true);
+    setUploadError("");
+    try {
+      const wallpaper = await prepareWallpaper(file);
+      if (!current()) return;
+      // Preserve the displayed photo as well as its durable value on failure.
+      const next = sanitizeSettings({ ...latest.current, wallpaper });
+      if (!writeLocal("atlas.settings", next))
+        throw Error("Device storage is full. Your previous background was kept.");
+      update({ wallpaper });
+      toast("Background fitted and saved locally.");
+    } catch (error) {
+      if (current()) setUploadError(error instanceof Error ? error.message : "This photo could not be loaded. Your previous background was kept.");
+    } finally {
+      if (live.current && request === uploadRequest.current) setUploading(false);
+    }
+  }
   const sections = [
     ["Appearance", Palette],
     ["Browser", PanelTop],
@@ -227,26 +272,26 @@ export function Settings({
                     ))}
                   </div>
                   {s.background === "wallpaper" && (
-                    <label className="file-button">
-                      <Upload size={16} />
-                      Upload an image
-                      <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          if (file.size > 2_000_000) {
-                            toast("Choose an image smaller than 2 MB.");
-                            return;
-                          }
-                          const reader = new FileReader();
-                          reader.onload = () =>
-                            update({ wallpaper: String(reader.result) });
-                          reader.readAsDataURL(file);
-                        }}
-                      />
-                    </label>
+                    <div>
+                      <label className="file-button">
+                        <Upload size={16} />
+                        Upload an image
+                        <input
+                          type="file"
+                          aria-label="Upload an image"
+                          aria-describedby={wallpaperHintId}
+                          accept="image/png,image/jpeg,image/jpg,image/pjpeg,image/webp,.jpg,.jpeg,.png,.webp"
+                          onChange={(event) => {
+                            const file = event.currentTarget.files?.[0];
+                            event.currentTarget.value = "";
+                            if (file) void uploadWallpaper(file);
+                          }}
+                        />
+                      </label>
+                      <p className="muted" id={wallpaperHintId}>JPG, PNG or WebP, up to 20 MiB. Photos are resized automatically for your background.</p>
+                      {uploading && <p role="status">Fitting your image…</p>}
+                      {uploadError && <p role="alert">{uploadError}</p>}
+                    </div>
                   )}
                   <div className="setting-row">
                     <span>Background dimming</span>
@@ -449,16 +494,15 @@ export function Settings({
                 <section className="setting-card">
                   <div className="section-title">
                     <Database size={18} />
-                    <h2>Local data</h2>
+                    <h2>{getActiveProfile()?"Your data":"Local data"}</h2>
                   </div>
                   <p>
-                    Your preferences and browsing history stay in this browser.
-                    No Atlas account.
+                    {getActiveProfile()?"Your preferences and browsing history are saved locally and backed up to your Atlas account.":"Your preferences and browsing history stay in this browser. No Atlas account."}
                   </p>
                   <div className="setting-row">
                     <div>
                       <h3>Remember browsing history</h3>
-                      <p>Keep the last 100 destinations on this device.</p>
+                      <p>{getActiveProfile()?"Save the last 100 destinations in your profile.":"Keep the last 100 destinations on this device."}</p>
                     </div>
                     <Toggle
                       label="Remember history"
@@ -534,8 +578,8 @@ export function Settings({
                     <button
                       className="button"
                       onClick={() => {
-                        localStorage.removeItem("atlas.history");
-                        toast("Browsing history cleared.");
+                        if(writeLocal("atlas.history",[]))toast("Browsing history cleared.");
+                        else toast("History could not be saved. Please retry.");
                       }}
                     >
                       Clear history
@@ -590,7 +634,7 @@ export function Settings({
       </div>
       {!embeddedSection && (
         <footer className="page-footer">
-          Preferences are saved on this device.
+          {getActiveProfile() ? "Preferences save locally and are backed up to your Atlas account." : "Preferences are saved in this browser."}
         </footer>
       )}
     </div>

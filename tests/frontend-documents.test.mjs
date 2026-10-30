@@ -177,3 +177,66 @@ test("unknown frame visits cannot multiply lease/database cleanup by all retaine
     "known document validates only its own authoritative tuple",
   );
 });
+
+test("nested physical policy requires a same-assignment parent; direct frames keep ancestor protection", async (t) => {
+  const f = await fixture(t),
+    child = "doc_" + "b".repeat(32),
+    other = "doc_" + "c".repeat(32);
+  assert.equal(
+    (
+      await f.reserve(child, {
+        parentDocumentId: id,
+        bootstrapNonce: "a".repeat(72),
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal((await f.reserve()).statusCode, 200);
+  assert.equal(
+    (
+      await f.reserve(child, {
+        parentDocumentId: id,
+        bootstrapNonce: "a".repeat(72),
+      })
+    ).statusCode,
+    200,
+  );
+  const nested = f.reservations.nestedPolicy(
+    { headers: { host: "front.example" } },
+    child,
+  );
+  assert.equal(nested.nested, true);
+  assert.equal(nested.prefix, origin + "/browse/frame/");
+  assert.equal(nested.bootstrapNonce, "a".repeat(72));
+  assert.equal(
+    f.reservations.nestedPolicy({ headers: { host: "front.example" } }, id)
+      .nested,
+    false,
+  );
+  assert.equal(
+    (
+      await f.reserve(child, {
+        parentDocumentId: other,
+        bootstrapNonce: "a".repeat(72),
+      })
+    ).statusCode,
+    403,
+  );
+  assert.equal((await f.reserve(child)).statusCode, 200);
+  assert.equal(
+    f.reservations.nestedPolicy({ headers: { host: "front.example" } }, child)
+      .nested,
+    true,
+    "refresh cannot remove nested binding",
+  );
+  assert.equal(
+    (
+      await f.reserve(
+        other,
+        { parentDocumentId: id, bootstrapNonce: "a".repeat(72) },
+        { origin: "null" },
+      )
+    ).statusCode,
+    403,
+  );
+});

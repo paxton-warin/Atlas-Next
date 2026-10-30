@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { gunzipSync, brotliDecompressSync } from "node:zlib";
 import { createRuntime } from "../server/runtime.mjs";
+import { HTTP_ENGINE_LIFECYCLE_SHA256 } from "../scripts/runtime-httpengine-lifecycle.mjs";
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "atlas-runtime-assets-"));
@@ -29,6 +30,27 @@ function fixture(t) {
     new URL("../scripts/runtime-relay-rotation.mjs", import.meta.url),
     join(root, "scripts/runtime-relay-rotation.mjs"),
   );
+  copyFileSync(
+    new URL("../scripts/runtime-worker-globals.mjs", import.meta.url),
+    join(root, "scripts/runtime-worker-globals.mjs"),
+  );
+  copyFileSync(
+    new URL("../scripts/runtime-normal-core.mjs", import.meta.url),
+    join(root, "scripts/runtime-normal-core.mjs"),
+  );
+  // Explicit transitive prepare dependency closure. These helpers are loaded
+  // even when this synthetic fixture does not contain a runtimekit core asset.
+  for (const file of [
+    "runtime-httpengine-lifecycle.mjs",
+    "runtime-request-cancellation.mjs",
+    "runtime-request-cancellation-source.mjs",
+    "runtime-controller-decode.mjs",
+    "runtime-toggle-attribute.mjs",
+    "runtime-literal-eval.mjs",
+    "runtime-pure-literal-eval.ts",
+  ]) {
+    copyFileSync(new URL(`../scripts/${file}`, import.meta.url), join(root, "scripts", file));
+  }
   const bytes = Buffer.from(
     "/* fixture asset for browser startup */\n".repeat(1000),
   );
@@ -97,6 +119,22 @@ test("runtime preparation makes smaller lossless variants without changing pinne
   f.build();
   assert.equal(existsSync(join(f.dir, "runtime/main.js.gz")), false);
   assert.equal(existsSync(join(f.dir, "runtime/main.js.br")), false);
+});
+
+test("runtime preparation packages the qualified engine lifecycle copy, compressed variants and exact manifest hash", (t) => {
+  const f = fixture(t), original = readFileSync(new URL("../upstream/scramjet-ls-bypass/app/vendor/httpengine-client.js", import.meta.url));
+  const inputHash = createHash("sha256").update(original).digest("hex");
+  f.setAsset("httpengine-client.js", "clients/httpengine-client.js", original);
+  f.build();
+  const raw = readFileSync(join(f.dir, "clients/httpengine-client.js"));
+  assert.equal(createHash("sha256").update(raw).digest("hex"), HTTP_ENGINE_LIFECYCLE_SHA256);
+  for (const [suffix, decode] of [[".gz", gunzipSync], [".br", brotliDecompressSync]])
+    assert.deepEqual(decode(readFileSync(join(f.dir, "clients/httpengine-client.js" + suffix))), raw);
+  const manifest = JSON.parse(readFileSync(join(f.dir, "manifest.json"), "utf8"));
+  assert.equal(manifest.hashes["clients/httpengine-client.js"], HTTP_ENGINE_LIFECYCLE_SHA256);
+  assert.ok(manifest.adaptations.includes("scripts/runtime-httpengine-lifecycle.mjs"));
+  assert.equal(createHash("sha256").update(readFileSync(join(f.root, "upstream/fixture/app/vendor/httpengine-client.js"))).digest("hex"), inputHash);
+  assert.equal(createHash("sha256").update(readFileSync(new URL("../upstream/scramjet-ls-bypass/app/vendor/httpengine-client.js", import.meta.url))).digest("hex"), inputHash);
 });
 
 test("runtime negotiates Brotli/gzip or raw assets, retains worker revalidation and uncached authorization", async (t) => {

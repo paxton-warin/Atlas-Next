@@ -1,3 +1,5 @@
+import { getActiveProfile, getActiveLocalAuthority } from "../../runtime/profile-context.ts";
+import { sameLocalActorAuthority, type LocalActorAuthority } from "../../runtime/local-authority.ts";
 import { tabPresets, validCustomIcon, type TabPreset } from "./tab-presets.ts";
 import { normalizeShortcut } from "../../runtime/panic-shortcut.ts";
 export type Engine = "runtime";
@@ -157,16 +159,105 @@ export function destination(value: string, search: string) {
     throw Error("Remove credentials from the address.");
   return url.href;
 }
+export const portableAtlasKey = (key: string) =>
+  [
+    "atlas.settings",
+    "atlas.shortcuts",
+    "atlas.history",
+    "atlas.chats",
+    "atlas.onboarded",
+    "atlas.sidebarCollapsed",
+    "atlas.ai.geminiConsent",
+    "atlas.tabs",
+  ].includes(key) || /^atlas\.windows\.v1\.[a-f0-9-]{36}$/.test(key);
+export function profileLocalKey(key: string) {
+  const id = getActiveProfile();
+  const local = getActiveLocalAuthority?.();
+  return id && portableAtlasKey(key)
+    ? "atlas.profile.user:" + id + ":" + (local ? 'replica:' + local.replicaId + ':' : '') + key
+    : key;
+}
 export function readLocal<T>(key: string, fallback: T): T {
   try {
-    return JSON.parse(localStorage.getItem(key) || "null") ?? fallback;
+    const encoded = localStorage.getItem(profileLocalKey(key));
+    // Native-only replicas never import account-level legacy preferences or
+    // replay old pending markers. Only this incarnation or completed v2 restore
+    // supplies its application state.
+    return JSON.parse(encoded || 'null') ?? fallback;
   } catch {
     return fallback;
   }
 }
+/** Reconcile existing shell preferences after local readiness on each start. Ordinary
+ * reads are pure: this explicit, cancellable scan is not a storage prerequisite.
+ * Each value is read immediately before visiting, so intervening writes win. */
+export function seedPortableAtlasPreferences(
+  authority: LocalActorAuthority,
+  visit: (key: string, value: string) => void,
+  options: {
+    current?: () => boolean;
+    complete?: () => void;
+    storage?: Pick<Storage, "length" | "key" | "getItem">;
+    schedule?: (work: () => void) => () => void;
+    now?: () => number;
+  } = {},
+) {
+  const storage = options.storage ?? localStorage,
+    schedule = options.schedule ?? ((work: () => void) => {
+      const timer = setTimeout(work, 16);
+      return () => clearTimeout(timer);
+    }),
+    now = options.now ?? (() => performance.now()),
+    prefix = `atlas.profile.user:${authority.profileId}:replica:${authority.replicaId}:`,
+    seen = new Set<string>();
+  let stopped = false, index = 0, length = storage.length, cancel: (() => void) | undefined;
+  const current = () => !stopped &&
+    sameLocalActorAuthority(authority, getActiveLocalAuthority()) &&
+    getActiveProfile() === authority.profileId && (options.current?.() ?? true);
+  function step() {
+    cancel = undefined;
+    if (!current()) return;
+    const start = now();
+    let keys = 0, bytes = 0;
+    try {
+      // Enumeration can shift when another window adds/removes a key. Restart
+      // the bounded metadata walk; previously visited values need not repeat.
+      if (storage.length !== length) { length = storage.length; index = 0; }
+      while (index < length && keys < 16 && bytes < 64 * 1024 && now() - start < 4) {
+        const physical = storage.key(index++);
+        keys++;
+        if (!physical?.startsWith(prefix) || seen.has(physical)) continue;
+        const key = physical.slice(prefix.length);
+        if (!portableAtlasKey(key)) continue;
+        const value = storage.getItem(physical);
+        if (!current()) return;
+        seen.add(physical);
+        if (value !== null) {
+          bytes += 2 * (key.length + value.length);
+          visit(key, value);
+        }
+      }
+      if (!current()) return;
+      if (index >= length) { seen.clear(); options.complete?.(); }
+      else cancel = schedule(step);
+    } catch {
+      // Unavailable browser storage leaves seeding incomplete. A subsequent
+      // startup may retry; neither a read nor website readiness is failed.
+    }
+  }
+  cancel = schedule(step);
+  return () => { stopped = true; cancel?.(); seen.clear(); };
+}
 export function writeLocal(key: string, value: unknown) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    const physical = profileLocalKey(key),
+      encoded = JSON.stringify(value);
+    if (localStorage.getItem(physical) === encoded) return true;
+    const portable = !!getActiveProfile() && portableAtlasKey(key), local = getActiveLocalAuthority?.();
+    localStorage.setItem(physical, encoded);
+    if (portable)
+      window.dispatchEvent(new CustomEvent("atlas:profile-user-change", {detail:{profileId:getActiveProfile(),
+        ...(local ? {replicaId:local.replicaId} : {}),key,value:encoded}}));
     return true;
   } catch {
     return false;
@@ -204,6 +295,7 @@ export async function api<T = any>(
   return data;
 }
 export type Tab = {
+  pinned?: boolean;
   favicon?: string;
   workspace?: "browser" | "ai";
   id: string;
@@ -214,6 +306,17 @@ export type Tab = {
   message?: string;
   local?: boolean;
 };
+/** Runtime status events are often repeated. Preserve the array and unrelated
+ * tab identities unless one actual field changes. */
+export function patchTab(
+  tabs: Tab[], id: string, change: Partial<Tab> | ((tab: Tab) => Partial<Tab>),
+): Tab[] {
+  const index = tabs.findIndex((tab) => tab.id === id);
+  if (index < 0) return tabs;
+  const previous = tabs[index], patch = typeof change === "function" ? change(previous) : change;
+  if (Object.keys(patch).every((key) => previous[key as keyof Tab] === patch[key as keyof Tab])) return tabs;
+  const next = tabs.slice(); next[index] = { ...previous, ...patch }; return next;
+}
 export type Game = {
   kind?: "game" | "app";
   thumbnail?: string;

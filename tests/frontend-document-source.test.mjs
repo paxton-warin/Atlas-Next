@@ -359,3 +359,21 @@ test("abort/timeout rejects promptly, ignores late results and retains four orph
   await assert.rejects(loading, (e) => e.code === "document_source_aborted");
   g.source.dispose();
 });
+
+test("explicit same-origin composition ignores upstream CSP including late meta without changing website bytes or assigned transport", async () => {
+  const html = '<html><head><script>window.first=true</script><meta http-equiv="content-security-policy" content="sandbox; frame-ancestors none"></head><body>same-origin profile</body></html>';
+  const f = fixture({enforceOriginalPolicy:false,fetch:async r=>response(r.url,html,[["content-type","text/html"],["content-security-policy","sandbox; frame-ancestors none"],["cross-origin-embedder-policy","require-corp"]])});
+  const result = await f.prepare();
+  assert.deepEqual(result.contentPolicies, []);
+  assert.equal(result.coep,"unsafe-none");
+  assert.equal(result.html, html);
+  assert.equal(result.url,"https://website.test/start");
+  f.source.dispose();
+});
+
+test("same-origin profile mode discards unsupported and repeated COEP without adding policy failures", async () => {
+  for (const headers of [[["cross-origin-embedder-policy","unsupported-token"]],[["cross-origin-embedder-policy","require-corp"],["cross-origin-embedder-policy","credentialless"]]]) {
+    const f=fixture({enforceOriginalPolicy:false,fetch:async r=>response(r.url,"<html><body>ok</body></html>",[["content-type","text/html"],...headers])});
+    assert.equal((await f.prepare()).coep,"unsafe-none");f.source.dispose();
+  }
+});

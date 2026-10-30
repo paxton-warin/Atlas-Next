@@ -107,6 +107,10 @@ function install(app, label) {
 install(front, "Main");
 install(remote, "remote");
 for (const name of [
+  "profile-journal",
+  "profile-idb-catalog", "profile-idb-quota",
+  "profile-permissions",
+  "hub-contracts",
   "native-resource-preparer",
   "opaque-resource-integrity",
   "sandbox-relay",

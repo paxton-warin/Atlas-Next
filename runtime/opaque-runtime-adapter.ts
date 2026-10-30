@@ -9,6 +9,7 @@
  */
 export const OPAQUE_NETWORK_PROTOCOL = "atlas-network-v2";
 import { resourceResponseBudget } from "./resource-response-budget.ts";
+import { assertDocumentOrigin, type DocumentOrigin } from "./document-origin.ts";
 export const PINNED_OPAQUE_CORE_VERSION = "2.0.67-alpha.2";
 export type OpaqueNetworkRequest = {
   url: string;
@@ -75,13 +76,20 @@ function websiteURL(value: string, base: string) {
 /** Private filtered-response authority shared only by clients in this realm.
  * A prototype clone call must not turn an opaque/CORS response into a default
  * synthetic response when a website bypasses its instance clone method. */
-type CacheResponseMetadata = Readonly<{ type: ResponseType; url: string; redirected: boolean }>;
-const responseAuthorities = new WeakMap<object, {
-  retain(): void;
-  release(): void;
-  remember(response: Response, metadata: CacheResponseMetadata): void;
-  describe(response: Response): CacheResponseMetadata | undefined;
-}>();
+type CacheResponseMetadata = Readonly<{
+  type: ResponseType;
+  url: string;
+  redirected: boolean;
+}>;
+const responseAuthorities = new WeakMap<
+  object,
+  {
+    retain(): void;
+    release(): void;
+    remember(response: Response, metadata: CacheResponseMetadata): void;
+    describe(response: Response): CacheResponseMetadata | undefined;
+  }
+>();
 function retainResponseAuthority(NativeResponse: typeof Response) {
   const prototype = NativeResponse.prototype;
   let authority = responseAuthorities.get(prototype);
@@ -89,37 +97,53 @@ function retainResponseAuthority(NativeResponse: typeof Response) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, "clone");
     if (!descriptor || typeof descriptor.value !== "function")
       throw new TypeError("Native Response clone required");
-    const nativeClone = descriptor.value, apply = Reflect.apply,
-      define = Object.defineProperty, defineAll = Object.defineProperties,
-      ownDescriptor = Object.getOwnPropertyDescriptor, freeze = Object.freeze,
+    const nativeClone = descriptor.value,
+      apply = Reflect.apply,
+      define = Object.defineProperty,
+      defineAll = Object.defineProperties,
+      ownDescriptor = Object.getOwnPropertyDescriptor,
+      freeze = Object.freeze,
       map = new WeakMap<Response, CacheResponseMetadata>(),
-      get = WeakMap.prototype.get, set = WeakMap.prototype.set;
+      get = WeakMap.prototype.get,
+      set = WeakMap.prototype.set;
     let references = 0;
     function remember(response: Response, input: CacheResponseMetadata) {
-      const metadata = freeze({type: input.type, url: input.url, redirected: input.redirected});
+      const metadata = freeze({
+        type: input.type,
+        url: input.url,
+        redirected: input.redirected,
+      });
       apply(set, map, [response, metadata]);
       defineAll(response, {
-        type: {value: metadata.type}, url: {value: metadata.url},
-        redirected: {value: metadata.redirected},
-        clone: {value: () => apply(clone, response, [])},
+        type: { value: metadata.type },
+        url: { value: metadata.url },
+        redirected: { value: metadata.redirected },
+        clone: { value: () => apply(clone, response, []) },
       });
     }
     function clone(this: Response) {
       // Native clone performs the brand/locked/disturbed-body checks first.
-      const result = apply(nativeClone, this, []) as Response, metadata = apply(get, map, [this]);
+      const result = apply(nativeClone, this, []) as Response,
+        metadata = apply(get, map, [this]);
       if (metadata) remember(result, metadata);
       return result;
     }
     authority = {
       retain() {
-        if (references++ === 0) define(prototype, "clone", {...descriptor, value: clone});
+        if (references++ === 0)
+          define(prototype, "clone", { ...descriptor, value: clone });
       },
       release() {
-        if (--references === 0 && ownDescriptor(prototype, "clone")?.value === clone)
+        if (
+          --references === 0 &&
+          ownDescriptor(prototype, "clone")?.value === clone
+        )
           define(prototype, "clone", descriptor);
       },
       remember,
-      describe(response) { return apply(get, map, [response]); },
+      describe(response) {
+        return apply(get, map, [response]);
+      },
     };
     responseAuthorities.set(prototype, authority);
   }
@@ -191,7 +215,10 @@ export function createOpaqueNetworkClient(options: {
     deadline: number;
   };
   const pending = new Map<number, Admission>(),
-    posted = new Map<number, { size: number; timer?: ReturnType<typeof setTimeout> }>(),
+    posted = new Map<
+      number,
+      { size: number; timer?: ReturnType<typeof setTimeout> }
+    >(),
     waiting: Admission[] = [];
   const stringify = JSON.stringify,
     bufferSlice = ArrayBuffer.prototype.slice,
@@ -316,8 +343,13 @@ export function createOpaqueNetworkClient(options: {
         postedBytes += item.size;
         const body = item.request.body;
         post(
-          { protocol: OPAQUE_NETWORK_PROTOCOL, documentId,
-            sequence: id, type: "fetch", request: item.request },
+          {
+            protocol: OPAQUE_NETWORK_PROTOCOL,
+            documentId,
+            sequence: id,
+            type: "fetch",
+            request: item.request,
+          },
           body ? [body] : [],
         );
       } catch (error) {
@@ -325,7 +357,10 @@ export function createOpaqueNetworkClient(options: {
         // retire this channel rather than emit a later protocol gap.
         if (item.id !== undefined) finish(item.id, error, undefined, false);
         else {
-          item.done = true; clearTimer(item.timer); item.detach(); item.reject(error);
+          item.done = true;
+          clearTimer(item.timer);
+          item.detach();
+          item.reject(error);
         }
         dispose(new OpaqueNetworkError("network_port_closed"));
       }
@@ -421,16 +456,25 @@ export function createOpaqueNetworkClient(options: {
       !validHeaders(request.headers) ||
       !["omit", "same-origin", "include"].includes(request.credentials) ||
       !["cors", "no-cors", "same-origin"].includes(request.mode) ||
-      (request.forcePreflight !== undefined && typeof request.forcePreflight !== "boolean") ||
+      (request.forcePreflight !== undefined &&
+        typeof request.forcePreflight !== "boolean") ||
       !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(request.method) ||
       (request.body !== undefined &&
-        (!(request.body instanceof ArrayBuffer) || request.body.byteLength > maxBodyBytes))
-    ) throw new TypeError("Invalid website network request.");
+        (!(request.body instanceof ArrayBuffer) ||
+          request.body.byteLength > maxBodyBytes))
+    )
+      throw new TypeError("Invalid website network request.");
     // Identical cost to the trusted broker: both queued and posted allowances
     // are bounded. An individual request that cannot fit must never wait forever.
-    const size = (request.body?.byteLength ?? 0) + stringify([url, request.headers]).length * 2;
-    if (size > requestBytesLimit) throw new OpaqueNetworkError("network_backpressure");
-    const immediate = !waiting.length && posted.size < maxPending && postedBytes + size <= requestBytesLimit;
+    const size =
+      (request.body?.byteLength ?? 0) +
+      stringify([url, request.headers]).length * 2;
+    if (size > requestBytesLimit)
+      throw new OpaqueNetworkError("network_backpressure");
+    const immediate =
+      !waiting.length &&
+      posted.size < maxPending &&
+      postedBytes + size <= requestBytesLimit;
     if (!immediate && waiting.length >= maxQueued)
       throw new OpaqueNetworkError("concurrency_limit");
     if (!immediate && queuedBytes + size > requestBytesLimit)
@@ -439,16 +483,30 @@ export function createOpaqueNetworkClient(options: {
     // ArrayBuffers/header arrays must not change a queued HTTP request.
     const headers: [string, string][] = [];
     for (const pair of request.headers) headers.push([pair[0], pair[1]]);
-    const payload = { ...request, url, headers,
-      body: request.body ? apply(bufferSlice, request.body, [0]) : undefined };
+    const payload = {
+      ...request,
+      url,
+      headers,
+      body: request.body ? apply(bufferSlice, request.body, [0]) : undefined,
+    };
     return await new Promise<OpaqueNetworkResponse>((resolve, reject) => {
       let item: Admission;
       const abort = () => stop(item, abortError(signal));
-      const timer = setTimer(() => stop(item, new OpaqueNetworkError("network_timeout")), Math.max(0, deadline - now()));
+      const timer = setTimer(
+        () => stop(item, new OpaqueNetworkError("network_timeout")),
+        Math.max(0, deadline - now()),
+      );
       item = {
-        request: payload, size, deadline, queued: true, done: false,
-        responseLimit: options.maxBodyBytes ?? resourceResponseBudget(request.destination),
-        resolve, reject, timer,
+        request: payload,
+        size,
+        deadline,
+        queued: true,
+        done: false,
+        responseLimit:
+          options.maxBodyBytes ?? resourceResponseBudget(request.destination),
+        resolve,
+        reject,
+        timer,
         detach: () => signal?.removeEventListener("abort", abort),
       };
       signal?.addEventListener("abort", abort, { once: true });
@@ -463,7 +521,11 @@ export function createOpaqueNetworkClient(options: {
       // No protected bytes are retained in the opaque document. Cache.put of
       // these filtered responses is explicitly unsupported, not fake success.
       const result = NativeResponse.error();
-      responseAuthority.remember(result, {type:value.type,url:value.url,redirected:false});
+      responseAuthority.remember(result, {
+        type: value.type,
+        url: value.url,
+        redirected: false,
+      });
       return result;
     }
     const headers = new NativeHeaders(
@@ -478,7 +540,9 @@ export function createOpaqueNetworkClient(options: {
       headers,
     });
     responseAuthority.remember(result, {
-      type:value.type ?? "basic",url:value.url,redirected:value.redirected ?? false,
+      type: value.type ?? "basic",
+      url: value.url,
+      redirected: value.redirected ?? false,
     });
     return result;
   }
@@ -548,8 +612,12 @@ export function createOpaqueNetworkClient(options: {
     get pending() {
       return pending.size;
     },
-    get queued() { return waiting.length; },
-    get posted() { return posted.size; },
+    get queued() {
+      return waiting.length;
+    },
+    get posted() {
+      return posted.size;
+    },
   };
 }
 
@@ -670,11 +738,16 @@ export function createPinnedOpaqueRewriter(options: {
       );
     },
     html(source: string, documentBaseURL = url.href): string {
-      return core.transformHtml(source, context, {origin:url,base:websiteURL(documentBaseURL,url.href)}, {
-        loadScripts: !!options.injectScripts,
-        inline: false,
-        source: url.href,
-      });
+      return core.transformHtml(
+        source,
+        context,
+        { origin: url, base: websiteURL(documentBaseURL, url.href) },
+        {
+          loadScripts: !!options.injectScripts,
+          inline: false,
+          source: url.href,
+        },
+      );
     },
   };
 }
@@ -727,7 +800,9 @@ export function captureOpaqueContentDocumentParity(
     const hooks = captured.map(({ prototype, getter }) => {
       const trapped = descriptor(prototype, "contentDocument");
       if (!trapped?.get || trapped.get === getter)
-        throw new TypeError("Opaque contentDocument core hook was not installed.");
+        throw new TypeError(
+          "Opaque contentDocument core hook was not installed.",
+        );
       return { prototype, getter, trapped, trappedGetter: trapped.get };
     });
     for (const { prototype, getter, trapped, trappedGetter } of hooks)
@@ -747,11 +822,17 @@ export function captureOpaqueContentDocumentParity(
 
 export function bootOpaqueRuntimeClient(options: {
   global: Window & typeof globalThis;
+  documentOrigin?: DocumentOrigin;
   core: any;
   wasm: Uint8Array;
   documentURL: string;
   prefix: string;
   network: ReturnType<typeof createOpaqueNetworkClient>;
+  parentWindow?: Window;
+  topWindow?: Window;
+  messageWindow?: (
+    target: Window,
+  ) => { postMessage(...args: any[]): void } | undefined;
   localStorage: Storage;
   sessionStorage: Storage;
   installIndexedDB: (client: any, global: Window & typeof globalThis) => void;
@@ -767,6 +848,7 @@ export function bootOpaqueRuntimeClient(options: {
     install(): void;
     setURL?(value: string): void;
   };
+  open?: typeof window.open;
   installWorkers?: (client: any, global: Window & typeof globalThis) => void;
   installXHR?: (client: any, global: Window & typeof globalThis) => void;
   installWebSocket?: (client: any, global: Window & typeof globalThis) => void;
@@ -785,10 +867,7 @@ export function bootOpaqueRuntimeClient(options: {
     throw new TypeError(
       "Opaque self-boot requires the reviewed experimental fork seam.",
     );
-  if (global.origin !== "null")
-    throw new TypeError(
-      "Opaque self-boot requires a browser-enforced opaque origin.",
-    );
+  assertDocumentOrigin(global, options.documentOrigin);
   let current = websiteURL(options.documentURL, options.documentURL);
   const nativeRequest = global.Request;
   const nativePush = global.history.pushState.bind(global.history);
@@ -816,13 +895,15 @@ export function bootOpaqueRuntimeClient(options: {
     options.onNavigate(url.href, mode);
   };
   const overrides = {
-    ...(options.installCaches ? {
-      "./shared/caches.ts": {
-        default(client: any, global: Window & typeof globalThis) {
-          options.installCaches!(client, global);
-        },
-      },
-    } : {}),
+    ...(options.installCaches
+      ? {
+          "./shared/caches.ts": {
+            default(client: any, global: Window & typeof globalThis) {
+              options.installCaches!(client, global);
+            },
+          },
+        }
+      : {}),
     ...(options.trustedTypes
       ? {
           "./shared/eval.ts": {
@@ -858,6 +939,15 @@ export function bootOpaqueRuntimeClient(options: {
         );
       },
     },
+    ...(options.open
+      ? {
+          "./dom/open.ts": {
+            default() {
+              define(global, "open", options.open);
+            },
+          },
+        }
+      : {}),
     "./dom/cookie.ts": {
       default() {
         if (options.cookies) options.cookies.install();
@@ -1015,7 +1105,8 @@ export function bootOpaqueRuntimeClient(options: {
       return [deny, deny];
     },
   };
-  const installContentDocumentParity = captureOpaqueContentDocumentParity(global);
+  const installContentDocumentParity =
+    captureOpaqueContentDocumentParity(global);
   const client = new core.RuntimeKitClient(global, {
     context: rewriter.context,
     transport,
@@ -1026,6 +1117,9 @@ export function bootOpaqueRuntimeClient(options: {
     history: [],
     opaqueDocument: {
       url: () => current.href,
+      parentWindow: options.parentWindow,
+      topWindow: options.topWindow,
+      messageWindow: options.messageWindow,
       navigate,
       moduleOverrides: overrides,
     },
@@ -1039,10 +1133,10 @@ export function bootOpaqueRuntimeClient(options: {
   // Website-visible diagnostics must not retain the unbrokered native worker
   // constructor after installing the opaque facade. Prototype recovery would
   // otherwise bypass logical worker-src while native Blob boot is permitted.
-  if(options.installWorkers)
-    for(const name of ["Worker","SharedWorker"]){
+  if (options.installWorkers)
+    for (const name of ["Worker", "SharedWorker"]) {
       client.box.ctors[name] = [(global as any)[name]];
-      Reflect.deleteProperty(client.natives.store,name);
+      Reflect.deleteProperty(client.natives.store, name);
     }
   return { client, rewriter, network, dispose: () => network.dispose() };
 }

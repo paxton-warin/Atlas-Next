@@ -1,0 +1,16 @@
+import{chromium}from'@playwright/test';import{mkdir,writeFile}from'node:fs/promises';
+const E='evidence/client-lag-followup-20261022';await mkdir(E,{recursive:true});
+const b=await chromium.launch({headless:false,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',args:['--remote-debugging-port=0']});
+let cdp,p;let stop;
+const events=[];let watchdog;
+try{
+ const c=await b.newContext({viewport:{width:1366,height:768}});p=await c.newPage();p.setDefaultTimeout(15000);cdp=await c.newCDPSession(p);await cdp.send('Performance.enable');
+ p.on('pageerror',e=>events.push({type:'pageerror',name:e.name,message:e.message.replace(/https?:\/\/\S+/g,'[URL]').slice(0,150)}));
+ p.on('console',m=>{if(m.type()==='error')events.push({type:'console',message:m.text().replace(/https?:\/\/\S+/g,'[URL]').slice(0,150)})});
+ await p.goto('https://chatgpt.com/');const editor=p.locator('#prompt-textarea:visible,[contenteditable=true][role=textbox]:visible,textarea[placeholder*=Ask]:visible,input[placeholder*=Ask]:visible').first();await editor.waitFor({timeout:60000});console.log('DIRECT_COMPOSER_READY');await p.screenshot({path:E+'/direct-chatgpt-ready.png'});await cdp.send('Emulation.setCPUThrottlingRate',{rate:4});
+ watchdog=setTimeout(async()=>{console.log('DIRECT_WATCHDOG_TIMEOUT');await cdp.send('Runtime.terminateExecution').catch(()=>{});await b.close()},120000);
+ await editor.fill('Write an approximately 1000-word tutorial on binary search, with eight numbered sections, worked examples, a comparison table, pseudocode, and a few mathematical equations.');console.log('DIRECT_BUTTONS',JSON.stringify(await p.locator('button:visible').evaluateAll(es=>es.map(e=>({label:e.getAttribute('aria-label'),text:e.textContent?.trim().slice(0,50),type:e.type,testid:e.getAttribute('data-testid')})))));const send=p.getByRole('button',{name:/^(Send|Send message|Send prompt|Submit)$/}).first();if(!await send.count())throw Error('Explicit send control needs selector inspection');await send.click();console.log('DIRECT_SEND_CLICKED');
+ await p.waitForTimeout(20000);const state=await p.evaluate(()=>({title:document.title,bodyCharacters:document.body.textContent.length,assistants:document.querySelectorAll('[data-message-author-role=assistant]').length,articleCount:document.querySelectorAll('article').length,paragraphs:document.querySelectorAll('p').length}));
+ await p.screenshot({path:E+'/direct-chatgpt-actual-reply.png'});console.log('DIRECT_STATE',JSON.stringify(state));await editor.click();await editor.fill('Unsent responsiveness draft');const typing=[];for(let i=0;i<20;i++){const start=performance.now();await editor.press('a');typing.push(performance.now()-start)}console.log('DIRECT_TYPING',JSON.stringify(typing));
+ await writeFile(E+'/DIRECT_UNPROFILED.json',JSON.stringify({result:'INTERACTIONS_RESPONDED',state,events},null,2));console.log('DIRECT_CHATGPT=INTERACTIONS_RESPONDED');
+} catch(e){await writeFile(E+'/DIRECT_UNPROFILED.json',JSON.stringify({result:'FAIL',message:e.message.replace(/https?:\/\/\S+/g,'[URL]').slice(0,250),events},null,2));throw e}finally{clearTimeout(watchdog);await b.close()}

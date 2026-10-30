@@ -4,7 +4,7 @@ const { version } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 );
 
-test("new-tab footer has tight edge spacing, clear credit and the package version", async ({
+test("new-tab footer follows V2.1 gutters with clear credit and the package version", async ({
   page,
 }) => {
   await page.addInitScript(() =>
@@ -20,14 +20,15 @@ test("new-tab footer has tight edge spacing, clear credit and the package versio
       exact: true,
     });
     await expect(credit).toContainText("Made by Paxton Warin");
-    await expect(page.locator(".newtab-version")).toHaveText(`v${version}`);
+    await expect(page.locator(".newtab-version")).toHaveText(
+      `v${version.replace(/\.0$/, "")}`,
+    );
     const left = (await credit.boundingBox())!,
       right = (await customize.boundingBox())!;
-    expect(left.x - panel.x).toBeGreaterThanOrEqual(8);
-    expect(left.x - panel.x).toBeLessThanOrEqual(22);
-    expect(panel.x + panel.width - right.x - right.width).toBeLessThanOrEqual(
-      22,
-    );
+    // Default compact chrome uses24px; mobile retains16px.
+    const gutter = width < 600 ? 16 : 24;
+    expect(left.x - panel.x).toBe(gutter);
+    expect(panel.x + panel.width - right.x - right.width).toBe(gutter);
     await expect(credit.locator("strong")).toHaveCSS("font-weight", "600");
     expect(
       await page.evaluate(

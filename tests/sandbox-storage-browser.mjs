@@ -51,8 +51,13 @@ installSandboxStorageRendezvous(app, {
   timeoutMs: 250,
 });
 for (const name of [
+  "profile-journal",
+  "profile-idb-catalog", "profile-idb-quota",
+  "profile-permissions",
+  "hub-contracts",
   "sandbox-storage-worker",
   "sandbox-local-storage",
+  "document-origin",
   "sandbox-vault",
 ])
   app.get("/" + name + ".js", (_req, reply) =>
@@ -68,9 +73,10 @@ for (const name of [
               module: ModuleKind.ESNext,
             },
           },
-        ).outputText.replaceAll('.ts"', '.js"'),
+        ).outputText.replaceAll(/\.ts(["'])/g, '.js$1').replace('from "tldts"','from "/tldts.js"'),
       ),
   );
+app.get("/tldts.js",(_q,r)=>r.type("application/javascript").send(readFileSync("node_modules/tldts/dist/index.esm.min.js","utf8")));
 app.get("/child", (_req, reply) =>
   reply
     .header(

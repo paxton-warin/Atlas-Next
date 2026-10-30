@@ -196,6 +196,24 @@ test("online renewal keeps the mounted runtime and live website intact", async (
   page.on("websocket", (socket) => relayUrls.push(socket.url()));
   await page.addInitScript(() => {
     if (window === top) localStorage.setItem("atlas.onboarded", "true");
+    // Observe only actual native transport sockets in the trusted runtime.
+    // Website WebSockets remain the normal rewritten, brokered implementation.
+    if (
+      location.origin !== "http://127.0.0.1:4181" ||
+      location.pathname !== "/"
+    )
+      return;
+    const Native = WebSocket;
+    const sockets: WebSocket[] = [];
+    (window as any).__atlasTestRelaySockets = sockets;
+    window.WebSocket = class extends Native {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        if (protocols === undefined) super(url);
+        else super(url, protocols);
+        if (new URL(String(url), location.href).pathname.startsWith("/relay/"))
+          sockets.push(this);
+      }
+    };
   });
   await page.goto("/");
   await page.getByLabel("Search the web").fill("http://127.0.0.1:4199/fixture");
@@ -282,9 +300,42 @@ test("online renewal keeps the mounted runtime and live website intact", async (
   await site.getByRole("button", { name: "Test WebSocket" }).click();
   await expect(site.locator("#socket-result")).toHaveText("socket works");
   const fresh = encodeURIComponent(lease.relayTicket || lease.ticket);
+  // Renewal must not replace a healthy multiplexed relay or native HTTP pool.
+  // The fresh upgrade credential is for the NEXT connection, not a forced one.
+  expect(relayUrls.some((url) => new URL(url).pathname.includes(fresh))).toBe(
+    false,
+  );
+  const closed = await runtimeFrame.evaluate(async () => {
+    const sockets = ((window as any).__atlasTestRelaySockets ||
+      []) as WebSocket[];
+    const active = sockets.filter(
+      (socket) => socket.readyState === WebSocket.OPEN,
+    );
+    await Promise.all(
+      active.map(
+        (socket) =>
+          new Promise<void>((resolve) => {
+            socket.addEventListener("close", () => resolve(), { once: true });
+            socket.close(1000, "Fixture relay reconnect");
+          }),
+      ),
+    );
+    return active.length;
+  });
+  expect(closed).toBeGreaterThan(0);
+  await site.locator("#socket-result").evaluate((output) => {
+    output.textContent = "";
+  });
+  await site.getByRole("button", { name: "Test WebSocket" }).click();
+  await expect(site.locator("#socket-result")).toHaveText("socket works");
   await expect
     .poll(() => relayUrls.some((url) => new URL(url).pathname.includes(fresh)))
     .toBe(true);
+  expect(await runtime.getAttribute("src")).toBe(before);
+  await expect(site.locator("body")).toHaveAttribute(
+    "data-retained-during-renewal",
+    "yes",
+  );
 });
 
 test("transient renewal outage preserves the pin and retries instead of prompting", async ({

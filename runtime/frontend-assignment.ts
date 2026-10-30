@@ -99,6 +99,9 @@ type Options = {
         "postMessage" | "addEventListener" | "removeEventListener" | "close"
       >
     | false;
+  /** Trusted runtime/profile namespace. Each coordinator owns a fresh channel
+   * so closing the last tab does not hand a closed endpoint to the next tab. */
+  channelName?: string;
   initialSession?: { session: string; generation?: number; nodeId?: string };
   onAssignment?: (event: {
     assignment: FrontendAssignment;
@@ -205,7 +208,7 @@ export function createFrontendAssignmentCoordinator(options: Options) {
       ? undefined
       : (options.channel ??
         (win?.BroadcastChannel
-          ? new win.BroadcastChannel(CHANNEL)
+          ? new win.BroadcastChannel(options.channelName ?? CHANNEL)
           : undefined));
   const factory =
     options.createRelay ??

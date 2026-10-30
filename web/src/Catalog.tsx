@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowUpRight, Heart, Search } from "lucide-react";
 import { readLocal, writeLocal, type Game } from "./model";
 export default function Catalog({
@@ -20,18 +20,22 @@ export default function Catalog({
   );
   const title = kind === "app" ? "Apps" : "Games",
     noun = title.toLowerCase();
-  const library = items.filter((item) => (item.kind || "game") === kind);
-  const categories = [...new Set(library.map((item) => item.category))].sort();
-  const filtered = library
+  const library = useMemo(() => items.filter((item) => (item.kind || "game") === kind), [items, kind]);
+  const categories = useMemo(() => [...new Set(library.map((item) => item.category))].sort(), [library]);
+  const searchText = useMemo(() => new Map(library.map((item) => [item.id,
+    `${item.name} ${item.category} ${item.description}`.toLowerCase(),
+  ])), [library]);
+  const favoriteIds = useMemo(() => new Set(favorites), [favorites]);
+  const normalizedQuery = query.toLowerCase();
+  const filtered = useMemo(() => library
     .filter(
       (item) =>
-        (!onlyFavorites || favorites.includes(item.id)) &&
+        (!onlyFavorites || favoriteIds.has(item.id)) &&
         (category === "All categories" || item.category === category) &&
-        `${item.name} ${item.category} ${item.description}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
+        searchText.get(item.id)!.includes(normalizedQuery),
     )
-    .sort((a, b) => (sort === "A–Z" ? a.name.localeCompare(b.name) : 0));
+    .sort((a, b) => (sort === "A–Z" ? a.name.localeCompare(b.name) : 0)),
+    [library, onlyFavorites, favoriteIds, category, searchText, normalizedQuery, sort]);
   useEffect(() => setLimit(48), [query, category, sort, onlyFavorites]);
   return (
     <div
@@ -126,11 +130,11 @@ export default function Catalog({
               </span>
             </button>
             <button
-              className={`favorite ${favorites.includes(item.id) ? "saved" : ""}`}
+                className={`favorite ${favoriteIds.has(item.id) ? "saved" : ""}`}
               aria-label={`Favorite ${item.name}`}
-              aria-pressed={favorites.includes(item.id)}
+                aria-pressed={favoriteIds.has(item.id)}
               onClick={() => {
-                const next = favorites.includes(item.id)
+                const next = favoriteIds.has(item.id)
                   ? favorites.filter((id) => id !== item.id)
                   : [...favorites, item.id];
                 setFavorites(next);

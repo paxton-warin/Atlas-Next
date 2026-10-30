@@ -1,5 +1,24 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { decodeTarget } from "../runtime/url-codec";
+
+async function openFixtureStart(page: Page) {
+  await page.goto("/");
+  const hero = page.getByLabel("Search the web");
+  const address = page.getByLabel("Address bar");
+  await expect(hero.or(address)).toBeVisible();
+  if (await address.isVisible()) {
+    const newTab = page.getByRole("button", { name: "New tab", exact: true });
+    if (await newTab.isVisible()) await newTab.click();
+    else {
+      await page.getByRole("button", { name: /^Tabs \(\d+\)$/ }).click();
+      await page
+        .getByRole("dialog", { name: "Open tabs", exact: true })
+        .getByRole("button", { name: "New tab", exact: true })
+        .click();
+    }
+  }
+  await expect(hero).toBeVisible();
+}
 test.beforeEach(async ({ page }) => {
   if (process.env.ATLAS_RENDERER_DEBUG !== "1") return;
   await page.addInitScript(() => {
@@ -188,7 +207,7 @@ test("computed root dynamic imports route through the assigned runtime in classi
     await page.addInitScript(() => {
       if (window === top) localStorage.setItem("atlas.onboarded", "true");
     });
-    await page.goto("/");
+    await openFixtureStart(page);
     await page
       .getByLabel("Search the web")
       .fill("http://127.0.0.1:4199/compatibility-root-imports");

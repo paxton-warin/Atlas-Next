@@ -2,6 +2,10 @@
  * New runtime imports must not silently become404s in otherwise valid tests. */
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+const { buildSync } = createRequire(import.meta.resolve("vite"))("esbuild");
+let cipherFixture;
 export function compileRuntimeFixture(entries, { externalSpecifiers = [] } = {}) {
   if (!Array.isArray(externalSpecifiers) || externalSpecifiers.length > 16 ||
       externalSpecifiers.some(value => typeof value !== "string" || value.length > 128 ||
@@ -35,6 +39,24 @@ export function compileRuntimeFixture(entries, { externalSpecifiers = [] } = {})
     );
     const edits=[];
     function dependency(value, literal) {
+      if(value==='tldts'){
+        // A fixed, already-pinned local PSL bundle, never an arbitrary external.
+        modules.set('fixture-tldts',readFileSync(new URL('../node_modules/tldts/dist/index.esm.min.js',import.meta.url),'utf8'));
+        edits.push({start:literal.getStart(parsed)+1,end:literal.getEnd()-1,text:'./fixture-tldts.js'});
+        return;
+      }
+      if (value === "@noble/ciphers/chacha.js") {
+        // Bundle this one already-pinned browser crypto dependency. Do not
+        // silently serve arbitrary packages or node_modules traversal paths.
+        cipherFixture ??= buildSync({
+          entryPoints: [fileURLToPath(import.meta.resolve(value))], bundle: true,
+          write: false, format: "esm", platform: "browser", target: "es2022",
+          logLevel: "silent",
+        }).outputFiles[0].text;
+        modules.set("fixture-chacha", cipherFixture);
+        edits.push({start:literal.getStart(parsed)+1,end:literal.getEnd()-1,text:"./fixture-chacha.js"});
+        return;
+      }
       if (externals.has(value)) return;
       if (!/^\.\/[a-z][a-z0-9-]{0,80}\.ts$/.test(value))
         throw new TypeError("Unsupported fixture dependency: " + value);

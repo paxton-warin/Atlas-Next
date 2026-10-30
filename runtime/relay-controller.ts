@@ -5,6 +5,7 @@ export async function createRelayController(
   sw: ServiceWorker,
   relayOrigin: string,
   relayTicket: string,
+  beforeConstruct?: (globals: any) => void,
 ) {
   const globals = window as any;
   const origin = new URL(relayOrigin);
@@ -35,7 +36,7 @@ export async function createRelayController(
       document.head.appendChild(script);
     });
   for (const src of [
-    "/runtime/runtimekit.js",
+    "/runtime/runtimekit-normal.js",
     "/controller/controller.api.js",
     "/runtime/runtimekit-utils.js",
     "/clients/httpengine-client.js",
@@ -50,9 +51,10 @@ export async function createRelayController(
     relay: relay.href,
   });
   const { Controller, config } = globals.$runtimekitController;
+  beforeConstruct?.(globals);
   config.injectPath = "/controller/controller.inject.js";
   config.wasmPath = "/runtime/runtimekit.wasm";
-  config.runtimekitPath = "/runtime/runtimekit.js";
+  config.runtimekitPath = "/runtime/runtimekit-normal.js";
   return new Controller({ serviceworker: sw, transport });
 }
 

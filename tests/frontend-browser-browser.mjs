@@ -14,6 +14,7 @@ import { chromium } from "@playwright/test";
 import { createApp } from "../server/app.mjs";
 import { createRuntime } from "../server/runtime.mjs";
 import { buildOpaqueRuntime } from "../scripts/build-opaque-runtime.mjs";
+const sameOriginProfile = process.env.ATLAS_TEST_DOCUMENT_ORIGIN === "same-origin";
 const { build } = createRequire(import.meta.resolve("vite"))("esbuild");
 const directory = await fs.mkdtemp(join(tmpdir(), "atlas-built-native-"));
 const openssl = (args, input) => {
@@ -98,8 +99,9 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
     dynamicOrigins: false,
     runtimeOrigin: "https://runtime.invalid",
     localRelayMode: "frontend",
-    opaqueRuntimeEnabled: true,
-    opaqueAssetsDir: assetDir,
+    opaqueRuntimeEnabled: !sameOriginProfile,
+    opaqueAssetsDir: sameOriginProfile ? null : assetDir,
+    ...(sameOriginProfile ? { profileRuntimeEnabled: true, profileRuntimeActivated: true, profileAssetsDir: assetDir } : {}),
   });
   app.get("/", (_req, reply) =>
     reply
@@ -154,7 +156,7 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
   let css;try{document.styleSheets[0].cssRules;css='readable'}catch(e){css=e.name};
   const before=localStorage.getItem('joint-native-save');localStorage.setItem('joint-native-save',String(Number(before||0)+1));window.jointResult={before,parentFrontendLeak,canvas,css,script:window.nativeScriptOrigin,color:getComputedStyle(document.body).backgroundColor,save:localStorage.getItem('joint-native-save')};})();
   </script></body></html>`;
-  const boot = async ({ html, png }) => {
+  const boot = async ({ html, png, sameOriginProfile }) => {
     const { createFrontendBrowser } = await import("/fixture.js");
     const calls = [];
     const transport = async (request, context) => {
@@ -178,7 +180,7 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
         extra = [
           [
             "content-security-policy",
-            "default-src 'none'; script-src https://assets.example 'unsafe-inline'; style-src https://assets.example; img-src https://assets.example; connect-src 'none'",
+            sameOriginProfile ? "sandbox; frame-ancestors 'none'" : "default-src 'none'; script-src https://assets.example 'unsafe-inline'; style-src https://assets.example; img-src https://assets.example; connect-src 'none'",
           ],
         ];
       } else if (request.url === "https://assets.example/image") {
@@ -229,7 +231,7 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
     });
     await frontendBrowser.start("https://site.example/start");
   };
-  await page.evaluate(boot, { html, png });
+  await page.evaluate(boot, { html, png, sameOriginProfile });
   const frame = page
     .frames()
     .find((f) => f.url().startsWith(frontend + "/browse/frame/"));
@@ -253,8 +255,8 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
   const result = await frame.evaluate(() => window.jointResult);
   assert.deepEqual(result, {
     parentFrontendLeak: false,
-    canvas: "SecurityError",
-    css: "SecurityError",
+    canvas: sameOriginProfile ? "readable" : "SecurityError",
+    css: sameOriginProfile ? "readable" : "SecurityError",
     script: "https://site.example",
     color: "rgb(1, 2, 3)",
     before: null,
@@ -289,7 +291,7 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
       (event) => event.reason === "renew" && !event.identityChanged,
     ),
   );
-  const cdp = await page.context().newCDPSession(frame);
+  const cdp = await page.context().newCDPSession(sameOriginProfile ? page : frame);
   const frameTree = (await cdp.send("Page.getFrameTree")).frameTree;
   const opaqueFrame = frameTree.frame.url.startsWith(
     frontend + "/browse/frame/",
@@ -310,7 +312,7 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
       "(()=>{try{parent.document.body;return 'readable'}catch(error){return error.name}})()",
     returnByValue: true,
   });
-  assert.equal(boundary.result.value, "SecurityError");
+  assert.equal(boundary.result.value, sameOriginProfile ? "readable" : "SecurityError");
   const logicalURLs = await frame.evaluate(() => [
     document.querySelector("img").getAttribute("src"),
     document.querySelector("link").getAttribute("href"),
@@ -355,7 +357,7 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
     documentId: frontendBrowser.document.documentId,
   }));
   await page.reload();
-  await page.evaluate(boot, { html, png });
+  await page.evaluate(boot, { html, png, sameOriginProfile });
   const restoredFrame = page
     .frames()
     .find((f) => f.url().startsWith(frontend + "/browse/frame/"));
@@ -394,6 +396,7 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
   });
   const receipt = {
     result: "frontend_browser_default_components_verified",
+    documentOrigin: sameOriginProfile ? "same-origin" : "opaque",
     componentsOverride: ["fetch"],
     validRenewal: {
       sameBinding: renewed.sameBinding,
@@ -419,7 +422,7 @@ export {createFrontendBrowser} from './frontend-browser.ts';`,
       "Main integration with deterministic website transport; not public-site/fleet acceptance",
   };
   await fs.writeFile(
-    "evidence/frontend-native-document-20261016/FRONTEND-BROWSER.json",
+    process.env.ATLAS_TEST_RESULT_PATH || "evidence/frontend-native-document-20261016/FRONTEND-BROWSER.json",
     JSON.stringify(receipt, null, 2) + "\n",
   );
   console.log(JSON.stringify(receipt));

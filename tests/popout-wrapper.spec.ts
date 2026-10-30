@@ -7,6 +7,11 @@ const site = (page: Page) =>
     .frameLocator('iframe[title="Atlas isolated browsing runtime"]')
     .frameLocator('iframe[title="Proxied website"]:not([hidden])');
 
+const savedWindowTabs = (page: Page) =>
+  page.evaluate(() =>
+    localStorage.getItem(`atlas.windows.v1.${window.name.slice(13)}`),
+  );
+
 test.beforeEach(async ({ page, request }) => {
   await request.post("http://127.0.0.1:4199/__test/reset-browser-limits");
   await page.addInitScript(() => {
@@ -27,10 +32,10 @@ async function launch(page: Page) {
     }),
   ).toBeVisible();
   await expect
-    .poll(() =>
-      page.evaluate(
-        () => JSON.parse(localStorage.getItem("atlas.tabs")!)[0]?.title,
-      ),
+    .poll(
+      async () =>
+        JSON.parse((await savedWindowTabs(page)) || '{"tabs":[]}').tabs[0]
+          ?.title,
     )
     .toBe("Navigation fixture");
 }
@@ -50,7 +55,7 @@ test("toolbar popout keeps the frontend, pinned node and original tabs through n
     JSON.parse(localStorage.getItem("atlas.nodeSession")!),
   );
   expect(parsePopoutLaunch(href.href).session).toBe(session);
-  const oldTabs = await page.evaluate(() => localStorage.getItem("atlas.tabs"));
+  const oldTabs = await savedWindowTabs(page);
   await site(page).getByLabel("Website search").fill("Original unsent draft");
   const sessionRequests: unknown[] = [];
   context.on("request", (r) => {
@@ -87,9 +92,7 @@ test("toolbar popout keeps the frontend, pinned node and original tabs through n
     { session, intent: "restore" },
     { session, intent: "restore" },
   ]);
-  expect(await page.evaluate(() => localStorage.getItem("atlas.tabs"))).toBe(
-    oldTabs,
-  );
+  expect(await savedWindowTabs(page)).toBe(oldTabs);
   expect(
     await page.evaluate(() =>
       JSON.parse(localStorage.getItem("atlas.nodeSession")!),

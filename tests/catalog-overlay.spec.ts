@@ -1,4 +1,16 @@
-import { test, expect, type Locator } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
+
+async function navigate(page: Page, name: string) {
+  const menu = page.getByRole("button", { name: "Menu", exact: true });
+  const mobile = await menu.isVisible();
+  if (mobile && (await menu.getAttribute("aria-expanded")) !== "true")
+    await menu.click();
+  await page
+    .getByRole("navigation", { name: "Atlas pages" })
+    .getByRole("button", { name, exact: true })
+    .click();
+  if (mobile) await expect(menu).toHaveAttribute("aria-expanded", "false");
+}
 
 async function expectNormalOverlay(card: Locator) {
   const overlay = card.locator(".play-overlay");
@@ -39,10 +51,10 @@ for (const width of [1440, 390]) {
     page,
   }) => {
     await page.setViewportSize({ width, height: 1000 });
-    await page
-      .locator(".main-nav")
-      .getByRole("button", { name: "Games", exact: true })
-      .click();
+    await navigate(page, "Games");
+    // Resting cards must retain their artwork; overlays are interaction-only.
+    await page.mouse.move(0, 0);
+    await expect(page.locator(".game-art .play-overlay:visible")).toHaveCount(0);
     // All decorative artwork variants plus the original working Snake card.
     for (const name of [
       "Minecraft Classic",
@@ -52,11 +64,13 @@ for (const width of [1440, 390]) {
       "Little Alchemy 2",
       "Lichess",
     ]) {
+      await page.mouse.move(0, 0);
       await page.getByLabel("Search games", { exact: true }).fill(name);
       const card = page.getByRole("button", {
         name: `Play ${name}`,
         exact: true,
       });
+      await expect(card.locator(".play-overlay")).not.toBeVisible();
       await card.hover();
       await expectNormalOverlay(card);
       // Pointer out, then real keyboard navigation from the preceding select.
@@ -69,10 +83,9 @@ for (const width of [1440, 390]) {
       await page.keyboard.press("Tab");
       await expect(card.locator(".play-overlay")).not.toBeVisible();
     }
-    await page
-      .locator(".main-nav")
-      .getByRole("button", { name: "Apps", exact: true })
-      .click();
+    await navigate(page, "Apps");
+    await page.mouse.move(0, 0);
+    await expect(page.locator(".game-art .play-overlay:visible")).toHaveCount(0);
     await page.getByLabel("Search apps", { exact: true }).fill("Spotify");
     const app = page.getByRole("button", { name: "Open Spotify", exact: true });
     await app.hover();

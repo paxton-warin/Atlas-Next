@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 for (const compact of [true, false]) {
-  test(`horizontal New tab stays left aligned with collapsed sidebar preference, compact=${compact}`, async ({
+  test(`desktop New tab stays left aligned and mobile uses its Tabs drawer, compact=${compact}`, async ({
     page,
   }) => {
     await page.addInitScript((compact) => {
@@ -20,6 +20,14 @@ for (const compact of [true, false]) {
         name: "New tab",
         exact: true,
       });
+      if (width < 600) {
+        await expect(strip).toBeHidden();
+        await page.getByRole("button", { name: "Tabs (0)", exact: true }).click();
+        const drawer = page.getByRole("dialog", { name: "Open tabs", exact: true });
+        await expect(drawer.getByRole("button", { name: "New tab", exact: true })).toBeVisible();
+        await drawer.getByRole("button", { name: "Close tab list" }).click();
+        continue;
+      }
       await expect(button).toBeVisible();
       const row = (await strip.boundingBox())!,
         box = (await button.boundingBox())!;
@@ -64,6 +72,33 @@ test("top tabs keep inline close buttons, scroll without clipping controls, and 
   await expect(tabs).toHaveCount(10);
   for (const width of [320, 601, 1366]) {
     await page.setViewportSize({ width, height: 850 });
+    if (width < 600) {
+      await expect(page.locator(".horizontal-tabs")).toBeHidden();
+      await page.getByRole("button", { name: "Tabs (10)", exact: true }).click();
+      let drawer = page.getByRole("dialog", { name: "Open tabs", exact: true });
+      await expect(drawer.getByRole("button", { name: "New tab", exact: true })).toBeVisible();
+      await drawer.locator(".tab-actions").first().click();
+      await page.getByRole("menuitem", { name: "Pin tab", exact: true }).click();
+      await page.getByRole("button", { name: "Tabs (10)", exact: true }).click();
+      drawer = page.getByRole("dialog", { name: "Open tabs", exact: true });
+      await expect(drawer.locator(".tab.pinned")).toHaveCount(1);
+      await drawer.locator(".tab-actions").first().click();
+      await page.getByRole("menuitem", { name: "Close tab", exact: true }).click();
+      await expect(tabs).toHaveCount(9);
+      await page.getByRole("button", { name: "Tabs (9)", exact: true }).click();
+      drawer = page.getByRole("dialog", { name: "Open tabs", exact: true });
+      await drawer.getByRole("button", { name: "Reopen closed tab", exact: true }).click();
+      await expect(tabs).toHaveCount(10);
+      // Undo preserves pin state; restore the unpinned fixture before desktop inline-close checks.
+      await expect(drawer.locator(".tab.pinned")).toHaveCount(1);
+      await drawer.locator(".tab-actions").first().click();
+      await page.getByRole("menuitem", { name: "Unpin tab", exact: true }).click();
+      await page.getByRole("button", { name: "Tabs (10)", exact: true }).click();
+      drawer = page.getByRole("dialog", { name: "Open tabs", exact: true });
+      await expect(drawer.locator(".tab.pinned")).toHaveCount(0);
+      await drawer.getByRole("button", { name: "Close tab list" }).click();
+      continue;
+    }
     const close = tabs.first().getByRole("button", { name: /Close/ });
     await expect(close).toBeVisible();
     await expect(close).toHaveCSS("position", "static");
@@ -109,7 +144,7 @@ test("top tabs keep inline close buttons, scroll without clipping controls, and 
     .locator(".main-nav")
     .getByRole("button", { name: "Browser", exact: true })
     .click();
-  await expect(page.locator(".sidebar")).toHaveCSS("width", "44px");
-  await expect(page.locator(".sidebar .new-tab")).toHaveCSS("width", "36px");
+  await expect(page.locator(".topbar")).toHaveCSS("width", "56px");
+  await expect(page.locator(".sidebar .new-tab")).toHaveCSS("width", "44px");
   await expect(page.locator(".horizontal-tabs")).toHaveCount(0);
 });

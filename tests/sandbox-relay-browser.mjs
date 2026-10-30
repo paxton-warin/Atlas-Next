@@ -52,6 +52,8 @@ const modules = [
   "sandbox-relay",
   "sandbox-relay-protocol",
   "sandbox-relay-worker",
+  "sandbox-relay-websocket",
+  "resource-response-budget",
 ];
 for (const name of modules) {
   const source = fs.readFileSync(

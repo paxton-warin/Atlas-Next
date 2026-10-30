@@ -70,7 +70,7 @@ const assets = {
     relay: "/browse/assets/relay-0123456789abcdef.js",
   },
 };
-function fixture(t) {
+function fixture(t, mode = {}) {
   const events = [],
     owners = [],
     docs = [],
@@ -99,7 +99,11 @@ function fixture(t) {
     ticket: "ticket_" + sequence,
     node: { id: node, name: node },
   });
+  const target=new EventTarget();
   const owner = {
+    addEventListener:target.addEventListener.bind(target),
+    removeEventListener:target.removeEventListener.bind(target),
+    dispatchEvent:target.dispatchEvent.bind(target),
     location: { origin: "https://front.test" },
     crypto: globalThis.crypto,
     AbortController,
@@ -114,7 +118,7 @@ function fixture(t) {
     async fetch(path, input) {
       events.push(["control", path, input]);
       if (path === "/api/browse/controller/runtime")
-        return Response.json(assets);
+        return Response.json({ ...assets, ...mode });
       if (path === "/api/browse/controller/resource-owner")
         return Response.json({ ownerTicket: "signed_purpose_ticket" });
       throw Error("unexpected native website fetch " + path);
@@ -786,4 +790,70 @@ test("Page controls bind commands/telemetry to the current document and replace 
   );
   browser.dispose();
   assert.equal(browser.pageCommand({ type: "compatibility-export" }), false);
+});
+
+test("same-origin profile manifest uses existing durable owners and passes only the explicit origin mode", async (t) => {
+  const f = fixture(t, { documentOrigin: "same-origin" });
+  const browser = await f.make();
+  await browser.start("https://site.test/start");
+  assert.equal(browser.document.options.documentOrigin, "same-origin");
+  assert.ok(browser.document.options.storageProvider);
+  assert.ok(browser.document.options.cookieProvider);
+  assert.ok(browser.document.options.sessionId);
+  assert.equal(browser.assignment.node.id, "nodeA");
+});
+
+test("unknown document origin modes are rejected before ownership or navigation", async (t) => {
+  const f = fixture(t, { documentOrigin: "automatic" });
+  await assert.rejects(f.make(), { code: "FRONTEND_RUNTIME_MANIFEST_INVALID" });
+});
+
+test("a different website's handoff preserves the mounted page, owners and assignment", async (t) => {
+  const f = fixture(t), browser = await f.make();
+  await browser.start("https://orteil.dashnet.org/cookieclicker/");
+  const mounted = browser.document, assignment = browser.assignment;
+  const ownerCount = f.owners.length, documentCount = f.docs.length;
+  f.owner.dispatchEvent(new CustomEvent("atlas:profile-quiesce", {
+    detail: { siteGroup: "ads.example" },
+  }));
+  assert.equal(browser.document, mounted);
+  assert.equal(mounted.live, true);
+  assert.equal(browser.assignment, assignment);
+  assert.equal(f.owners.length, ownerCount);
+  assert.equal(f.docs.length, documentCount);
+  f.owner.dispatchEvent(new CustomEvent("atlas:profile-ready", {
+    detail: { siteGroup: "ads.example", origin: "https://ads.example" },
+  }));
+  await tick();
+  assert.equal(browser.document, mounted);
+});
+
+test("the requested website group quiesces and only its verified ready event restores it", async (t) => {
+  const f = fixture(t), browser = await f.make();
+  await browser.start("https://orteil.dashnet.org/cookieclicker/");
+  const previous = browser.document;
+  f.owner.dispatchEvent(new CustomEvent("atlas:profile-quiesce", {
+    detail: { siteGroup: "dashnet.org" },
+  }));
+  assert.equal(browser.document, undefined);
+  assert.equal(previous.live, false);
+  assert.equal(f.states.at(-1).code, "PROFILE_CONTINUED_ELSEWHERE");
+  f.owner.dispatchEvent(new CustomEvent("atlas:profile-ready", {
+    detail: { siteGroup: "dashnet.org", origin: "https://another.dashnet.org" },
+  }));
+  await tick(); await tick();
+  assert.ok(browser.document);
+  assert.notEqual(browser.document, previous);
+  f.owner.dispatchEvent(new CustomEvent("atlas:profile-quiesce"));
+  assert.equal(browser.document, undefined, "global sign-out/recovery still quiesces all pages");
+});
+
+test('dead storage/cookie owners are replaced on same-assignment validation without allocating a new session',async t=>{
+ for(const kind of ['storage','cookies']){
+  const f=fixture(t),browser=await f.make();await browser.start('https://site.test/a');
+  const old=browser.document,assignment=browser.assignment.session,tab=browser.tabSessionId;
+  const dead=f.owners.find(o=>o.kind===kind);Object.defineProperty(dead,'live',{get:()=>!dead.disposed});dead.dispose();
+  await browser.check();assert.notEqual(browser.document,old,kind+' owner was reused after disposal');
+  assert.equal(browser.assignment.session,assignment);assert.equal(browser.tabSessionId,tab);assert.equal(f.docs.length,2);
+ }
 });

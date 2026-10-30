@@ -1,4 +1,16 @@
 import { test, expect, type Page } from "@playwright/test";
+
+async function navigate(page: Page, name: string) {
+  const menu = page.getByRole("button", { name: "Menu", exact: true });
+  const mobile = await menu.isVisible();
+  if (mobile && (await menu.getAttribute("aria-expanded")) !== "true")
+    await menu.click();
+  await page
+    .getByRole("navigation", { name: "Atlas pages" })
+    .getByRole("button", { name, exact: true })
+    .click();
+  if (mobile) await expect(menu).toHaveAttribute("aria-expanded", "false");
+}
 test.beforeEach(async ({ request }) => {
   const response = await request.post(
     "http://127.0.0.1:4199/__test/reset-browser-limits",
@@ -12,7 +24,7 @@ async function start(page: Page) {
   await page.getByRole("button", { name: "Use defaults", exact: true }).click();
 }
 async function privacy(page: Page) {
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await navigate(page, "Settings");
   await page
     .locator(".settings-nav")
     .getByRole("button", { name: "Privacy & data", exact: true })
@@ -157,7 +169,7 @@ test("restore defaults on without overwriting a saved opt-out, and compound keys
   page,
 }) => {
   await start(page);
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await navigate(page, "Settings");
   await page
     .locator(".settings-nav")
     .getByRole("button", { name: "Browser", exact: true })
@@ -167,7 +179,7 @@ test("restore defaults on without overwriting a saved opt-out, and compound keys
   ).toHaveAttribute("aria-checked", "true");
   await page.getByRole("switch", { name: "Restore tabs", exact: true }).click();
   await page.reload();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await navigate(page, "Settings");
   await page
     .locator(".settings-nav")
     .getByRole("button", { name: "Browser", exact: true })
@@ -182,10 +194,7 @@ test("restore defaults on without overwriting a saved opt-out, and compound keys
   await page.route("https://example.test/panic", (r) =>
     r.fulfill({ contentType: "text/html", body: "Exited" }),
   );
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "Browser", exact: true })
-    .click();
+  await navigate(page, "Browser");
   await page.locator(".home-hero h1").click();
   await page.keyboard.press("Escape");
   await expect(page).toHaveURL("http://localhost:4180/");
@@ -248,14 +257,18 @@ test("large games/apps catalog searches, filters, paginates, favorites and launc
   ).toBeVisible();
 });
 
-test("system pages stay centered and thin bordered on desktop and fit mobile", async ({
+test("system pages stay centered with V2.1 flat surfaces on desktop and fit mobile", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1920, height: 1080 });
   await start(page);
   for (const name of ["Settings", "Support", "Games", "Apps"]) {
-    await page.getByRole("button", { name, exact: true }).click();
-    const content = page.locator(".page-scroll > .page");
+    await navigate(page, name);
+    const content = page.locator(
+      name === "Support"
+        ? ".page-scroll > .support-page-outlet > .page"
+        : ".page-scroll > .page",
+    );
     await expect(content).toBeVisible();
     const offsets = await content.evaluate((el) => {
       const box = el.getBoundingClientRect(),
@@ -271,11 +284,11 @@ test("system pages stay centered and thin bordered on desktop and fit mobile", a
     expect(offsets.width).toBeLessThanOrEqual(1280);
     await expect(page.locator(".main-nav")).toHaveCSS(
       "border-top-width",
-      "1px",
+      "0px",
     );
     await expect(page.locator(".main-panel")).toHaveCSS(
       "border-top-width",
-      "1px",
+      "0px",
     );
     if (name === "Games")
       await page.screenshot({
@@ -290,7 +303,7 @@ test("system pages stay centered and thin bordered on desktop and fit mobile", a
   }
   await page.setViewportSize({ width: 390, height: 844 });
   for (const name of ["Settings", "Support", "Games", "Apps"]) {
-    await page.getByRole("button", { name, exact: true }).click();
+    await navigate(page, name);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(390);

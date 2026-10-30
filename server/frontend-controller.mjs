@@ -20,8 +20,12 @@ const exact = (value, keys) =>
 
 export function installFrontendControllerAPI(
   app,
-  { pool, originFor, limitBrowse, administrator },
+  { pool, originFor, limitBrowse, administrator, documentOrigin = "opaque", runtimeTickets = false, maxOwners = 2048 },
 ) {
+  // One pair of rendezvous maps serves every frontend hostname in this process.
+  // This bounds authenticated browser contexts, not a per-user/link quota.
+  if (!Number.isSafeInteger(maxOwners) || maxOwners < 1 || maxOwners > 8192)
+    throw new TypeError("Controller owner limit must be an integer from 1 through 8192.");
   const assignments = pool.frontendAssignments;
   // Only a trusted, same-frontend document can register storage/cookie owners.
   // Do not infer authority from a claimed website origin or an opaque Origin.
@@ -38,6 +42,8 @@ export function installFrontendControllerAPI(
     originFor,
     authorizeOwner,
     validateOwner: assignments.validate,
+    documentOrigin,
+    maxOwners,
   };
   installSandboxStorageRendezvous(app, ownerOptions);
   installSandboxCookieRendezvous(app, ownerOptions);
@@ -71,6 +77,18 @@ export function installFrontendControllerAPI(
         403,
       );
   }
+  if (runtimeTickets)
+    app.post(ROOT + "/runtime-ticket", async (req) => {
+      trusted(req);
+      limitBrowse(req);
+      if (!exact(req.body, ["session", "generation"]))
+        throw fail("INVALID_SESSION", "Invalid runtime ticket request.");
+      return pool.sameOriginRuntimeGrant(
+        req.body.session,
+        originFor(req),
+        req.body.generation,
+      );
+    });
   app.post(ROOT + "/bootstrap", async (req, reply) => {
     trusted(req);
     limitBrowse(req);
@@ -110,6 +128,8 @@ export function installFrontendControllerAPI(
     const browserSessionId = browserSession(req, reply);
     const grant = await assignments.operate(input, originFor(req), {
       browserSessionId,
+      hubGrant: req.hubGrant,
+      hubValidatedAt: req.hubValidatedAt,
     });
     return { ...grant, browserSessionId };
   });

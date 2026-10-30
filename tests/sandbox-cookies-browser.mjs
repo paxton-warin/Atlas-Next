@@ -20,6 +20,8 @@ if (!executablePath)
   throw Error("Set CHROME_PATH to a local Chromium executable.");
 const app = Fastify({ logger: false });
 let frontend;
+for (const file of ['local-idb-accounting','local-dirty-v2','local-authority','local-idb-catalog','profile-locks']) app.get('/'+file+'.ts',(_q,r)=>r.header('Access-Control-Allow-Origin','*').type('application/javascript').send(transpileModule(readFileSync('runtime/'+file+'.ts','utf8'),{compilerOptions:{target:ScriptTarget.ES2022,module:ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+
 app.get("/sandbox-cookies.js", (_req, reply) =>
   reply
     .header("Access-Control-Allow-Origin", "*")
@@ -33,6 +35,11 @@ app.get("/sandbox-cookies.js", (_req, reply) =>
       }).outputText.replace('from "tldts"', 'from "/tldts.js"'),
     ),
 );
+app.get("/profile-permissions.ts",(_q,r)=>r.header("Access-Control-Allow-Origin","*").type("application/javascript").send(transpileModule(readFileSync("runtime/profile-permissions.ts","utf8"),{compilerOptions:{target:ScriptTarget.ES2022,module:ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+app.get("/profile-idb-catalog.ts",(_q,r)=>r.header("Access-Control-Allow-Origin","*").type("application/javascript").send(transpileModule(readFileSync("runtime/profile-idb-catalog.ts","utf8"),{compilerOptions:{target:ScriptTarget.ES2022,module:ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+app.get("/profile-idb-quota.ts",(_q,r)=>r.header("Access-Control-Allow-Origin","*").type("application/javascript").send(transpileModule(readFileSync("runtime/profile-idb-quota.ts","utf8"),{compilerOptions:{target:ScriptTarget.ES2022,module:ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+app.get("/hub-contracts.ts",(_q,r)=>r.header("Access-Control-Allow-Origin","*").type("application/javascript").send(transpileModule(readFileSync("runtime/hub-contracts.ts","utf8"),{compilerOptions:{target:ScriptTarget.ES2022,module:ModuleKind.ESNext}}).outputText.replace('from "tldts"','from "/tldts.js"')));
+app.get("/profile-journal.ts", (_req,reply)=>reply.header("Access-Control-Allow-Origin","*").type("application/javascript").send(transpileModule(readFileSync("runtime/profile-journal.ts","utf8"),{compilerOptions:{target:ScriptTarget.ES2022,module:ModuleKind.ESNext}}).outputText));
 app.get("/tldts.js", (_req, reply) =>
   reply
     .header("Access-Control-Allow-Origin", "*")

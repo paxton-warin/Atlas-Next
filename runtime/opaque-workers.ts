@@ -17,6 +17,11 @@ import {
   type OriginalDocumentPolicy,
 } from "./original-document-policy.ts";
 import type { OpaqueWorkerSource } from "./opaque-worker-grants.ts";
+import {
+  assertDocumentOrigin,
+  documentContentPolicies,
+  type DocumentOrigin,
+} from "./document-origin.ts";
 
 type Network = ReturnType<typeof createOpaqueNetworkClient>;
 type Rewriter = ReturnType<typeof createPinnedOpaqueRewriter>;
@@ -299,6 +304,7 @@ export function createOpaqueWorkerGraph(options: {
  * DedicatedWorkerGlobalScope, not a Window with synthetic history/document. */
 export function bootOpaqueDedicatedWorker(options: {
   global: any;
+  documentOrigin?: DocumentOrigin;
   core: any;
   wasm: Uint8Array;
   wasmModule?: WebAssembly.Module;
@@ -314,8 +320,8 @@ export function bootOpaqueDedicatedWorker(options: {
   parentContentPolicies?: readonly string[];
 }) {
   const { global, core } = options;
+  const documentOrigin = assertDocumentOrigin(global, options.documentOrigin);
   if (
-    global.origin !== "null" ||
     !global.DedicatedWorkerGlobalScope ||
     core?.RuntimeKitClient?.opaqueAdapterVersion !== 1
   )
@@ -343,13 +349,13 @@ export function bootOpaqueDedicatedWorker(options: {
   const parentPolicy = options.parentContentPolicies
       ? createOriginalDocumentPolicy({
           documentURL: options.documentURL,
-          contentPolicies: options.parentContentPolicies,
+          contentPolicies: documentContentPolicies(documentOrigin, options.parentContentPolicies),
         })
       : undefined,
     workerPolicy = options.source
       ? createOriginalDocumentPolicy({
           documentURL: options.documentURL,
-          contentPolicies: options.source.contentPolicies,
+          contentPolicies: documentContentPolicies(documentOrigin, options.source.contentPolicies),
         })
       : undefined;
   if (parentPolicy && workerPolicy)
@@ -660,6 +666,22 @@ export function workerBootstrap(
           if (data(message)?.type !== "boot" || running) return;
           try {
             const config = data(message);
+            // This function is also serialized by itself for the data-module
+            // bootstrap, so validate without relying on outer module bindings.
+            const documentOrigin = config.documentOrigin === undefined ? "opaque" : config.documentOrigin;
+            if (documentOrigin !== "opaque" && documentOrigin !== "same-origin")
+              throw new TypeError("Invalid trusted worker origin mode");
+            const physical = self.location?.origin;
+            if (
+              documentOrigin === "opaque"
+                ? self.origin !== "null"
+                : typeof physical !== "string" ||
+                  physical === "null" ||
+                  self.origin !== physical ||
+                  !/^https?:\/\//.test(physical) ||
+                  new URL(physical).origin !== physical
+            )
+              throw new TypeError("Worker origin does not match its trusted composition");
             let entry = trustedBoot;
             if (!entry) {
               nativeEval(config.coreSource);
@@ -670,6 +692,7 @@ export function workerBootstrap(
             }
             const boot = entry!({
               ...config,
+              documentOrigin,
               type: config.kind,
               global: self,
               core: (self as any).$runtimekit,
@@ -758,6 +781,7 @@ export function workerBootstrap(
 
 export function createOpaqueWorkerManager(options: {
   global: Window & typeof globalThis;
+  documentOrigin?: DocumentOrigin;
   documentURL: string;
   documentBaseURL?: string;
   network: Network;
@@ -791,10 +815,10 @@ export function createOpaqueWorkerManager(options: {
   };
   timeoutMs?: number;
 }) {
+  const documentOrigin = assertDocumentOrigin(options.global, options.documentOrigin);
   if (
-    options.global.origin !== "null" ||
-    (!options.bootstrapSource &&
-      !options.runtimeModuleURL.startsWith("data:text/javascript"))
+    !options.bootstrapSource &&
+      !options.runtimeModuleURL.startsWith("data:text/javascript")
   )
     throw fail(
       "Worker bootstrap requires the opaque child and explicit trusted data module.",
@@ -805,7 +829,10 @@ export function createOpaqueWorkerManager(options: {
     throw new TypeError("Invalid worker bootstrap timeout.");
   const graph = createOpaqueWorkerGraph(options),
     records = new Set<any>(),
-    byWorker = new WeakMap<Worker, any>();
+    byWorker = new WeakMap<Worker, any>(),
+    parentPolicy = documentOrigin === "same-origin"
+      ? createOriginalDocumentPolicy({ documentURL: options.documentURL, contentPolicies: [] })
+      : options.parentPolicy;
   const { natives, global } = options;
   const apply = Reflect.apply,
     construct = Reflect.construct,
@@ -861,7 +888,7 @@ export function createOpaqueWorkerManager(options: {
     );
   class OpaqueWorker {
     constructor(value: string | URL, supplied: WorkerOptions = {}) {
-      if (options.bootstrapSource && options.parentPolicy?.trustedTypes.csp)
+      if (options.bootstrapSource && parentPolicy?.trustedTypes.csp)
         throw unsupported(
           "WORKER_TRUSTED_TYPES_UNSUPPORTED",
           "Inherited worker Trusted Types needs a policy-qualified bootstrap.",
@@ -977,20 +1004,24 @@ export function createOpaqueWorkerManager(options: {
           grant.dispose();
           return;
         }
+        const source = grant.source && documentOrigin === "same-origin"
+          ? { ...grant.source, contentPolicies: [] }
+          : grant.source;
         if (options.bootstrapSource) {
-          if (!grant.source || !options.parentPolicy)
+          if (!source || !parentPolicy)
             throw fail("Original worker source policy is required.");
           assertWorkerCompilationCompatibility(
-            options.parentPolicy,
+            parentPolicy,
             createOriginalDocumentPolicy({
-              documentURL: grant.source.url,
-              contentPolicies: grant.source.contentPolicies,
+              documentURL: source.url,
+              contentPolicies: source.contentPolicies,
             }),
           );
         }
         apply(nativePortPost, controlPort, [
           {
             type: "boot",
+            documentOrigin,
             kind: type,
             documentId,
             documentURL: grant.source?.url ?? url,
@@ -998,8 +1029,8 @@ export function createOpaqueWorkerManager(options: {
             credentials,
             entry: prepared?.entry,
             classicImports: prepared?.imports,
-            source: grant.source,
-            parentContentPolicies: options.parentPolicy?.snapshot,
+            source,
+            parentContentPolicies: parentPolicy?.snapshot,
             wasmModule: options.wasmModule,
             coreSource: options.coreSource,
             wasm: options.wasm.slice(),

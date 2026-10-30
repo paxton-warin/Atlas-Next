@@ -1,1 +1,4 @@
-/* System fonts work offline; locally hosted font files may be added without third-party requests. */
+@font-face{font-family:"Inter";font-style:normal;font-weight:100 900;font-display:swap;src:url("/fonts/v21/inter-latin.woff2") format("woff2");}
+@font-face{font-family:"Inter Tight";font-style:normal;font-weight:100 900;font-display:swap;src:url("/fonts/v21/intertight-latin.woff2") format("woff2");}
+@font-face{font-family:"Lora";font-style:normal;font-weight:400 700;font-display:swap;src:url("/fonts/v21/lora-latin.woff2") format("woff2");}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("/fonts/v21/jetbrainsmono-latin.woff2") format("woff2");}

@@ -182,17 +182,39 @@ test("Cmd/Ctrl K focuses and selects the address from a nested website; suggesti
     "https://www.google.com/search?q=atlas%20search%20results",
   );
 });
-test("top navigation is centered without overlap and shortcut labels match each platform", async ({
+test("V2.1 navigation stays inside the desktop rail, discloses on mobile, and keeps platform shortcuts", async ({
   page,
 }) => {
-  for (const width of [1920, 1024, 768, 390, 320]) {
+  for (const width of [1920, 1051, 1050, 1024, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
-    const box = await page.locator(".main-nav").boundingBox();
-    expect(Math.abs(box!.x + box!.width / 2 - width / 2)).toBeLessThan(2);
-    const brand = await page.locator(".brand").boundingBox();
-    const end = await page.locator(".topbar-end").boundingBox();
-    expect(brand!.x + brand!.width).toBeLessThanOrEqual(box!.x);
-    expect(box!.x + box!.width).toBeLessThanOrEqual(end!.x);
+    const nav = page.getByRole("navigation", { name: "Atlas pages" });
+    const brand = (await page.locator(".brand").boundingBox())!;
+    const end = (await page.locator(".topbar-end").boundingBox())!;
+    if (width >= 600) {
+      await expect(nav).toBeVisible();
+      await expect(page.getByRole("button", { name: "Menu", exact: true })).toBeHidden();
+      const box = (await nav.boundingBox())!;
+      const rail = (await page.locator(".topbar").boundingBox())!;
+      expect(rail.x).toBe(0);
+      expect(rail.width).toBe(56);
+      expect(box.x).toBeGreaterThanOrEqual(rail.x);
+      expect(box.x + box.width).toBeLessThanOrEqual(rail.x + rail.width);
+      expect(brand.y + brand.height).toBeLessThanOrEqual(box.y);
+      expect(box.y + box.height).toBeLessThanOrEqual(end.y);
+    } else {
+      const menu = page.getByRole("button", { name: "Menu", exact: true });
+      await expect(nav).toBeHidden();
+      await expect(menu).toHaveAttribute("aria-expanded", "false");
+      expect(brand.x + brand.width).toBeLessThanOrEqual(end.x);
+      await menu.click();
+      await expect(nav).toBeVisible();
+      const box = (await nav.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+      await nav.getByRole("button", { name: "Browser", exact: true }).click();
+      await expect(nav).toBeHidden();
+      await expect(menu).toHaveAttribute("aria-expanded", "false");
+    }
     if (width === 1920 || width === 390)
       await page.screenshot({
         path: `evidence/google-navigation/navigation-${width}.png`,
@@ -217,7 +239,11 @@ test("top navigation is centered without overlap and shortcut labels match each 
       });
     }, platform);
     await page.getByLabel("Address bar").fill(platform);
-    await expect(page.locator(".address-bar kbd")).toHaveText(label);
+    await expect(page.locator(".address-bar kbd")).toHaveCount(0);
+    await expect(page.getByLabel("Address bar")).toHaveAttribute("aria-keyshortcuts", "Meta+K Control+K");
+    await page.getByLabel("Address bar").evaluate(el => (el as HTMLInputElement).blur());
+    await page.keyboard.press(platform === "MacIntel" ? "Meta+k" : "Control+k");
+    await expect(page.getByLabel("Address bar")).toBeFocused();
   }
 });
 test("Scramjet-only configuration migrates legacy tabs and never serves the removed engine", async ({
@@ -240,6 +266,10 @@ test("Scramjet-only configuration migrates legacy tabs and never serves the remo
         },
       ]),
     );
+    // beforeEach has already opened this modern window. Model the first
+    // legacy restore rather than expecting old global tabs to overwrite an
+    // existing per-window layout (including an intentionally empty layout).
+    localStorage.removeItem(`atlas.windows.v1.${window.name.slice(13)}`);
   });
   await page.reload();
   await page.locator(".tab-main").click();

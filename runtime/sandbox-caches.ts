@@ -1,3 +1,4 @@
+import { profileDatabaseName } from "./profile-journal.ts";
 /** Trusted CacheStorage owner. Native IDB serializes each origin's complete
  * mutation atomically; a success reply is sent only after transaction commit.
  * No HTTP, cookies, frontend storage handles or node identity cross this port. */
@@ -22,6 +23,7 @@ export function bindSandboxCaches(options: {
   website: string;
   frontendOrigin?: string;
   factory: IDBFactory;
+  profileId?: string | null;
   maxBytes?: number;
   timeoutMs?: number;
 }) {
@@ -65,7 +67,10 @@ export function bindSandboxCaches(options: {
     dbPromise: Promise<IDBDatabase> | undefined;
   const database = () =>
     (dbPromise ??= new Promise<IDBDatabase>((resolve, reject) => {
-      const open = factory.open(SANDBOX_CACHE_DATABASE, 1);
+      const open = factory.open(
+        profileDatabaseName(SANDBOX_CACHE_DATABASE, options.profileId),
+        1,
+      );
       let settled = false;
       open.onupgradeneeded = () => open.result.createObjectStore("origins");
       open.onerror = () => {

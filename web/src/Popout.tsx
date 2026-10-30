@@ -1,4 +1,5 @@
 import BrowsingOptions from "./BrowsingOptions";
+import { useV21Theme } from "./v21-theme";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowLeft,
@@ -37,6 +38,7 @@ import {
   type PopoutLaunch,
 } from "./popout-link";
 import "./popout.css";
+import "./atlas-v21-popout.css";
 import {
   createBrowsingLeaseLifecycle,
   restoreBrowsingLeaseOnStartup,
@@ -85,6 +87,7 @@ export default function Popout() {
   const [settings] = useState(() =>
     sanitizeSettings(readLocal("atlas.settings", defaults)),
   );
+  const visualMode = useV21Theme(settings.theme, settings.mode, settings.accent);
   const [connection, setConnection] = useState<Connection | null>(null);
   const opaqueMode = frontendRuntimeEnabled(connection);
   const frontendArea = useRef<HTMLDivElement>(null);
@@ -103,6 +106,8 @@ export default function Popout() {
   const [address, setAddress] = useState(launch.value?.target || "");
   const [target, setTarget] = useState(launch.value?.target || "");
   const [popupActive, setPopupActive] = useState(false);
+  const runtimePreferences = useRef(settings);
+  runtimePreferences.current = settings;
   const runtime = useRef<HTMLIFrameElement>(null);
   const addressInput = useRef<HTMLInputElement>(null);
   const startup = useRef<Promise<Connection> | null>(null);
@@ -125,7 +130,7 @@ export default function Popout() {
   function send(type: string, extra: Record<string, unknown> = {}) {
     if (frontendRuntimeEnabled(connectionRef.current)) {
       if (
-        ["navigate", "activate", "close", "reload", "back", "forward"].includes(
+        ["navigate", "activate", "close", "reload", "back", "forward", "panic-key"].includes(
           type,
         )
       )
@@ -304,6 +309,27 @@ export default function Popout() {
       },
       onEvent(event) {
         if (!mounted) return;
+        if (event.type === "focus-search") { focusAddress(); return; }
+        if (event.type === "panic") {
+          const current = runtimePreferences.current;
+          if (current.exitKey && event.key === current.exitKey) location.replace(current.exitUrl);
+          return;
+        }
+        if (event.type === "popup-created" && event.url) {
+          if (!pages.current.has(event.id)) pages.current.set(event.id, { url: event.url, openerId: event.openerId || active.current });
+          showPage(event.id); setLoading(true); return;
+        }
+        if (event.type === "popup-focus") { if (pages.current.has(event.id)) showPage(event.id); return; }
+        if (event.type === "popup-closed") {
+          const closed = pages.current.get(event.id);
+          if (!closed || event.id === ROOT_PAGE) return;
+          pages.current.delete(event.id);
+          if (active.current === event.id) {
+            const opener = pages.current.has(closed.openerId || "") ? closed.openerId! : ROOT_PAGE;
+            showPage(opener); workspace.activate(opener); setLoading(false);
+          }
+          return;
+        }
         const page = pages.current.get(event.id);
         if (!page) return;
         if (event.type === "navigation" && event.url) {
@@ -319,7 +345,7 @@ export default function Popout() {
           setLoading(false);
           setMessage("");
         }
-        if (event.type === "error") {
+        if (event.type === "error" || event.type === "slow") {
           setLoading(false);
           setMessage(event.message || "The website did not load.");
         }
@@ -329,7 +355,10 @@ export default function Popout() {
     setReady(true);
     void workspace
       .connect()
-      .then(() => workspace.navigate(ROOT_PAGE, target || launch.value!.target))
+      .then(async () => {
+        await workspace.command("panic-key", { key: runtimePreferences.current.exitKey });
+        await workspace.navigate(ROOT_PAGE, target || launch.value!.target);
+      })
       .catch((error) => {
         if (mounted) {
           setError(error.message);
@@ -669,7 +698,7 @@ export default function Popout() {
   } as CSSProperties;
 
   return (
-    <main className="popout-shell" style={style}>
+    <main className="popout-shell" style={style} data-v21-theme={settings.theme} data-mode={visualMode}>
       <header className="popout-toolbar" aria-label="Popout toolbar">
         <a className="popout-brand" href="/" aria-label="Atlas home">
           Atlas

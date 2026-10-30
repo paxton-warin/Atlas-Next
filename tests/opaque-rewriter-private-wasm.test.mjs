@@ -8,7 +8,10 @@ import {
 } from "../scripts/opaque-runtime-core.mjs";
 import { createHash } from "node:crypto";
 import { createPinnedOpaqueRewriter } from "../runtime/opaque-runtime-adapter.ts";
-const source = fs.readFileSync("runtime/public/runtime/runtimekit.js", "utf8"),
+// The adapter deliberately requires the RAW inspected upstream pin, not the
+// independently adapted prepared browser core. Keep the exact hash assertions.
+const pin = JSON.parse(fs.readFileSync("scripts/runtime-fork.json", "utf8"));
+const source = fs.readFileSync(`${pin.directory}/app/vendor/runtimekit.js`, "utf8"),
   bytes = fs.readFileSync("runtime/public/runtime/runtimekit.wasm");
 test("only the exact inspected copied pin receives three unique private module-cache seams", () => {
   assert.equal(

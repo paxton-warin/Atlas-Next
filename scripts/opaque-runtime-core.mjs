@@ -13,6 +13,8 @@ export function adaptPinnedRuntimeBundle(source) {
       "Experimental fork source hash does not match the inspected pin.",
     );
   const edits = [
+    // Preserve native no-op mutation semantics in every client runtime.
+    ['e.Proxy("Element.prototype.toggleAttribute",{apply(t){let r=(0,n.Qf)(t.args[0]);if(r.startsWith("runtimekit-attr"))return t.return(!1);e.natives.call("Element.prototype.hasAttribute",t.this,r)&&t.fn.call(t.this,`runtimekit-attr-${t.args[0]}`)}})', 'e.Proxy("Element.prototype.toggleAttribute",{apply(t){let r=(0,n.Qf)(t.args[0]);if(r.startsWith("runtimekit-attr"))return t.return(!1);let i=e.natives.call("Element.prototype.hasAttribute",t.this,r),o=t.call();(!i||!o)&&e.natives.call("Element.prototype.removeAttribute",t.this,`runtimekit-attr-${r}`)}})'],
     // initSync already retains its first initialized Wasm instance. The pin
     // nevertheless recompiles identical bytes before EVERY subsequent call.
     // Cache only that private rewriter module, initially compiled by trusted
@@ -46,6 +48,14 @@ export function adaptPinnedRuntimeBundle(source) {
     [
       'if("hash"===r){t.location.hash=a[0],',
       'if("hash"===r&&e.init.opaqueDocument){let t=new o.xP(e.url.href);t.hash=a[0];e.init.opaqueDocument.navigate(t.href,"hash");return}if("hash"===r){t.location.hash=a[0],',
+    ],
+    [
+      "if(n===t.parent)return r;else if(n===t.top)return o",
+      "if(n===t.parent)return e.init.opaqueDocument?.parentWindow??r;else if(n===t.top)return e.init.opaqueDocument?.topWindow??o",
+    ],
+    [
+      'value:function(t){return t&&"function"==typeof t.postMessage?e.nativeOpaqueWindows.has(t)?',
+      'value:function(t){const opaque=e.init.opaqueDocument?.messageWindow?.(t);if(opaque)return opaque;return t&&"function"==typeof t.postMessage?e.nativeOpaqueWindows.has(t)?',
     ],
     [
       "self.$runtimekit=h})();",

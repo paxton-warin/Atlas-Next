@@ -124,6 +124,10 @@ install(front, "Main");
 install(remote, "remote");
 const servedSourceSHA256 = {};
 for (const name of [
+  "profile-journal",
+  "profile-idb-catalog", "profile-idb-quota",
+  "profile-permissions",
+  "hub-contracts",
   "native-resource-preparer",
   "native-resource-owner",
   "native-resource-provider",

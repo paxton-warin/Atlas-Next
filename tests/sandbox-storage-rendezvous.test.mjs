@@ -33,11 +33,11 @@ async function fixture(t, options = {}) {
       payload,
       headers: { host, origin, ...headers },
     });
-  async function owner() {
+  async function owner(body = {}) {
     const result = await post(
       "/api/browse/storage/owners",
       {},
-      { "x-test-owner": "valid" },
+      { "x-test-owner": "valid", ...(body.localReceipts ? { "x-atlas-local-receipts": "1" } : {}) },
     );
     assert.equal(result.statusCode, 200);
     return result.json();
@@ -441,4 +441,47 @@ test("document revocation is rechecked after asynchronous marker lease validatio
   release();
   assert.equal((await pending).statusCode, 409);
   assert.equal(f.storage.documentCount, 0);
+});
+
+test("HTTP fallback receives a recent native receipt after more than64 browser-local acknowledgements", async (t) => {
+  const f = await fixture(t), owner = await f.owner({ localReceipts: true }), doc = await f.document(owner), ws = await f.connect(owner);
+  for (let sequence = 1; sequence <= 130; sequence++) ws.send(JSON.stringify({ type: "result", documentId: doc.documentId, sequence, ok: true, revision: sequence }));
+  const pong = once(ws, "message"); ws.send(JSON.stringify({ type: "ping" }));
+  assert.equal(JSON.parse((await pong)[0]).type, "pong");
+  const result = await f.marker(doc, 130);
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.json(), { ok: true, revision: 130 });
+});
+
+test("local-ack receipt retention remains bounded and cannot acknowledge an evicted old operation", async (t) => {
+  const f = await fixture(t, { timeoutMs: 25 }), owner = await f.owner({ localReceipts: true }), doc = await f.document(owner), ws = await f.connect(owner);
+  for (let sequence = 1; sequence <= 130; sequence++) ws.send(JSON.stringify({ type: "result", documentId: doc.documentId, sequence, ok: true, revision: sequence }));
+  const pong = once(ws, "message"); ws.send(JSON.stringify({ type: "ping" })); await pong;
+  const stale = await f.marker(doc, 1);
+  assert.equal(stale.statusCode, 504);
+  assert.equal(stale.json().ok, false);
+  const recent = await f.marker(doc, 130);
+  assert.equal(recent.statusCode, 200);
+  assert.deepEqual(recent.json(), { ok: true, revision: 130 });
+});
+
+for (const type of ["ping", "result"]) test(`revoked assignment closes owner channel on ${type} without waiting for another HTTP marker`, async (t) => {
+  const f = await fixture(t), owner = await f.owner(), doc = await f.document(owner), ws = await f.connect(owner);
+  f.revoke();
+  const closed = once(ws, "close");
+  ws.send(JSON.stringify(type === "ping" ? { type } : { type, documentId: doc.documentId, sequence: 1, ok: true, revision: 1 }));
+  const [code] = await closed;
+  assert.equal(code, 1008);
+  assert.equal(f.storage.documentCount, 0);
+});
+
+
+test("legacy owners retain contiguous marker order and local opt-in does not fabricate receipts", async (t) => {
+  const f = await fixture(t, { timeoutMs: 20 });
+  for (const localReceipts of [false, true]) {
+    const owner = await f.owner({ localReceipts }), doc = await f.document(owner), ws = await f.connect(owner);
+    const missing = await f.marker(doc, 100);
+    assert.equal(missing.statusCode, localReceipts ? 504 : 409);
+    assert.equal(missing.json().ok, false);
+  }
 });

@@ -8,6 +8,8 @@ type Popup = {
 type BridgeOptions = {
   pageUrl: () => string;
   topName: string;
+  isRoot?: boolean;
+  submitToRoot?: (form: HTMLFormElement, submitter?: HTMLElement | null) => void;
   focusSearch: () => void;
   open: (url: string, name: string, opener: Window, noOpener: boolean) => Popup;
 };
@@ -57,7 +59,8 @@ export function installPageBridge(
       getAttribute.call(form, "target") ??
       doc.querySelector("base[target]")?.getAttribute("target") ??
       "";
-    if (!externalTarget(target) && !["_top", "_parent"].includes(target))
+    const rootTarget = target === "_top" || target === options.topName;
+    if (!externalTarget(target) && !rootTarget && target !== "_parent")
       return { restore() {}, submit: undefined as (() => void) | undefined };
     const holder =
       submitTarget !== null && submitTarget !== undefined ? submitter! : form;
@@ -68,15 +71,13 @@ export function installPageBridge(
       // Sandboxed sibling frames are not native form targets. The owning runtime
       // submits the same successful controls into its child, preserving POST/files.
       return { restore() {}, submit: () => popup.submit(form, submitter) };
+    } else if (!(options.isRoot ?? win === win.top) && rootTarget && options.submitToRoot) {
+      return { restore() {}, submit: () => options.submitToRoot!(form, submitter) };
     } else {
-      // The root of the proxied site is an Atlas tab, not the outer application.
-      setAttribute.call(
-        holder,
-        targetAttr,
-        target === "_parent" && win.parent !== win && win.parent.name
-          ? win.parent.name
-          : options.topName,
-      );
+      // Relative native targets retain their Window identity even when a page
+      // changes window.name. The site's root is this Atlas tab, not the shell.
+      setAttribute.call(holder, targetAttr,
+        (options.isRoot ?? win === win.top) ? "_self" : "_parent");
     }
     return {
       submit: undefined as (() => void) | undefined,

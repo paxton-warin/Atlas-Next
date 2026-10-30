@@ -1,14 +1,35 @@
+import ProfileStatus from "./ProfileStatus";
+import { getProfileStatus, type ProfileStatus as ProfileState } from "./profile-client";
+import { profileHandoffForWebsite, sameShellHandoff } from "./profile-handoff-view";
+import ProfileBackupChoice from "./ProfileBackupChoice";
+import { useV21Theme } from "./v21-theme";
+import { useV21ModalFocus } from "./v21-modal-focus";
+import { getHubSession } from "./hub-client-state";
+import { HubSupportPanel } from "./HubSupportPanel";
 import Catalog from "./Catalog";
-import { version as appVersion } from "../../package.json";
+import TabStrip from "./TabStrip";
+import { useSidebarPeek } from "./use-sidebar-peek";
+import {
+  windowTabsKey,
+  restoreLatestWindowTabs,
+  createWindowTabsPersistence,
+  orderTabs,
+  moveTab,
+  adjacentTab,
+} from "./tab-state";
+import { version as packageVersion } from "../../package.json";
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
+  useMemo,
   useState,
   lazy,
   Suspense,
   type CSSProperties,
 } from "react";
 import { matchesShortcut } from "../../runtime/panic-shortcut";
+import { getActiveLocalAuthority } from "../../runtime/profile-context";
 import { isSearchShortcut } from "../../runtime/browser-shortcuts";
 import {
   createDirectTabUrl,
@@ -50,6 +71,7 @@ import {
   History,
   Leaf,
   Maximize2,
+  Menu,
   MoreHorizontal,
   Music2,
   PanelLeftClose,
@@ -69,15 +91,18 @@ import {
   defaults,
   destination,
   readLocal,
+  profileLocalKey,
   sanitizeSettings,
   themes,
   writeLocal,
+  patchTab,
   type Settings as Preferences,
   type Tab,
   type Game,
   type Engine,
 } from "./model";
 import SearchBox from "./SearchBox";
+import { shortcutInitials, shortcutURL } from "./shortcuts";
 import BrowsingOptions, { ReconnectDialog } from "./BrowsingOptions";
 import SetupWizard from "./SetupWizard";
 import { tabAppearance } from "./tab-presets";
@@ -114,11 +139,16 @@ const seedShortcuts = [
 function NewTabGreeting() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const update = () => setNow(new Date());
-    const timer = setInterval(update, 1000);
+    let timer: ReturnType<typeof setTimeout>;
+    const update = () => {
+      clearTimeout(timer);
+      setNow(new Date());
+      timer = setTimeout(update, 60_000 - (Date.now() % 60_000));
+    };
+    update();
     document.addEventListener("visibilitychange", update);
     return () => {
-      clearInterval(timer);
+      clearTimeout(timer);
       document.removeEventListener("visibilitychange", update);
     };
   }, []);
@@ -147,7 +177,6 @@ function NewTabGreeting() {
           {now.toLocaleTimeString(undefined, {
             hour: "numeric",
             minute: "2-digit",
-            second: "2-digit",
           })}
         </time>
       </div>
@@ -157,6 +186,8 @@ function NewTabGreeting() {
     </>
   );
 }
+const appVersion = packageVersion.replace(/\.0$/, "");
+
 export default function App() {
   const [settings, setSettings] = useState<Preferences>(() =>
     sanitizeSettings(readLocal("atlas.settings", defaults)),
@@ -164,6 +195,7 @@ export default function App() {
   const [page, setPage] = useState(
     location.pathname === "/support" ? "support" : "home",
   );
+  const [supportPageTarget, setSupportPageTarget] = useState<HTMLDivElement | null>(null);
   const [wizard, setWizard] = useState(
     () => !readLocal("atlas.onboarded", false),
   );
@@ -191,35 +223,55 @@ export default function App() {
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState("");
   const [runtimeReady, setRuntimeReady] = useState(false);
-  const [tabs, setTabs] = useState<Tab[]>(() => {
-    const s = sanitizeSettings(readLocal("atlas.settings", defaults));
-    const saved = readLocal<unknown>("atlas.tabs", []);
-    return s.restore && Array.isArray(saved)
-      ? saved
-          .filter(
-            (t) =>
-              t &&
-              typeof t.id === "string" &&
-              typeof t.url === "string" &&
-              /^https?:\/\//.test(t.url),
-          )
-          .slice(0, 20)
-          .map((t) => ({
-            ...t,
-            engine: "runtime" as const,
-            favicon: undefined,
-            status: "ready",
-          }))
-      : [];
+  const [windowKey] = useState(() => windowTabsKey());
+  const [initialWindow] = useState(() => restoreLatestWindowTabs(
+    windowKey,
+    (key) => readLocal(key, null),
+    () => {
+      // Derive the exact active-profile prefix from a complete portable key.
+      // A different account's or an unclaimed legacy window is never listed.
+      const physical = profileLocalKey(windowKey);
+      const prefix = physical.slice(0, physical.length - windowKey.length);
+      const keys: string[] = [];
+      for (let i = 0; i < localStorage.length; ++i) {
+        const key = localStorage.key(i);
+        if (key?.startsWith(prefix)) keys.push(key.slice(prefix.length));
+      }
+      return keys;
+    },
+    settings.restore,
+  ));
+  const [tabs, setTabs] = useState<Tab[]>(initialWindow.tabs);
+  const [tabPersistence] = useState(() => {
+    const physical = profileLocalKey(windowKey), generation = getActiveLocalAuthority()?.localAuthGeneration;
+    return createWindowTabsPersistence({ previous: readLocal(windowKey, null),
+      current: () => profileLocalKey(windowKey) === physical && getActiveLocalAuthority()?.localAuthGeneration === generation,
+      write: (snapshot) => writeLocal(windowKey, snapshot),
+      failed: () => setNotice("Device storage is full. Recent tab changes have not been saved."),
+    });
   });
-  const [active, setActive] = useState(""),
-    [address, setAddress] = useState(""),
+  const [tabOrder, setTabOrder] = useState<string[]>(initialWindow.order);
+  const [closedTabs, setClosedTabs] = useState<Tab[]>([]);
+  const tabActivity = useRef<string[]>(
+    initialWindow.active ? [initialWindow.active] : [],
+  );
+  const [active, setActive] = useState(initialWindow.active),
+    [address, setAddress] = useState(
+      initialWindow.tabs.find((t) => t.id === initialWindow.active)?.url || "",
+    ),
     [search, setSearch] = useState(""),
     [collapsed, setCollapsed] = useState(
       () => readLocal<boolean>("atlas.sidebarCollapsed", true) !== false,
     ),
     [shortcutForm, setShortcutForm] = useState(false),
-    [shortcut, setShortcut] = useState({ name: "", url: "" });
+    [shortcut, setShortcut] = useState({ name: "", url: "" }),
+    [shortcutError, setShortcutError] = useState("");
+  useEffect(() => {
+    if (initialWindow.active && location.pathname !== "/support") {
+      const tab = initialWindow.tabs.find((t) => t.id === initialWindow.active);
+      setPage(tab?.workspace === "ai" ? "ai" : "browse");
+    }
+  }, [initialWindow]);
   const [shortcuts, setShortcuts] = useState(() => {
       const saved = readLocal("atlas.shortcuts", seedShortcuts);
       // Retire only the former built-in shortcut. Keep custom names, URLs,
@@ -238,6 +290,16 @@ export default function App() {
     [games, setGames] = useState<Game[]>([]);
   const [aiOpened, setAiOpened] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [profileStatus, setProfileStatus] = useState<ProfileState>(getProfileStatus);
+  useEffect(() => {
+    const updateProfileStatus = (event: Event) => {
+      const next = (event as CustomEvent<ProfileState>).detail;
+      setProfileStatus((previous) => sameShellHandoff(previous, next) ? previous : next);
+    };
+    window.addEventListener("atlas:profile-status", updateProfileStatus);
+    setProfileStatus(getProfileStatus());
+    return () => window.removeEventListener("atlas:profile-status", updateProfileStatus);
+  }, []);
   const [runtimeError, setRuntimeError] = useState("");
   const [runtimeAttempt, setRuntimeAttempt] = useState(0);
   const [searchFocusRequest, requestSearchFocus] = useState(0);
@@ -247,6 +309,8 @@ export default function App() {
     if (page !== "browse" && page !== "home") setPage("home");
     requestSearchFocus((n) => n + 1);
   }
+  const focusSearchRef = useRef(focusSearch);
+  focusSearchRef.current = focusSearch;
   useEffect(() => {
     if (!searchFocusRequest) return;
     const input = document.querySelector<HTMLInputElement>(
@@ -258,11 +322,47 @@ export default function App() {
   const lastBrowserTab = useRef("");
   const lastAiTab = useRef("");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const shortcutDialog = useRef<HTMLFormElement>(null);
+  const historyDialog = useRef<HTMLElement>(null);
+  useV21ModalFocus(shortcutForm, shortcutDialog, () => setShortcutForm(false), "input");
+  useV21ModalFocus(historyOpen, historyDialog, () => setHistoryOpen(false));
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [utilitiesOpen, setUtilitiesOpen] = useState(false);
+  const utilitiesRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!utilitiesOpen) return;
+    const outside = (event: PointerEvent) => {
+      const target = event.target as HTMLElement;
+      if (!utilitiesRef.current?.contains(target) && !target.closest(".profile-menu,.hub-activity-panel")) setUtilitiesOpen(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [utilitiesOpen]);
+  useEffect(() => setUtilitiesOpen(false), [page]);
+  useEffect(() => {
+    if (!navigationOpen) return;
+    const dismiss = (event: Event) => {
+      if (
+        event instanceof KeyboardEvent
+          ? event.key === "Escape"
+          : !(event.target as Element)?.closest(".main-nav,.mobile-nav-toggle")
+      )
+        setNavigationOpen(false);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", dismiss);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", dismiss);
+    };
+  }, [navigationOpen]);
   const runtimeRef = useRef<HTMLIFrameElement>(null),
     pendingClear = useRef(false),
     live = useRef(new Set<string>()),
     tabsRef = useRef(tabs),
     activeRef = useRef(active);
+  const runtimePreferences = useRef({ settings, wizard });
+  runtimePreferences.current = { settings, wizard };
   const adblockRef = useRef(settings.youtubeAdblock);
   adblockRef.current = settings.youtubeAdblock;
   useEffect(() => {
@@ -303,7 +403,21 @@ export default function App() {
   const isAi = current?.workspace === "ai";
   const showingSite =
     !!current && ((page === "browse" && !isAi) || (page === "ai" && isAi));
+  const profileHandoff = showingSite && !current?.local &&
+    !connectionExpired && !config?.connectionError && !runtimeError
+      ? profileHandoffForWebsite(profileStatus, current?.url)
+      : null;
+  const handoffPanel = useRef<HTMLElement>(null);
+  const handoffActionFocused = useRef(false);
+  useEffect(() => {
+    if (handoffActionFocused.current && profileHandoff?.busy) {
+      handoffPanel.current?.focus({ preventScroll: true });
+      handoffActionFocused.current = false;
+    }
+  }, [profileHandoff?.busy, profileHandoff?.backupPending]);
   const browsingSection = ["home", "browse"].includes(page);
+  const railPeek = useSidebarPeek(collapsed && browsingSection && settings.tabs === "sidebar" && !focusMode && !utilitiesOpen);
+  const compactChrome = settings.compact || railPeek.compactViewport;
   let directTabUrl: string | undefined;
   let popoutUrl: string | undefined;
   if (
@@ -344,6 +458,7 @@ export default function App() {
       showingSite &&
       current &&
       !current.local &&
+      /^https?:\/\//i.test(current.url) &&
       config?.session &&
       !connectionExpired
         ? createPopoutUrl(
@@ -355,18 +470,18 @@ export default function App() {
         : undefined;
   }
 
-  const visibleTabs = tabs.filter((t) =>
-    page === "ai" ? t.workspace === "ai" : t.workspace !== "ai",
-  );
+  const aiTabList = page === "ai";
+  const visibleTabs = useMemo(() => orderTabs(
+    tabs.filter((t) =>
+      aiTabList ? t.workspace === "ai" : t.workspace !== "ai",
+    ),
+    tabOrder,
+  ), [tabs, aiTabList, tabOrder]);
   const theme = themes.find((t) => t.id === settings.theme)!;
+  const visualMode = useV21Theme(settings.theme, settings.mode, settings.accent);
   const toast = (text: string) => setNotice(text);
   function update(patch: Partial<Preferences>) {
-    setSettings((old) => {
-      const next = sanitizeSettings({ ...old, ...patch });
-      if (!writeLocal("atlas.settings", next))
-        toast("Device storage is full. Try a smaller background.");
-      return next;
-    });
+    setSettings((old) => sanitizeSettings({ ...old, ...patch }));
   }
   useEffect(() => {
     let mounted = true;
@@ -471,45 +586,69 @@ export default function App() {
       },
       onEvent(event) {
         if (!mounted) return;
+        if (event.type === "focus-search") { focusSearchRef.current(); return; }
+        if (event.type === "panic") {
+          const current = runtimePreferences.current;
+          if (!current.wizard && current.settings.exitKey && event.key === current.settings.exitKey) location.replace(current.settings.exitUrl);
+          return;
+        }
+        if (event.type === "popup-created" && event.url) {
+          live.current.add(event.id);
+          setTabs(old => old.some(tab => tab.id === event.id) ? old : [...old, {
+            id: event.id, url: event.url!, title: event.url === "about:blank" ? "New tab" : new URL(event.url!).hostname,
+            engine: "runtime", status: "loading", workspace: "browser",
+          }]);
+          tabActivity.current = [event.id, ...tabActivity.current.filter(key => key !== event.id)];
+          setActive(event.id); setAddress(event.url === "about:blank" ? "" : event.url);
+          lastBrowserTab.current = event.id; setPage("browse"); return;
+        }
+        if (event.type === "popup-focus") {
+          const tab = tabsRef.current.find(tab => tab.id === event.id);
+          if (tab) activate(tab);
+          return;
+        }
+        if (event.type === "popup-closed") {
+          live.current.delete(event.id);
+          setTabs(old => old.some(tab => tab.id === event.id) ? old.filter(tab => tab.id !== event.id) : old);
+          setTabOrder(old => old.includes(event.id) ? old.filter(key => key !== event.id) : old);
+          if (activeRef.current === event.id) {
+            const tab = tabsRef.current.find(tab => tab.id === event.openerId) || tabsRef.current.find(tab => tab.id !== event.id);
+            if (tab) activate(tab);
+            else { setActive(""); setPage("home"); setAddress(""); }
+          }
+          return;
+        }
+        if (event.type === "favicon") {
+          const favicon = event.favicon;
+          setTabs(old => patchTab(old, event.id, {
+            favicon: typeof favicon === "string" && favicon.length <= 16384 && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(favicon) ? favicon : undefined }));
+          return;
+        }
         if (event.type === "title") {
           setTabs((old) =>
-            old.map((tab) =>
-              tab.id === event.id
-                ? { ...tab, title: event.title || new URL(tab.url).hostname }
-                : tab,
-            ),
+            patchTab(old, event.id, (tab) => ({ title: event.title || new URL(tab.url).hostname })),
           );
           return;
         }
         if (event.type === "navigation" && event.url) {
           if (activeRef.current === event.id) setAddress(event.url);
           setTabs((old) =>
-            old.map((tab) =>
-              tab.id === event.id
-                ? {
-                    ...tab,
+            patchTab(old, event.id, (tab) => tab.url === event.url ? {} : {
                     url: event.url!,
                     title: new URL(event.url!).hostname,
-                  }
-                : tab,
-            ),
+                  }),
           );
-        } else
+        } else if (["loading", "loaded", "error", "slow"].includes(event.type))
           setTabs((old) =>
-            old.map((tab) =>
-              tab.id === event.id
-                ? {
-                    ...tab,
+            patchTab(old, event.id, {
                     status:
                       event.type === "loaded"
                         ? "ready"
-                        : event.type === "error"
-                          ? "error"
+                        : event.type === "error" || event.type === "slow"
+                          ? event.type
                           : "loading",
-                    message: event.type === "error" ? event.message : undefined,
-                  }
-                : tab,
-            ),
+                    message: event.type === "error" || event.type === "slow" ? event.message : undefined,
+                  }),
           );
       },
     });
@@ -537,7 +676,8 @@ export default function App() {
     writeLocal("atlas.shortcuts", shortcuts);
   }, [shortcuts]);
   useEffect(() => {
-    writeLocal("atlas.settings", settings);
+    if (!writeLocal("atlas.settings", settings))
+      setNotice("Device storage is full. Try a smaller background.");
   }, [settings]);
   useEffect(() => {
     if (!notice) return;
@@ -574,21 +714,22 @@ export default function App() {
     icon.dataset.atlasTabIcon = "true";
     if (!icon.isConnected) document.head.append(icon);
   }, [settings.tabPreset, settings.title, settings.tabIcon]);
+  useLayoutEffect(() => {
+    tabPersistence.update({ tabs, order: tabOrder, active, restore: settings.restore });
+  }, [tabs, tabOrder, active, settings.restore, tabPersistence]);
   useEffect(() => {
-    writeLocal(
-      "atlas.tabs",
-      settings.restore
-        ? tabs.map(({ id, url, title, engine, local, workspace }) => ({
-            id,
-            url,
-            title,
-            engine,
-            local,
-            workspace,
-          }))
-        : [],
-    );
-  }, [tabs, settings.restore]);
+    const flush = () => { tabPersistence.flush(); };
+    const beforeRevoke = (event: Event) => {
+      if ((event as CustomEvent).detail?.generation === getActiveLocalAuthority()?.localAuthGeneration) flush();
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("atlas:profile-local-before-revoke", beforeRevoke);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("atlas:profile-local-before-revoke", beforeRevoke);
+      tabPersistence.flush(); tabPersistence.cancel();
+    };
+  }, [tabPersistence]);
   const runtimeLoaded = useRef(false);
   useEffect(() => {
     runtimeLoaded.current = false;
@@ -603,7 +744,7 @@ export default function App() {
   function send(type: string, extra: Record<string, unknown> = {}) {
     if (frontendRuntimeEnabled(configRef.current)) {
       if (
-        ["navigate", "activate", "close", "reload", "back", "forward"].includes(
+        ["navigate", "activate", "close", "reload", "back", "forward", "panic-key"].includes(
           type,
         )
       )
@@ -789,6 +930,7 @@ export default function App() {
       if (newTab || !id || !tabsRef.current.some((t) => t.id === id))
         id = crypto.randomUUID();
       const tab: Tab = {
+        pinned: tabsRef.current.find((t) => t.id === id)?.pinned,
         id,
         url,
         title: new URL(url).hostname.replace(/^www\./, ""),
@@ -801,6 +943,10 @@ export default function App() {
           ? old.map((t) => (t.id === id ? tab : t))
           : [...old, tab],
       );
+      tabActivity.current = [
+        id,
+        ...tabActivity.current.filter((key) => key !== id),
+      ];
       setActive(id);
       setAddress(url);
       setPage(workspace === "ai" ? "ai" : "browse");
@@ -875,7 +1021,7 @@ export default function App() {
       }
       if (d.type === "popup-closed") {
         live.current.delete(d.id);
-        setTabs((old) => old.filter((t) => t.id !== d.id));
+        setTabs((old) => old.some(t => t.id === d.id) ? old.filter((t) => t.id !== d.id) : old);
         if (activeRef.current === d.id) {
           const tab =
             tabsRef.current.find((t) => t.id === d.openerId) ||
@@ -942,21 +1088,19 @@ export default function App() {
         return;
       }
       setTabs((old) =>
-        old.map((t) => {
-          if (t.id !== d.id) return t;
+        patchTab(old, d.id, (t) => {
           if (
             d.type === "navigation" &&
             typeof d.url === "string" &&
             /^https?:\/\//.test(d.url)
           ) {
             if (t.id === activeRef.current) setAddress(d.url);
-            return { ...t, url: d.url };
+            return { url: d.url };
           }
           if (d.type === "title" && d.title)
-            return { ...t, title: String(d.title).slice(0, 100) };
+            return { title: String(d.title).slice(0, 100) };
           if (d.type === "favicon" && typeof d.favicon === "string")
             return {
-              ...t,
               favicon:
                 d.favicon.length <= 16384 &&
                 /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(d.favicon)
@@ -964,11 +1108,11 @@ export default function App() {
                   : undefined,
             };
           if (d.type === "error" || d.type === "slow")
-            return { ...t, status: d.type, message: d.message };
+            return { status: d.type, message: d.message };
           if (d.type === "loaded")
-            return { ...t, status: "ready", message: undefined };
-          if (d.type === "loading") return { ...t, status: "loading" };
-          return t;
+            return { status: "ready", message: undefined };
+          if (d.type === "loading") return { status: "loading" };
+          return {};
         }),
       );
     }
@@ -1045,6 +1189,10 @@ export default function App() {
     return () => window.removeEventListener("keydown", key);
   }, [settings.exitKey, settings.exitUrl, wizard, page]);
   function activate(tab: Tab) {
+    tabActivity.current = [
+      tab.id,
+      ...tabActivity.current.filter((id) => id !== tab.id),
+    ];
     setActive(tab.id);
     setAddress(tab.url);
     setPage(tab.workspace === "ai" ? "ai" : "browse");
@@ -1057,18 +1205,55 @@ export default function App() {
     }
   }
   function close(id: string) {
+    const closed = tabsRef.current.find((t) => t.id === id);
+    if (!closed) return;
+    setClosedTabs((old) => [closed, ...old].slice(0, 20));
     send("close", { id });
     live.current.delete(id);
     setTabs((old) => old.filter((t) => t.id !== id));
-    if (active === id) {
-      const remaining = tabs.filter((t) => t.id !== id);
-      if (remaining.length) activate(remaining[remaining.length - 1]);
+    setTabOrder((old) => old.filter((key) => key !== id));
+    if (activeRef.current === id) {
+      const remaining = orderTabs(
+        tabsRef.current.filter(
+          (t) => t.id !== id && t.workspace === closed.workspace,
+        ),
+        tabOrder,
+      );
+      const next =
+        tabActivity.current
+          .map((key) => remaining.find((t) => t.id === key))
+          .find(Boolean) || remaining[0];
+      if (next) activate(next);
       else {
         setActive("");
-        setPage("home");
+        setPage(closed.workspace === "ai" ? "ai" : "home");
         setAddress("");
       }
     }
+  }
+  function undoClose() {
+    const closed = closedTabs[0];
+    if (!closed) return;
+    const tab = {
+      ...closed,
+      id: crypto.randomUUID(),
+      status: "ready" as const,
+      favicon: undefined,
+    };
+    setClosedTabs((old) => old.slice(1));
+    setTabs((old) => [...old, tab]);
+    activate(tab);
+  }
+  function stepTab(id: string, direction: -1 | 1) {
+    const adjacent = adjacentTab(tabsRef.current, tabOrder, id, direction);
+    if (!adjacent) return;
+    setTabOrder((old) => {
+      const next = orderTabs(tabsRef.current, old).map((t) => t.id);
+      const a = next.indexOf(id),
+        b = next.indexOf(adjacent);
+      [next[a], next[b]] = [next[b], next[a]];
+      return next;
+    });
   }
   function launchGame(g: Game) {
     if (g.url.startsWith("/games/")) {
@@ -1142,17 +1327,17 @@ export default function App() {
     live.current.clear();
     send("clear", { id: "system" });
   }
-  const style = {
+  const style = useMemo(() => ({
     "--accent": settings.accent,
     "--base": theme.bg,
     "--surface": theme.surface,
     "--dim": settings.dim / 100,
     "--wallpaper": settings.wallpaper ? `url("${settings.wallpaper}")` : "none",
     "--wallpaper-blur": settings.blur + "px",
-  } as CSSProperties;
+  }) as CSSProperties, [settings.accent, theme.bg, theme.surface, settings.dim, settings.wallpaper, settings.blur]);
   if (adminRoute)
     return (
-      <div style={style} className="atlas">
+      <div style={style} className="atlas" data-v21-theme={settings.theme} data-mode={visualMode}>
         {opaqueMode && (
           <div ref={frontendArea} data-frontend-runtime="2" hidden />
         )}
@@ -1219,91 +1404,65 @@ export default function App() {
         </Suspense>
       </div>
     );
-  const tabList = (
-    <>
-      <button
-        className="new-tab"
-        aria-label="New tab"
-        title="New tab"
-        onClick={() => {
-          setActive("");
-          setPage(page === "ai" ? "ai" : "home");
-          setAddress("");
-        }}
-      >
-        <Plus size={17} />
-        <span>{page === "ai" ? "New AI tab" : "New tab"}</span>
-      </button>
-      {visibleTabs.map((t) => (
-        <div
-          key={t.id}
-          className={"tab " + (active === t.id && showingSite ? "active" : "")}
-        >
-          <button
-            className="tab-main"
-            aria-label={t.title}
-            title={t.title}
-            onClick={() => activate(t)}
-          >
-            {t.status === "loading" ? (
-              <span className="spinner" />
-            ) : t.local ? (
-              <Gamepad2 size={16} />
-            ) : t.favicon ? (
-              <img
-                className="tab-favicon"
-                src={t.favicon}
-                alt=""
-                aria-hidden="true"
-                width={16}
-                height={16}
-                draggable={false}
-                onError={() =>
-                  setTabs((old) =>
-                    old.map((tab) =>
-                      tab.id === t.id ? { ...tab, favicon: undefined } : tab,
-                    ),
-                  )
-                }
-              />
-            ) : (
-              <Globe2 size={16} />
-            )}
-            <span>{t.title}</span>
-          </button>
-          <button
-            className="icon-button close-tab"
-            aria-label={"Close " + t.title}
-            onClick={() => close(t.id)}
-          >
-            <X size={13} />
-          </button>
-        </div>
-      ))}
-    </>
-  );
+  const tabStripProps = {
+    previewEnabled: !railPeek.open,
+    tabs: visibleTabs,
+    handoffs: !connectionExpired && !config?.connectionError && !runtimeError
+      ? Object.fromEntries(visibleTabs.map(tab => [
+          tab.id,
+          tab.local ? null : profileHandoffForWebsite(profileStatus, tab.url),
+        ]))
+      : {},
+    active: showingSite ? active : "",
+    horizontal: settings.tabs === "top",
+    closedCount: closedTabs.length,
+    onActivate: activate,
+    onClose: close,
+    onUndo: undoClose,
+    onStep: stepTab,
+    onPin: (id: string) =>
+      setTabs((old) =>
+        old.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)),
+      ),
+    onMove: (id: string, before: string, after = false) =>
+      setTabOrder((old) => moveTab(tabsRef.current, old, id, before, after)),
+    onNew: () => {
+      setActive("");
+      setPage(page === "ai" ? "ai" : "home");
+      setAddress("");
+    },
+  };
+  const tabList = <TabStrip {...tabStripProps} />;
   return (
     <div
       className={
-        "atlas " +
+        "atlas sidebar-adaptive " +
+        (compactChrome ? "chrome-compact " : "") +
+        (railPeek.open ? "sidebar-peeking " : "") +
         (settings.compact ? "compact " : "") +
         (!settings.motion ? "no-motion " : "") +
         (settings.tabs === "top" ? "top-tabs " : "") +
-        (collapsed ? "sidebar-collapsed " : "") +
+        (collapsed && !railPeek.open ? "sidebar-collapsed " : "") +
         (focusMode && browsingSection ? "focus-mode " : "") +
         (page === "home" ? "home-section " : "") +
         (browsingSection ? "browser-section " : "content-section ")
       }
       style={style}
+      data-v21-theme={settings.theme}
+      data-mode={visualMode}
+      data-rail-collapsed={collapsed && browsingSection && settings.tabs === "sidebar"}
     >
-      <div className={"ambient " + settings.background} aria-hidden="true" />
-      <header className="topbar">
+      <header className="topbar" ref={railPeek.header} {...railPeek.events}>
         <button className="brand" onClick={() => setPage("home")}>
           <span className="brand-mark">A</span>
           {config?.name || "Atlas"}
           <span className="brand-dot" />
         </button>
-        <nav className="main-nav">
+        <nav
+          id="atlas-main-navigation"
+          className={"main-nav" + (navigationOpen ? " mobile-open" : "")}
+          aria-label="Atlas pages"
+        >
           {[
             ["home", "Browser", Globe2],
             ["ai", "AI", Sparkles],
@@ -1315,42 +1474,36 @@ export default function App() {
             <button
               key={key}
               aria-label={label}
+              aria-current={page === key || (key === "home" && page === "browse") ? "page" : undefined}
               className={
                 page === key || (key === "home" && page === "browse")
                   ? "selected"
                   : ""
               }
-              onClick={() => switchSection(key)}
+              onClick={() => {
+                switchSection(key);
+                setNavigationOpen(false);
+              }}
             >
               <Icon size={16} />
               <span>{label}</span>
             </button>
           ))}
         </nav>
-        <div className="topbar-end">
-          <button
-            className="icon-button"
-            aria-label="Toggle color mode"
-            onClick={() =>
-              update({ mode: settings.mode === "light" ? "dark" : "light" })
-            }
-          >
-            <Sun size={18} />
-          </button>
-        </div>
-      </header>
-      <div className="workspace">
         {browsingSection && settings.tabs === "sidebar" && (
           <aside className="sidebar">
             <div className="sidebar-heading">
-              <span className="eyebrow">
-                {page === "ai" ? "AI tabs" : "Tabs"}
+              <span className="eyebrow" data-count={visibleTabs.length} aria-label={`${visibleTabs.length} open tabs`} title={`${visibleTabs.length} open tabs`}>
+                {collapsed && !railPeek.open
+                  ? visibleTabs.length
+                  : `${page === "ai" ? "AI tabs" : "Tabs"} · ${visibleTabs.length}`}
               </span>
               <button
-                className="icon-button"
-                aria-label={collapsed ? "Expand tabs" : "Collapse tabs"}
-                title={collapsed ? "Expand tabs" : "Collapse tabs"}
-                aria-expanded={!collapsed}
+                className="icon-button sidebar-toggle"
+                aria-label={railPeek.open ? "Keep sidebar open" : collapsed ? "Expand tabs" : "Collapse tabs"}
+                title={railPeek.open ? "Keep sidebar open" : collapsed ? "Expand tabs" : "Collapse tabs"}
+                aria-description={`${visibleTabs.length} open tabs. Hover for one second to preview without resizing the website.`}
+                aria-expanded={!collapsed || railPeek.open}
                 onClick={() => setCollapsed(!collapsed)}
               >
                 {collapsed ? (
@@ -1358,6 +1511,7 @@ export default function App() {
                 ) : (
                   <PanelLeftClose size={16} />
                 )}
+                <span className="sidebar-toggle-label">{railPeek.open ? "Keep open" : collapsed ? "Expand" : "Collapse"}</span>
               </button>
             </div>
             <div className="tabs-list">{tabList}</div>
@@ -1370,17 +1524,53 @@ export default function App() {
                 <History size={17} />
                 <span>Recently visited</span>
               </button>
-              <button
-                aria-label="Open settings"
-                title="Settings"
-                onClick={() => setPage("settings")}
-              >
-                <Settings2 size={17} />
-                <span>Settings</span>
-              </button>
             </div>
           </aside>
         )}
+        <div className="topbar-end rail-utilities" ref={utilitiesRef} data-open={utilitiesOpen} onKeyDown={(event) => {
+          if (event.key === "Escape" && utilitiesOpen && utilitiesRef.current?.contains(event.target as Node)) {
+            event.preventDefault(); event.stopPropagation(); setUtilitiesOpen(false);
+            utilitiesRef.current.querySelector<HTMLButtonElement>(".rail-utilities-toggle")?.focus();
+          }
+        }}>
+          <button className="icon-button rail-utilities-toggle" aria-label="More Atlas tools" aria-expanded={utilitiesOpen} aria-controls="atlas-rail-tools" onClick={() => setUtilitiesOpen(!utilitiesOpen)} title="Saves, notifications, history and appearance"><MoreHorizontal size={19} /></button>
+          <div id="atlas-rail-tools" className="rail-utilities-content" role="group" aria-label="Atlas tools">
+          <button className="icon-button compact-history" aria-label="Recently visited" title="Recently visited" onClick={() => setHistoryOpen(true)}><History size={17} /><span>History</span></button>
+          <ProfileStatus website={showingSite && !current?.local ? current?.url : undefined} />
+          <HubSupportPanel
+            active={page === "support"}
+            pageTarget={supportPageTarget}
+            onOpen={() => {
+              setFocusMode(false);
+              setPage("support");
+              setNavigationOpen(false);
+            }}
+            legacySupport={<Support toast={toast} />}
+          />
+          <button
+            className="mobile-nav-toggle button"
+            aria-label="Menu"
+            aria-controls="atlas-main-navigation"
+            aria-expanded={navigationOpen}
+            onClick={() => setNavigationOpen((value) => !value)}
+          >
+            <Menu size={17} />
+            <span>Menu</span>
+          </button>
+          <button
+            className="icon-button"
+            aria-label="Toggle color mode"
+            onClick={() =>
+              update({ mode: settings.mode === "light" ? "dark" : "light" })
+            }
+          >
+            <Sun size={18} />
+            <span className="rail-tool-label">Appearance</span>
+          </button>
+          </div>
+        </div>
+      </header>
+      <div className="workspace">
         <main className="main-panel">
           {browsingSection && settings.tabs === "top" && (
             <div className="horizontal-tabs">{tabList}</div>
@@ -1470,6 +1660,7 @@ export default function App() {
           <div className="page-scroll" hidden={showingSite}>
             {page === "home" && (
               <div className="home-page">
+                <div className={"ambient " + settings.background} aria-hidden="true" />
                 <div className="home-browsing-options">
                   <BrowsingOptions
                     routing={!!config?.nodeRouting}
@@ -1495,14 +1686,16 @@ export default function App() {
                       <div className="shortcut" key={s.name + i}>
                         <button
                           className="shortcut-target"
+                          aria-label={s.name}
                           onClick={() => navigate(s.url, true)}
                         >
                           <span
+                            aria-hidden="true"
                             style={
                               { "--shortcut-color": s.color } as CSSProperties
                             }
                           >
-                            {s.symbol}
+                            {shortcutInitials(s.name)}
                           </span>
                           <small>{s.name}</small>
                         </button>
@@ -1523,12 +1716,13 @@ export default function App() {
                     ))}
                     <button
                       className="shortcut add-shortcut"
-                      onClick={() => setShortcutForm(true)}
+                      aria-label="Add shortcut"
+                      onClick={() => { setShortcutError(""); setShortcutForm(true); }}
                     >
                       <span>
                         <Plus size={19} />
                       </span>
-                      <small>Add shortcut</small>
+                      <small>Add</small>
                     </button>
                   </div>
                 </section>
@@ -1558,7 +1752,7 @@ export default function App() {
                 <Suspense
                   fallback={<div className="empty-state">Loading AI…</div>}
                 >
-                  <AiChat />
+                  <AiChat key={profileLocalKey("atlas.chats") + ":" + (getActiveLocalAuthority()?.localAuthGeneration ?? "browser")} />
                 </Suspense>
               </div>
             )}
@@ -1574,7 +1768,7 @@ export default function App() {
                 clear={clearWeb}
               />
             )}
-            {page === "support" && <Support toast={toast} />}
+            <div className="support-page-outlet" ref={setSupportPageTarget} hidden={page !== "support"} />
             {(page === "games" || page === "apps") && (
               <Catalog
                 key={page}
@@ -1634,8 +1828,59 @@ export default function App() {
                   sandbox="allow-scripts allow-same-origin"
                 />
               ))}
+            {profileHandoff && (
+              <section
+                className="runtime-error profile-handoff"
+                ref={handoffPanel}
+                tabIndex={-1}
+                role="status"
+                aria-live="polite"
+                aria-busy={profileHandoff.busy}
+                aria-labelledby="profile-handoff-heading"
+              >
+                <Globe2 size={28} aria-hidden="true" />
+                <h2 id="profile-handoff-heading">{profileHandoff.title}</h2>
+                <p>{profileHandoff.message}</p>
+                {profileHandoff.canContinue && (
+                  <button
+                    className="button primary"
+                    onClick={() => {
+                      handoffActionFocused.current = true;
+                      window.dispatchEvent(new CustomEvent("atlas:profile-continue", {
+                        detail: { origin: new URL(current!.url).origin },
+                      }));
+                    }}
+                  >
+                    Continue here
+                  </button>
+                )}
+                {profileHandoff.canRetry && (
+                  <button
+                    className="button primary"
+                    onClick={() => window.dispatchEvent(new CustomEvent("atlas:profile-retry"))}
+                  >
+                    Retry sync
+                  </button>
+                )}
+                {profileHandoff.busy && <span className="spinner" aria-hidden="true" />}
+                {profileHandoff.kind === "waiting" && (
+                  <ProfileBackupChoice
+                    key={new URL(current!.url).origin}
+                    view={profileHandoff}
+                    origin={new URL(current!.url).origin}
+                    confirm={(origin) => {
+                      handoffActionFocused.current = true;
+                      window.dispatchEvent(new CustomEvent("atlas:profile-use-backup", {
+                        detail: { origin },
+                      }));
+                    }}
+                  />
+                )}
+              </section>
+            )}
             {current &&
               !current.local &&
+              !profileHandoff &&
               (connectionExpired ||
                 config?.connectionError ||
                 runtimeError ||
@@ -1684,6 +1929,28 @@ export default function App() {
           </div>
         </main>
       </div>
+      <nav className="mobile-bottom-nav" aria-label="Mobile workspace">
+        {[
+          ["home", "Browser", Globe2],
+          ["ai", "AI", Sparkles],
+          ["games", "Games", Gamepad2],
+          ["apps", "Apps", Grid2X2],
+        ].map(([key, label, Icon]: any) => (
+          <button
+            key={key}
+            aria-label={`Open ${label === "Browser" ? "browser" : label}`}
+            aria-current={page === key || (key === "home" && page === "browse") ? "page" : undefined}
+            onClick={() => {
+              switchSection(key);
+              setNavigationOpen(false);
+            }}
+          >
+            <Icon size={18} />
+            <span>{label}</span>
+          </button>
+        ))}
+        <TabStrip {...tabStripProps} mobile />
+      </nav>
       {notice && !wizard && (
         <div className="toast" role="status">
           <Check size={16} />
@@ -1716,20 +1983,25 @@ export default function App() {
       {shortcutForm && (
         <div className="modal-backdrop">
           <form
+            ref={shortcutDialog}
+            tabIndex={-1}
             className="small-modal"
             role="dialog"
             aria-modal="true"
             aria-label="Add shortcut"
             onSubmit={(e) => {
               e.preventDefault();
+              setShortcutError("");
               try {
-                const url = destination(shortcut.url, settings.search);
+                const url = shortcutURL(shortcut.url);
+                const name = shortcut.name.trim();
+                if (!name) throw Error("Enter a shortcut name.");
                 const next = [
                   ...shortcuts,
                   {
-                    name: shortcut.name.trim(),
+                    name,
                     url,
-                    symbol: shortcut.name.charAt(0).toUpperCase(),
+                    symbol: shortcutInitials(name),
                     color: settings.accent,
                   },
                 ];
@@ -1738,7 +2010,7 @@ export default function App() {
                 setShortcutForm(false);
                 setShortcut({ name: "", url: "" });
               } catch (e) {
-                toast((e as Error).message);
+                setShortcutError((e as Error).message);
               }
             }}
           >
@@ -1759,23 +2031,27 @@ export default function App() {
                 required
                 maxLength={24}
                 value={shortcut.name}
-                onChange={(e) =>
-                  setShortcut({ ...shortcut, name: e.target.value })
-                }
+                onChange={(e) => { setShortcutError(""); setShortcut({ ...shortcut, name: e.target.value }); }}
               />
             </label>
-            <label className="form-field">
-              Website
+            <div className="form-field">
+              <label htmlFor="shortcut-website">Website</label>
               <input
+                id="shortcut-website"
                 required
-                type="url"
+                type="text"
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                aria-describedby="shortcut-website-hint"
                 value={shortcut.url}
-                onChange={(e) =>
-                  setShortcut({ ...shortcut, url: e.target.value })
-                }
-                placeholder="https://"
+                onChange={(e) => { setShortcutError(""); setShortcut({ ...shortcut, url: e.target.value }); }}
+                placeholder="example.com"
               />
-            </label>
+              <small id="shortcut-website-hint">Enter a domain or full URL. We’ll add https:// if needed.</small>
+            </div>
+            {shortcutError && <p className="error" role="alert">{shortcutError}</p>}
             <button className="button primary wide">
               Add shortcut
               <Plus size={17} />
@@ -1786,6 +2062,8 @@ export default function App() {
       {historyOpen && (
         <div className="modal-backdrop">
           <section
+            ref={historyDialog}
+            tabIndex={-1}
             className="small-modal"
             role="dialog"
             aria-modal="true"

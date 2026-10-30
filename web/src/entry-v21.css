@@ -1,0 +1,18 @@
+/* Stable entry geometry; real stages change without flashing action menus. */
+body.atlas-v21 .hub-gate .entry-card{min-height:288px}
+body.atlas-v21 .hub-gate .entry-stage{display:flex;align-items:center;gap:12px;min-height:44px}
+body.atlas-v21 .hub-gate-actions{min-height:44px}
+body.atlas-v21 .hub-gate .entry-cancel{align-self:flex-start;min-height:44px;padding:8px 0;border:0;background:transparent;font-size:13px;color:var(--text-muted)}
+body.atlas-v21 .entry-spinner{width:20px;height:20px;flex:none;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@media(prefers-reduced-motion:reduce){body.atlas-v21 .entry-spinner{animation:none}}
+
+/* Restore progress remains inside the single stable entry card. */
+body.atlas-v21 .entry-restore-progress{width:100%;min-width:0;margin:4px 0 12px}
+body.atlas-v21 .entry-progress-track{height:6px;border-radius:999px;background:var(--border);overflow:hidden}
+body.atlas-v21 .entry-progress-track>span{display:block;height:100%;border-radius:inherit;background:var(--accent)}
+body.atlas-v21 .entry-progress-track>span.indeterminate{width:30%;animation:entry-progress 1.8s ease-in-out infinite}
+body.atlas-v21 .entry-progress-caption{display:flex;justify-content:space-between;gap:12px;margin-top:12px;font-size:13px;color:var(--text-muted)}
+body.atlas-v21 .entry-progress-eta,body.atlas-v21 .entry-restore-choice p{font-size:12px;color:var(--text-muted);line-height:1.5;margin:6px 0}
+body.atlas-v21 .entry-restore-choice{width:100%}
+@keyframes entry-progress{from{transform:translateX(-100%)}to{transform:translateX(434%)}}
+@media(prefers-reduced-motion:reduce){body.atlas-v21 .entry-progress-track>span{animation:none!important}}

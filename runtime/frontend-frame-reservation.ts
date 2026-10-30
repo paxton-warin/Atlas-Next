@@ -13,12 +13,16 @@ export function createFrontendFrameReservations(options: {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000)
     throw new TypeError("Invalid frame reservation deadline");
   const active = new Map<string, () => void>();
+  const payloads = new Map<string, string>();
   let live = true;
   return {
     async reserve(input: {
       documentId: string;
       website: string;
       signal: AbortSignal;
+      parentDocumentId?: string;
+      bootstrapNonce?: string;
+      kind?: "popup";
     }) {
       if (
         !live ||
@@ -27,6 +31,12 @@ export function createFrontendFrameReservations(options: {
         active.has(input.documentId)
       )
         throw new TypeError("Invalid frame reservation");
+      if (
+        input.parentDocumentId &&
+        (!/^doc_[a-f0-9]{32}$/.test(input.parentDocumentId) ||
+          !active.has(input.parentDocumentId))
+      )
+        throw new TypeError("Nested parent reservation is stale");
       const assignment = options.assignment();
       if (assignment.frontendOrigin !== frontend || assignment.protocol !== 2)
         throw new TypeError("Frame assignment changed frontend origin");
@@ -41,6 +51,13 @@ export function createFrontendFrameReservations(options: {
         session: assignment.session,
         generation: assignment.generation,
         documentId: input.documentId,
+        ...(input.parentDocumentId
+          ? { parentDocumentId: input.parentDocumentId }
+          : {}),
+        ...(input.bootstrapNonce
+          ? { bootstrapNonce: input.bootstrapNonce }
+          : {}),
+        ...(input.kind ? { kind: input.kind } : {}),
       });
       const controller = new AbortController(),
         abort = () => controller.abort();
@@ -51,6 +68,7 @@ export function createFrontendFrameReservations(options: {
         disposed = true;
         controller.abort();
         active.delete(input.documentId);
+        payloads.delete(input.documentId);
         void nativeFetch("/api/browse/controller/document", {
           method: "DELETE",
           credentials: "same-origin",
@@ -60,8 +78,28 @@ export function createFrontendFrameReservations(options: {
         }).catch(() => {});
       };
       active.set(input.documentId, dispose);
+      payloads.set(input.documentId, payload);
       const timer = owner.setTimeout(abort, timeoutMs);
       try {
+        if (input.parentDocumentId) {
+          const parent = await nativeFetch("/api/browse/controller/document", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body:
+              payloads.get(input.parentDocumentId) ??
+              JSON.stringify({
+                session: assignment.session,
+                generation: assignment.generation,
+                documentId: input.parentDocumentId,
+              }),
+            signal: controller.signal,
+            redirect: "error",
+            cache: "no-store",
+          });
+          if (!parent.ok)
+            throw new TypeError("Nested parent reservation expired");
+        }
         const response = await nativeFetch("/api/browse/controller/document", {
           method: "POST",
           credentials: "same-origin",
@@ -90,7 +128,10 @@ export function createFrontendFrameReservations(options: {
               current.relayOrigin,
             ].join("\0") ||
           grant.documentId !== input.documentId ||
-          grant.frameURL !== frontend + "/browse/frame/" + input.documentId ||
+          grant.frameURL !==
+            frontend +
+              (input.kind === "popup" ? "/browse/popup/" : "/browse/frame/") +
+              input.documentId ||
           grant.resourceOrigin !== assignment.relayOrigin ||
           !/^https:\/\//.test(grant.resourceOrigin) ||
           !Number.isFinite(grant.expiresAt) ||
@@ -100,6 +141,43 @@ export function createFrontendFrameReservations(options: {
         return {
           frameURL: grant.frameURL as string,
           resourceOrigin: grant.resourceOrigin as string,
+          serverBootstrapNonce: !!input.bootstrapNonce,
+          expiresAt: grant.expiresAt as number,
+          async refresh() {
+            if (disposed || !live)
+              throw new TypeError("Frame reservation is closed");
+            const send = async (id: string, depth = 0): Promise<any> => {
+              if (depth > 16)
+                throw new TypeError("Frame parent depth exceeded");
+              const body = payloads.get(id);
+              if (!body) throw new TypeError("Frame reservation is closed");
+              const record = JSON.parse(body);
+              if (record.parentDocumentId)
+                await send(record.parentDocumentId, depth + 1);
+              const response = await nativeFetch(
+                "/api/browse/controller/document",
+                {
+                  method: "POST",
+                  credentials: "same-origin",
+                  headers: { "content-type": "application/json" },
+                  body,
+                  redirect: "error",
+                  cache: "no-store",
+                  signal: owner.AbortSignal.timeout(timeoutMs),
+                },
+              );
+              if (!response.ok || disposed || !live)
+                throw new TypeError("Frame reservation renewal failed");
+              return response.json();
+            };
+            const renewed = await send(input.documentId);
+            if (
+              renewed.frameURL !== grant.frameURL ||
+              renewed.resourceOrigin !== grant.resourceOrigin
+            )
+              throw new TypeError("Frame reservation identity changed");
+            return renewed.expiresAt as number;
+          },
           dispose,
         };
       } catch (error) {
@@ -110,19 +188,65 @@ export function createFrontendFrameReservations(options: {
         input.signal.removeEventListener("abort", abort);
       }
     },
-    async reserveRenderer(input: {parentDocumentId:string;scriptHashes:readonly string[]}) {
-      if (!live || !active.has(input.parentDocumentId)) throw new TypeError("Renderer parent reservation is stale");
-      const assignment = options.assignment(), payload = {session:assignment.session,generation:assignment.generation,documentId:input.parentDocumentId};
+    async reserveRenderer(input: {
+      parentDocumentId: string;
+      scriptHashes: readonly string[];
+    }) {
+      if (!live || !active.has(input.parentDocumentId))
+        throw new TypeError("Renderer parent reservation is stale");
+      const assignment = options.assignment(),
+        payload = {
+          session: assignment.session,
+          generation: assignment.generation,
+          documentId: input.parentDocumentId,
+        };
       // Refresh the short physical-policy reservation without recreating the
       // document, changing its assignment, or recovering legacy website data.
-      const refresh=await nativeFetch("/api/browse/controller/document",{method:"POST",credentials:"same-origin",headers:{"content-type":"application/json"},body:JSON.stringify(payload),redirect:"error",cache:"no-store",signal:owner.AbortSignal.timeout(timeoutMs)});
-      if(!refresh.ok)throw new TypeError("Renderer parent reservation expired");
-      const response=await nativeFetch("/api/browse/controller/renderer",{method:"POST",credentials:"same-origin",headers:{"content-type":"application/json","x-atlas-browse-session":assignment.session,"x-atlas-browse-generation":String(assignment.generation)},body:JSON.stringify(input),redirect:"error",cache:"no-store",signal:owner.AbortSignal.timeout(timeoutMs)});
-      const text=await response.text(), current=options.assignment();
-      if(!response.ok||text.length>16384||!live||!active.has(input.parentDocumentId)||current.sessionHash!==assignment.sessionHash||current.generation!==assignment.generation||current.node.id!==assignment.node.id)throw new TypeError("Renderer parent assignment changed");
-      const result=JSON.parse(text);
-      if(Object.keys(result).length!==3||typeof result.helperURL!=="string"||typeof result.childId!=="string"||typeof result.secret!=="string")throw new TypeError("Invalid renderer reservation");
-      return result as {helperURL:string;childId:string;secret:string};
+      const refresh = await nativeFetch("/api/browse/controller/document", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        redirect: "error",
+        cache: "no-store",
+        signal: owner.AbortSignal.timeout(timeoutMs),
+      });
+      if (!refresh.ok)
+        throw new TypeError("Renderer parent reservation expired");
+      const response = await nativeFetch("/api/browse/controller/renderer", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "content-type": "application/json",
+          "x-atlas-browse-session": assignment.session,
+          "x-atlas-browse-generation": String(assignment.generation),
+        },
+        body: JSON.stringify(input),
+        redirect: "error",
+        cache: "no-store",
+        signal: owner.AbortSignal.timeout(timeoutMs),
+      });
+      const text = await response.text(),
+        current = options.assignment();
+      if (
+        !response.ok ||
+        text.length > 16384 ||
+        !live ||
+        !active.has(input.parentDocumentId) ||
+        current.sessionHash !== assignment.sessionHash ||
+        current.generation !== assignment.generation ||
+        current.node.id !== assignment.node.id
+      )
+        throw new TypeError("Renderer parent assignment changed");
+      const result = JSON.parse(text);
+      if (
+        Object.keys(result).length !== 3 ||
+        typeof result.helperURL !== "string" ||
+        typeof result.childId !== "string" ||
+        typeof result.secret !== "string"
+      )
+        throw new TypeError("Invalid renderer reservation");
+      return result as { helperURL: string; childId: string; secret: string };
     },
     dispose() {
       if (!live) return;

@@ -1,10 +1,13 @@
 import { test, expect, type Page } from "@playwright/test";
 import Fastify from "fastify";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { compileRuntimeFixture } from "./runtime-fixture.mjs";
 import { installSandboxFramePrototype } from "../server/sandbox-frame.mjs";
 import { installSandboxStorageRendezvous } from "../server/sandbox-storage-rendezvous.mjs";
 
 const server = Fastify({ logger: false });
+const { buildSync } = createRequire(import.meta.resolve("vite"))("esbuild");
 let origin: string;
 const wire: string[] = [];
 test.beforeAll(async () => {
@@ -50,9 +53,19 @@ test.beforeAll(async () => {
         }),
       );
   });
-  const facade = compiled
-    .get("sandbox-local-storage")!
-    .replaceAll(/^export /gm, "");
+  // The frame bootstrap is a classic script. Bundle the actual facade and its
+  // dependency closure rather than inserting transpiled ES module imports.
+  const facade = buildSync({
+    entryPoints: [
+      fileURLToPath(new URL("../runtime/sandbox-local-storage.ts", import.meta.url)),
+    ],
+    bundle: true,
+    write: false,
+    format: "iife",
+    globalName: "AtlasFixtureStorage",
+    target: "es2022",
+    logLevel: "silent",
+  }).outputFiles[0].text;
   installSandboxFramePrototype(server, {
     capabilities: true,
     storageEndpointOrigin: () => origin,
@@ -63,7 +76,7 @@ test.beforeAll(async () => {
       const grant=event.detail;
       grant.control.onmessage=async event=>{
         if(event.data.type!=='initialize')return;
-        try{window.storage=await createSandboxStorageFacades({documentId:grant.documentId,endpoint:event.data.storageEndpoint,port:grant.storage});window.storageReady=true;}
+        try{window.storage=await AtlasFixtureStorage.createSandboxStorageFacades({documentId:grant.documentId,endpoint:event.data.storageEndpoint,port:grant.storage});window.storageReady=true;}
         catch(error){window.storageError=error.name+':'+error.message;}
       };grant.control.start();
     });

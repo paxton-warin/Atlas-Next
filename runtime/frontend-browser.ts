@@ -1,3 +1,9 @@
+import { acquireSharedProfileOwner } from "./shared-profile-owner.ts";
+import { acquireSharedAssignmentCoordinator } from "./shared-assignment-coordinator.ts";
+import { createScramjetWebsiteDocument, type ScramjetRuntimeEvent } from "./scramjet-document.ts";
+import { getActiveProfile, getActiveProfileContext, prepareProfileDocument, getActiveLocalAuthority } from "./profile-context.ts";
+import { hubSiteGroup } from "./hub-contracts.ts";
+import { checkpointElementVisible, type ProfileCheckpointRequest } from "./website-checkpoint.ts";
 /** Trusted frontend composition for the private opaque runtime. No owner,
  * assignment, relay ticket, trusted rewriter or upstream response body is
  * granted to website code. This module does not activate the public UI. */
@@ -27,7 +33,7 @@ import type { TrustedFormNavigation } from "./form-navigation.ts";
 
 type Owner = Window & typeof globalThis;
 type Coordinator = ReturnType<typeof createFrontendAssignmentCoordinator>;
-type Document = ReturnType<typeof createOpaqueWebsiteDocument>;
+type Document = ReturnType<typeof createOpaqueWebsiteDocument> | ReturnType<typeof createScramjetWebsiteDocument>;
 type Fetch = ReturnType<typeof createSandboxRelayFetch>;
 type SocketConnect = ReturnType<typeof createSandboxRelayWebSocketConnect>;
 type NativeProvider = Awaited<ReturnType<typeof createNativeResourceProvider>>;
@@ -41,6 +47,9 @@ type RewriterFactory = (input: {
 }) => Transform;
 type RuntimeAssets = Readonly<{
   version: 2;
+  engine?: "scramjet-controller";
+  runtimePath?: "/browse/runtime/";
+  documentOrigin: "opaque" | "same-origin";
   bootstrap: string;
   trustedRewriter: string;
   workers: Readonly<{ storage: string; cookies: string; relay: string }>;
@@ -81,6 +90,7 @@ type Options = {
   ) => void;
   onLocation?: (url: string) => void;
   onTelemetry?: (event: PageTelemetry) => void;
+  onRuntimeEvent?: (event: ScramjetRuntimeEvent) => void;
   onAssignmentState?: (state: AssignmentState) => void;
   onAssignment?: Parameters<
     typeof createFrontendAssignmentCoordinator
@@ -149,10 +159,14 @@ export async function loadFrontendRuntimeAssets(
       throw failure("FRONTEND_RUNTIME_MANIFEST_INVALID");
     return parsed.href;
   };
-  if (value?.version !== 2 || !value.workers)
+  if (value?.version !== 2 || !value.workers ||
+      (value.documentOrigin !== undefined && !["opaque", "same-origin"].includes(value.documentOrigin)) ||
+      (value.engine !== undefined && (value.engine !== "scramjet-controller" || value.runtimePath !== "/browse/runtime/" || value.documentOrigin !== "same-origin")))
     throw failure("FRONTEND_RUNTIME_MANIFEST_INVALID");
   return Object.freeze({
     version: 2,
+    ...(value.engine ? { engine: value.engine, runtimePath: value.runtimePath } : {}),
+    documentOrigin: value.documentOrigin ?? "opaque",
     bootstrap: asset(value.bootstrap, "document"),
     trustedRewriter: asset(value.trustedRewriter, "rewriter"),
     workers: Object.freeze({
@@ -194,7 +208,7 @@ export async function createFrontendBrowser(options: Options) {
   let assets: RuntimeAssets, rewrite: RewriterFactory;
   try {
     assets = await loadFrontendRuntimeAssets(owner, initialization.signal);
-    const module = await Promise.race([
+    const module = assets.engine === "scramjet-controller" ? null : await Promise.race([
       deps.rewriter(assets.trustedRewriter),
       new Promise<never>((_resolve, reject) => {
         const abort = () => reject(failure("FRONTEND_RUNTIME_LOAD_TIMEOUT"));
@@ -202,9 +216,9 @@ export async function createFrontendBrowser(options: Options) {
         if (initialization.signal.aborted) abort();
       }),
     ]);
-    if (typeof module?.createFrontendResourceRewriter !== "function")
+    if (assets.engine !== "scramjet-controller" && typeof module?.createFrontendResourceRewriter !== "function")
       throw failure("FRONTEND_TRUSTED_REWRITER_REQUIRED");
-    rewrite = module.createFrontendResourceRewriter;
+    rewrite = module?.createFrontendResourceRewriter!;
   } finally {
     owner.clearTimeout(manifestTimer);
   }
@@ -229,8 +243,9 @@ export async function createFrontendBrowser(options: Options) {
     assignment: FrontendAssignment;
     storage: Awaited<ReturnType<typeof createSandboxStorageOwner>>;
     cookies: Awaited<ReturnType<typeof createSandboxCookieOwner>>;
-    native: NativeProvider;
-    frames: ReturnType<typeof createFrontendFrameReservations>;
+    localNative?: Awaited<ReturnType<typeof import("./native-owner-v2.ts").createNativeOwnerV2>>;
+    native?: NativeProvider;
+    frames?: ReturnType<typeof createFrontendFrameReservations>;
     entries: Map<string, Entry>;
     live: boolean;
     dispose(): void;
@@ -271,6 +286,39 @@ export async function createFrontendBrowser(options: Options) {
       previous.binding.dispose();
     }
   }
+  const quiesce=(event:Event)=>{
+    const siteGroup=(event as CustomEvent).detail?.siteGroup;
+    if(siteGroup&&(!desiredURL||hubSiteGroup(new URL(desiredURL).origin)!==siteGroup))return;
+    ++navigationIntent;removeDocument();state({status:"error",code:"PROFILE_CONTINUED_ELSEWHERE"});
+  };
+  const profileReady=(event:Event)=>{
+    const {origin,siteGroup}=(event as CustomEvent).detail||{};
+    if(live&&desiredURL&&(siteGroup?hubSiteGroup(new URL(desiredURL).origin)===siteGroup:new URL(desiredURL).origin===origin))void navigate(desiredURL).catch(()=>{});
+  };
+  let lastActiveAt = Date.now();
+  let rootActive = true;
+  const checkpoint = (event: Event) => {
+    const detail = (event as CustomEvent<ProfileCheckpointRequest>).detail;
+    const current = mounted;
+    if (!live || options.container.isConnected === false || !current || !current.binding.live || !desiredURL || !detail ||
+        !Array.isArray(detail.candidates) || !("checkpoint" in current.binding)) return;
+    const origin = new URL(desiredURL).origin;
+    if (hubSiteGroup(origin) !== detail.siteGroup) return;
+    detail.candidates.push({
+      origin,
+      visible: rootActive && checkpointElementVisible(options.container),
+      lastActiveAt,
+      async checkpoint() {
+        if (!live || mounted !== current || !current.binding.live || !desiredURL ||
+            new URL(desiredURL).origin !== origin || !("checkpoint" in current.binding))
+          throw failure("PROFILE_CHECKPOINT_DOCUMENT_CHANGED");
+        await current.binding.checkpoint();
+      },
+    });
+  };
+  owner.addEventListener("atlas:profile-checkpoint", checkpoint);
+  owner.addEventListener("atlas:profile-quiesce",quiesce);
+  owner.addEventListener("atlas:profile-ready",profileReady);
   const checkedURL = (input: string) => {
     const u = new URL(input),
       forbidden = [
@@ -287,7 +335,12 @@ export async function createFrontendBrowser(options: Options) {
       throw failure("FRONTEND_BROWSER_DESTINATION_DENIED");
     return u.href;
   };
-  function mount(url: string, value: Bundle, form?: TrustedFormNavigation): Promise<Document> {
+  async function mount(
+    url: string,
+    value: Bundle,
+    form?: TrustedFormNavigation,
+  ): Promise<Document> {
+    await prepareProfileDocument(url);
     checkBundle(value);
     const website = checkedURL(url),
       version = ++navigationEpoch,
@@ -319,10 +372,34 @@ export async function createFrontendBrowser(options: Options) {
     }, timeout);
     let binding: Document;
     try {
-      binding = deps.document({
+      const makeDocument = assets.engine === "scramjet-controller"
+        ? (input: Parameters<typeof createOpaqueWebsiteDocument>[0]) => createScramjetWebsiteDocument({
+            ...input, cookieProvider: value.cookies, browserSessionId: value.assignment.browserSessionId,
+            localNative: value.localNative,
+            async runtimeTicket() {
+              checkBundle(value);
+              const response = await owner.fetch("/api/browse/controller/runtime-ticket", {
+                method: "POST", credentials: "same-origin", cache: "no-store",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ session: coordinator.current!.session, generation: coordinator.current!.generation }),
+              });
+              if (!response.ok) throw failure("SCRAMJET_RUNTIME_TICKET_FAILED");
+              const result = await response.json(); checkBundle(value); return result;
+            },
+            onRuntimeEvent(event) { if (live && version === navigationEpoch) options.onRuntimeEvent?.(event); },
+            onLocation(next) {
+              if (!live || version !== navigationEpoch) return;
+              desiredURL = next; options.onLocation?.(next);
+            },
+          })
+        : deps.document;
+      binding = makeDocument({
+        documentOrigin: assets.documentOrigin,
         website,
         container: options.container,
         factory: options.factory ?? owner.indexedDB,
+        profileId: getActiveProfile(),
+        profileContextId: getActiveProfileContext(),
         storageProvider: value.storage,
         cookieProvider: value.cookies,
         sessionId: tabSessionId!,
@@ -338,8 +415,10 @@ export async function createFrontendBrowser(options: Options) {
             )
               throw failure("FRONTEND_NAVIGATION_STALE");
             const initial = checkedURL(input.website);
+            await prepareProfileDocument(initial);
             const source = deps.source({
               frontendOrigin: frontend,
+              enforceOriginalPolicy: assets.documentOrigin !== "same-origin",
               forbiddenOrigins: forbiddenOrigins(),
               selectedNodeOrigin: () => {
                 checkBundle(value);
@@ -348,7 +427,7 @@ export async function createFrontendBrowser(options: Options) {
               fetch: deps.fetch({
                 documentId: input.documentId,
                 documentURL: initial,
-                topLevelURL: form?.initiatorURL ?? initial,
+                topLevelURL: input.topLevelURL ?? form?.initiatorURL ?? initial,
                 frontendOrigin: frontend,
                 forbiddenOrigins: forbiddenOrigins(),
                 relay: coordinator.transport,
@@ -362,16 +441,20 @@ export async function createFrontendBrowser(options: Options) {
             };
             value.entries.set(input.documentId, entry);
             try {
-              const prepared = await source.prepare({...input,...(form?{navigation:form}:{})});
+              const prepared = await source.prepare({
+                ...input,
+                ...(form && !input.parentDocumentId ? { navigation: form } : {}),
+              });
               checkBundle(value);
               if (version !== navigationEpoch || intent !== navigationIntent)
                 throw failure("FRONTEND_NAVIGATION_STALE");
               const finalURL = checkedURL(prepared.url);
+              await prepareProfileDocument(finalURL);
               entry.finalURL = finalURL;
               const assignedFetch = deps.fetch({
                 documentId: input.documentId,
                 documentURL: finalURL,
-                topLevelURL: finalURL,
+                topLevelURL: input.topLevelURL ?? finalURL,
                 frontendOrigin: frontend,
                 forbiddenOrigins: forbiddenOrigins(),
                 relay: coordinator.transport,
@@ -401,22 +484,26 @@ export async function createFrontendBrowser(options: Options) {
               entry.socket = deps.socket({
                 documentId: input.documentId,
                 documentURL: finalURL,
-                topLevelURL: finalURL,
+                topLevelURL: input.topLevelURL ?? finalURL,
                 frontendOrigin: frontend,
                 forbiddenOrigins: forbiddenOrigins(),
                 relay: coordinator.transport,
                 cookies: value.cookies,
               });
-              desiredURL = finalURL;
-              try {
-                options.onLocation?.(finalURL);
-              } catch {}
+              if (!input.parentDocumentId) {
+                desiredURL = finalURL;
+                try { options.onLocation?.(finalURL); } catch {}
+              }
               return prepared;
             } catch (error) {
               source.dispose();
               value.entries.delete(input.documentId);
               throw error;
             }
+          },
+          releaseDocument(documentId) {
+            const entry=value.entries.get(documentId);
+            entry?.source.dispose();value.entries.delete(documentId);
           },
         },
         frameProvider: value.frames,
@@ -426,17 +513,26 @@ export async function createFrontendBrowser(options: Options) {
           checkBundle(value);
           const entry = value.entries.get(input.parentDocumentId);
           const workerURL = checkedURL(input.documentURL);
-          if (!entry?.finalURL || new URL(workerURL).origin !== new URL(entry.finalURL).origin)
+          if (
+            !entry?.finalURL ||
+            new URL(workerURL).origin !== new URL(entry.finalURL).origin
+          )
             throw failure("FRONTEND_WORKER_BINDING_MISMATCH");
           const assignedFetch = deps.fetch({
-            documentId: input.documentId, documentURL: workerURL,
-            topLevelURL: entry.finalURL, frontendOrigin: frontend,
-            forbiddenOrigins: forbiddenOrigins(), relay: coordinator.transport,
+            documentId: input.documentId,
+            documentURL: workerURL,
+            topLevelURL: entry.finalURL,
+            frontendOrigin: frontend,
+            forbiddenOrigins: forbiddenOrigins(),
+            relay: coordinator.transport,
             cookies: value.cookies,
           });
           return (request, context) => {
             checkBundle(value);
-            if (value.entries.get(input.parentDocumentId) !== entry || version !== navigationEpoch)
+            if (
+              value.entries.get(input.parentDocumentId) !== entry ||
+              version !== navigationEpoch
+            )
               throw failure("FRONTEND_WORKER_BINDING_MISMATCH");
             return assignedFetch(request, context);
           };
@@ -486,6 +582,7 @@ export async function createFrontendBrowser(options: Options) {
             mounted?.binding !== binding
           )
             return;
+          if (assets.engine === "scramjet-controller") { options.onTelemetry?.(event); return; }
           const entry = value.entries.get(binding.documentId);
           if (!entry) return;
           try {
@@ -554,21 +651,31 @@ export async function createFrontendBrowser(options: Options) {
       };
     };
     try {
+      const localAuthority = getActiveLocalAuthority?.();
+      const scope = localAuthority ? [localAuthority.replicaId, localAuthority.localAuthGeneration].join("\0")
+        : [snapshot, getActiveProfile(), getActiveProfileContext()].join("\0");
+      const storageOptions = {
+        workerURL: assets.workers.storage, profileId: getActiveProfile(), localAuthority: localAuthority ?? undefined, nativeV2: !!localAuthority,
+        profileContextId: getActiveProfileContext(), registrationHeaders, window: owner, timeoutMs: timeout,
+        localReceipts: assets.engine === "scramjet-controller" && assets.documentOrigin === "same-origin" && !!getActiveProfile(),
+      };
+      const cookieOptions = {
+        workerURL: assets.workers.cookies, profileId: getActiveProfile(), localAuthority: localAuthority ?? undefined, nativeV2: !!localAuthority,
+        profileContextId: getActiveProfileContext(), registrationHeaders, window: owner, timeoutMs: timeout,
+        browserSessionId: assignment.browserSessionId, forbiddenOrigins: forbiddenOrigins(),
+        cacheViews: assets.engine === "scramjet-controller",
+      };
+      // A local authority never falls back to a remotely registered legacy owner.
+      const makeStorage = () => deps.storage(storageOptions);
+      const makeCookies = () => deps.cookies(cookieOptions);
+      const share = assets.engine === "scramjet-controller";
       const results = await Promise.allSettled([
-        deps.storage({
-          workerURL: assets.workers.storage,
-          registrationHeaders,
-          window: owner,
-          timeoutMs: timeout,
-        }),
-        deps.cookies({
-          workerURL: assets.workers.cookies,
-          registrationHeaders,
-          window: owner,
-          timeoutMs: timeout,
-          browserSessionId: assignment.browserSessionId,
-          forbiddenOrigins: forbiddenOrigins(),
-        }),
+        share && !options.components?.storage
+          ? acquireSharedProfileOwner(owner, "storage:" + scope, makeStorage)
+          : makeStorage(),
+        share && !options.components?.cookies
+          ? acquireSharedProfileOwner(owner, "cookies:" + scope, makeCookies)
+          : makeCookies(),
       ]);
       for (const result of results)
         if (result.status === "fulfilled") created.push(result.value);
@@ -585,7 +692,10 @@ export async function createFrontendBrowser(options: Options) {
           Awaited<ReturnType<typeof createSandboxCookieOwner>>
         >
       ).value;
-      const frames = deps.frames({
+      const localNative = localAuthority ? await acquireSharedProfileOwner(owner, 'native-v2:' + scope, async () =>
+        (await import('./native-owner-v2.ts')).createNativeOwnerV2(localAuthority,{host:owner,timeoutMs:timeout})) : undefined;
+      if (localNative) created.push(localNative);
+      const frames = assets.engine === "scramjet-controller" ? undefined : deps.frames({
         assignment: () => {
           check();
           return coordinator.current!;
@@ -593,8 +703,8 @@ export async function createFrontendBrowser(options: Options) {
         window: owner,
         timeoutMs: timeout,
       });
-      created.push(frames);
-      const native = await deps.native({
+      if (frames) created.push(frames);
+      const native = assets.engine === "scramjet-controller" ? undefined : await deps.native({
         window: owner,
         timeoutMs: timeout,
         onUnavailable(code) {
@@ -660,7 +770,7 @@ export async function createFrontendBrowser(options: Options) {
           };
         },
       });
-      created.push(native);
+      if (native) created.push(native);
       check();
       const result: Bundle = {
         identity: snapshot,
@@ -670,6 +780,7 @@ export async function createFrontendBrowser(options: Options) {
         cookies,
         frames,
         native,
+        localNative,
         live: true,
         dispose() {
           if (!result.live) return;
@@ -705,10 +816,14 @@ export async function createFrontendBrowser(options: Options) {
     if (
       (bundle?.live &&
         bundle.identity === nextIdentity &&
-        bundle.native.stats().live) ||
+        bundle.storage.live !== false && bundle.cookies.live !== false &&
+        (!bundle.native || bundle.native.stats().live)) ||
       buildingIdentity === nextIdentity
-    )
+    ) {
+      if (event.identityChanged === false && mounted && "renewCredentials" in mounted.binding)
+        void mounted.binding.renewCredentials().catch((error: any) => state({status:"error",code:error.code || "SCRAMJET_RUNTIME_RENEW_FAILED"}));
       return;
+    }
     const version = ++assignmentEpoch;
     buildingIdentity = nextIdentity;
     ++navigationEpoch;
@@ -735,7 +850,10 @@ export async function createFrontendBrowser(options: Options) {
         });
     });
   }
-  coordinator = deps.coordinator({
+  const coordinate = assets.engine === "scramjet-controller" && options.coordinatorOptions && !options.components?.coordinator
+    ? (input: Parameters<typeof deps.coordinator>[0]) => acquireSharedAssignmentCoordinator(owner, options.coordinatorOptions!, input)
+    : deps.coordinator;
+  coordinator = coordinate({
     ...options.coordinatorOptions,
     workerURL: assets.workers.relay,
     window: owner,
@@ -776,6 +894,17 @@ export async function createFrontendBrowser(options: Options) {
       mountFlight
     )
       return mountFlight;
+    if (assets.engine === "scramjet-controller" && mounted?.bundle === current &&
+        "runtimeControl" in mounted.binding && !form) {
+      await prepareProfileDocument(expected);
+      if (intent !== navigationIntent) throw failure("FRONTEND_NAVIGATION_STALE");
+      if (mounted.binding.runtimeControl("navigate", undefined, { url: expected, engine: "runtime" })) {
+        mounted.requestedURL = expected;
+        // Readiness remains driven by the normal frame's loading/loaded events,
+        // not by this command acknowledgement. Keep popups and the controller.
+        return mounted.binding;
+      }
+    }
     return mount(expected, current, form);
   }
   let connecting: Promise<void> | undefined;
@@ -803,11 +932,25 @@ export async function createFrontendBrowser(options: Options) {
       return navigate(website);
     },
     navigate,
+    runtimeCommand(type: string, targetId?: string, values: Record<string, unknown> = {}) {
+      if (assets.engine !== "scramjet-controller" || !live || !mounted || !("runtimeControl" in mounted.binding)) return false;
+      const result = mounted.binding.runtimeControl(type, targetId, values);
+      if (result && type === "activate") {
+        rootActive = targetId === undefined;
+        if (rootActive) lastActiveAt = Date.now();
+      }
+      return result;
+    },
+    historyCommand(type: 'back' | 'forward' | 'reload') {
+      if (assets.engine !== "scramjet-controller" || !live || !mounted || !("browserControl" in mounted.binding)) return false;
+      return mounted.binding.browserControl(type);
+    },
     pageCommand(input: PageCommand) {
       const command = cleanPageCommand(input);
       if (!command) throw failure("FRONTEND_PAGE_COMMAND_INVALID");
       const current = mounted,
         entry = current?.bundle.entries.get(current.binding.documentId);
+      if (assets.engine === "scramjet-controller") return !!(live && current?.binding.live && current.binding.command(command));
       if (!live || !current?.binding.live || !entry) return false;
       const sent = current.binding.command(command);
       if (
@@ -855,6 +998,9 @@ export async function createFrontendBrowser(options: Options) {
       ++navigationEpoch;
       ++navigationIntent;
       initialization.abort();
+      owner.removeEventListener("atlas:profile-checkpoint", checkpoint);
+      owner.removeEventListener("atlas:profile-quiesce",quiesce);
+      owner.removeEventListener("atlas:profile-ready",profileReady);
       removeDocument();
       bundle?.dispose();
       bundle = undefined;

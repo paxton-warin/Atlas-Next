@@ -20,17 +20,29 @@ import {
   adaptPinnedHttpEngine,
   OPAQUE_HTTPENGINE_SOURCE_SHA256,
 } from "./opaque-httpengine.mjs";
+import { adaptLiteralEval } from "./runtime-literal-eval.mjs";
 const { build } = createRequire(import.meta.resolve("vite"))("esbuild");
 const sha = (v) => createHash("sha256").update(v).digest("hex");
+export function composeDocumentBootstrap({ core, documentSource, wasm }) {
+  return Buffer.from(
+    "(()=>{const documentOrigin=document.currentScript?.dataset.atlasDocumentOrigin===\"same-origin\"?\"same-origin\":\"opaque\";\n" +
+      core +
+      "\n" +
+      documentSource +
+      "\nAtlasOpaqueDocument.installOpaqueDocument({global:window,documentOrigin,core:self.$runtimekit,wasm:Uint8Array.from(atob(" +
+      JSON.stringify(wasm.toString("base64")) +
+      "),c=>c.charCodeAt(0))});})();\n",
+  );
+}
 export async function buildOpaqueRuntime({
   outdir = resolve("dist/opaque-runtime"),
 } = {}) {
   const pin = JSON.parse(await readFile("scripts/runtime-fork.json", "utf8"));
   const original = await readFile(
-      "runtime/public/runtime/runtimekit.js",
+      join(pin.directory, "app/vendor/runtimekit.js"),
       "utf8",
     ),
-    core = adaptPinnedRuntimeBundle(original),
+    core = adaptLiteralEval(Buffer.from(adaptPinnedRuntimeBundle(original))).toString(),
     wasm = await readFile("runtime/public/runtime/runtimekit.wasm");
   if (sha(wasm) !== pin.assets["runtimekit.wasm"].sha256)
     throw Error("Opaque rewriter Wasm source hash mismatch");
@@ -71,14 +83,11 @@ export async function buildOpaqueRuntime({
       },
       entryPoints: ["runtime/opaque-document.ts"],
     });
-    const entry = Buffer.from(
-      core +
-        "\n" +
-        document.outputFiles[0].text +
-        "\nAtlasOpaqueDocument.installOpaqueDocument({global:window,core:self.$runtimekit,wasm:Uint8Array.from(atob(" +
-        JSON.stringify(wasm.toString("base64")) +
-        "),c=>c.charCodeAt(0))});\n",
-    );
+    const entry = composeDocumentBootstrap({
+      core,
+      documentSource: document.outputFiles[0].text,
+      wasm,
+    });
     const bootstrap = "document-" + sha(entry).slice(0, 16) + ".js";
     await writeFile(join(staged, bootstrap), entry);
     const trusted = await build({

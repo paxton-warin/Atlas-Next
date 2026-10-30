@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { digest } from "./store.mjs";
+import { nodeControlSettings, nodeHeartbeatRequest } from "./node-control-settings.mjs";
+const controlSettings = nodeControlSettings();
 const directory = resolve(process.env.DATA_DIR || "node-data");
 mkdirSync(directory, { recursive: true, mode: 0o700 });
 const file = resolve(directory, "node.json");
@@ -52,22 +54,8 @@ async function heartbeat() {
   if (!credentials || busy) return;
   busy = true;
   try {
-    const r = await fetch(
-      new URL("/api/nodes/heartbeat", credentials.control),
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          authorization: "Bearer " + credentials.secret,
-        },
-        body: JSON.stringify({
-          id: credentials.id,
-          connections: app.connectionCount(),
-        }),
-        signal: AbortSignal.timeout(6000),
-        redirect: "error",
-      },
-    );
+    const heartbeatRequest = nodeHeartbeatRequest(credentials, app.connectionCount(), controlSettings);
+    const r = await fetch(heartbeatRequest.url, heartbeatRequest.init);
     if (!r.ok) console.error("NODE_HEARTBEAT_STATUS=" + r.status);
     else app.applyControl(await r.json());
   } catch {

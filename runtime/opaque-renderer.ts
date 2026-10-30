@@ -63,7 +63,10 @@ export function rendererTarget(
         parent.origin,
       ) &&
       target.origin === "https://cdn.platform.openai.com" &&
-      target.pathname === "/deployments/dil/v14/runner.html"
+      [
+        "/deployments/dil/v14/runner.html",
+        "/deployments/dil/v15/runner.html",
+      ].includes(target.pathname)
     )
       return target;
   } catch {

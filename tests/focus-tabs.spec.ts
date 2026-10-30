@@ -30,8 +30,9 @@ for (const tabs of ["top", "sidebar"] as const) {
       const strip = page.locator(
         tabs === "top" ? ".horizontal-tabs" : ".sidebar",
       );
-      const normallyVisible = tabs === "top" || width > 600;
+      const normallyVisible = width >= 600;
       await expect(strip).toBeVisible({ visible: normallyVisible });
+      if (width < 600) await expect(page.getByRole("button", { name: "Tabs (1)", exact: true })).toBeVisible();
       await expect(page.locator(".topbar")).toBeVisible();
       await expect(strip.locator(".tab.active")).toHaveCount(1);
       const savedTabs = await page.evaluate(() =>
@@ -55,6 +56,7 @@ for (const tabs of ["top", "sidebar"] as const) {
       await expect(page.locator(".horizontal-tabs, .sidebar")).toBeHidden();
       await expect(page.locator(".topbar")).toBeHidden();
       await expect(page.locator(".main-nav")).toBeHidden();
+      await expect(page.locator(".mobile-bottom-nav")).toBeHidden();
       await expect(page.locator(".browser-toolbar")).toBeVisible();
       await expect(page.getByLabel("Address bar")).toBeVisible();
       await expect(page.getByLabel("Address bar")).toHaveValue(fixtureUrl);
@@ -85,6 +87,7 @@ for (const tabs of ["top", "sidebar"] as const) {
       await exit.click();
       await expect(page.locator(".atlas")).not.toHaveClass(/focus-mode/);
       await expect(strip).toBeVisible({ visible: normallyVisible });
+      if (width < 600) await expect(page.getByRole("button", { name: "Tabs (1)", exact: true })).toBeVisible();
       await expect(strip.locator(".tab.active")).toHaveCount(1);
       await expect(page.locator(".topbar")).toBeVisible();
       await expect(

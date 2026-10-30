@@ -1,0 +1,245 @@
+  private async write(
+    lines: string[],
+    context: Context,
+    fromHTTP: boolean,
+    identity?: LocalCookieMutationIdentity,
+  ): Promise<Outcome> {
+    if (this.closed)
+      throw new DOMException("Cookie authority is closed", "InvalidStateError");
+    if (context.signal?.aborted)
+      throw (
+        context.signal.reason ||
+        new DOMException("Cookie write aborted", "AbortError")
+      );
+    if (
+      !Array.isArray(lines) ||
+      lines.length > 128 ||
+      lines.some((line) => typeof line !== "string")
+    )
+      throw new TypeError("Set-Cookie requires separate bounded header lines");
+    await this.assertWrite(context.request.origin);
+    const db = await this.database;
+    if (this.closed)
+      throw new DOMException("Cookie authority is closed", "InvalidStateError");
+    const outcome = await new Promise<Outcome>((resolve, reject) => {
+      const transaction = db.transaction(["cookies", "meta"], "readwrite", {
+        durability: "default",
+      });
+      this.transactions.add(transaction);
+      const store = transaction.objectStore("cookies"),
+        meta = transaction.objectStore("meta"),
+        revision = meta.get("revision"),
+        priorIdentity =
+          this.localAuthority && identity
+            ? meta.get([
+                "local-cookie-result-v2",
+                identity.binding,
+                identity.sequence,
+              ])
+            : undefined,
+        usage = this.localAuthority ? meta.get("local-usage-v2") : undefined,
+        requestSite =
+          parseDomain(context.request.hostname, { allowPrivateDomains: true })
+            .domain || context.request.hostname,
+        request = store.index("site").getAll(requestSite);
+      let failure: unknown,
+        result: Outcome,
+        changed = false;
+      const abort = () => {
+        failure =
+          context.signal?.reason ||
+          new DOMException("Cookie write aborted", "AbortError");
+        try {
+          transaction.abort();
+        } catch {}
+      };
+      context.signal?.addEventListener("abort", abort, { once: true });
+      request.onsuccess = () => {
+        try {
+          this.assertWriteCached(context.request.origin);
+          if (priorIdentity?.result) {
+            result = priorIdentity.result;
+            return;
+          }
+          if (context.signal?.aborted) return abort();
+          const now = this.options.now(),
+            all = new Map<string, Cookie>();
+          const journal: unknown[] = [];
+          for (const cookie of request.result as Cookie[]) {
+            if (cookie.expires !== null && cookie.expires <= now) {
+              if (
+                cookie.site ===
+                (parseDomain(context.request.hostname, {
+                  allowPrivateDomains: true,
+                }).domain || context.request.hostname)
+              ) {
+                store.delete(cookie.id);
+                journal.push({ op: "delete", cookie });
+                changed = true;
+              }
+            } else all.set(cookie.id, cookie);
+          }
+          let accepted = 0;
+          const acceptedChanges: { op: "set" | "delete"; cookie: Cookie }[] =
+            [];
+          const rejected: string[] = [];
+          for (const line of lines) {
+            const parsed = parseLine(
+                line,
+                context,
+                fromHTTP,
+                this.options.browserSessionId,
+                now,
+              ),
+              cookie = parsed.cookie;
+            if (!cookie) {
+              rejected.push(parsed.reason!);
+              continue;
+            }
+            const previous = all.get(cookie.id);
+            if (!fromHTTP && previous?.httpOnly) {
+              rejected.push("cookie_httponly_overwrite_denied");
+              continue;
+            }
+            if (
+              !secure(context.request) &&
+              !cookie.secure &&
+              [...all.values()].some(
+                (old) =>
+                  old.secure &&
+                  old.name === cookie.name &&
+                  (cookieDomainMatches(old.domain, cookie.domain) ||
+                    cookieDomainMatches(cookie.domain, old.domain)) &&
+                  cookiePathMatches(cookie.path, old.path),
+              )
+            ) {
+              rejected.push("cookie_secure_overlay_denied");
+              continue;
+            }
+            accepted++;
+            if (cookie.expires !== null && cookie.expires <= now) {
+              acceptedChanges.push({ op: "delete", cookie });
+              if (all.delete(cookie.id)) {
+                store.delete(cookie.id);
+                journal.push({ op: "delete", cookie });
+                changed = true;
+              }
+              continue;
+            }
+            if (previous) cookie.created = previous.created;
+            if (previous && sameCookieState(previous, cookie)) {
+              // Still return/persist the accepted result identity below. An
+              // acknowledgement retry cannot later reapply this assignment.
+              acceptedChanges.push({ op: "set", cookie: previous });
+              continue;
+            }
+            all.set(cookie.id, cookie);
+            acceptedChanges.push({ op: "set", cookie });
+            store.put(cookie);
+            journal.push({ op: "set", cookie });
+            changed = true;
+          }
+          const perSite = new Map<string, number>();
+          const retainedUsage = !changed && usage?.result &&
+            Number.isSafeInteger(usage.result.count) && usage.result.count >= 0 &&
+            Number.isSafeInteger(usage.result.bytes) && usage.result.bytes >= 0
+            ? { count: usage.result.count, bytes: usage.result.bytes }
+            : undefined;
+          let size = 0;
+          for (const cookie of all.values()) {
+            perSite.set(cookie.site, (perSite.get(cookie.site) || 0) + 1);
+            if (!retainedUsage) size += bytes(JSON.stringify(cookie));
+          }
+          const previousRows = request.result as Cookie[];
+          const aggregate = retainedUsage || (this.localAuthority
+            ? {
+                count:
+                  (usage?.result?.count || 0) - previousRows.length + all.size,
+                bytes:
+                  (usage?.result?.bytes || 0) -
+                  previousRows.reduce(
+                    (sum, row) => sum + bytes(JSON.stringify(row)),
+                    0,
+                  ) +
+                  size,
+              }
+            : { count: all.size, bytes: size });
+          if (
+            aggregate.count > this.options.maxCookies ||
+            aggregate.bytes > this.options.maxBytes ||
+            [...perSite.values()].some(
+              (count) => count > this.options.maxCookiesPerSite,
+            )
+          )
+            throw new DOMException(
+              "Cookie quota exceeded",
+              "QuotaExceededError",
+            );
+          // IDB requests are processed in order: the meta read predates getAll's
+          // success task; its result is available before the later write task.
+          const version = (revision.result || 0) + (changed ? 1 : 0);
+          if (changed) {
+            meta.put(version, "revision");
+            meta.put(aggregate, "local-usage-v2");
+            this.journal(transaction, context.request.origin, journal, version);
+          }
+          result = {
+            accepted,
+            rejected,
+            revision: version,
+            ...(this.localAuthority && identity
+              ? { baseRevision: revision.result || 0, acceptedChanges }
+              : {}),
+          };
+          if (this.localAuthority && identity) {
+            meta.put(result, [
+              "local-cookie-result-v2",
+              identity.binding,
+              identity.sequence,
+            ]);
+            if (identity.sequence > 8)
+              meta.delete(
+                IDBKeyRange.bound(
+                  ["local-cookie-result-v2", identity.binding],
+                  [
+                    "local-cookie-result-v2",
+                    identity.binding,
+                    identity.sequence - 8,
+                  ],
+                ),
+              );
+          }
+        } catch (error) {
+          failure = error;
+          transaction.abort();
+        }
+      };
+      transaction.oncomplete = () => {
+        this.transactions.delete(transaction);
+        context.signal?.removeEventListener("abort", abort);
+        if (changed) {
+          this.notify(
+            true,
+            result.revision,
+            identity?.binding.split(":")[0],
+            requestSite,
+          );
+          try {
+            this.options.onNativeCommit(context.request.origin);
+          } catch {}
+        }
+        resolve(result!);
+      };
+      transaction.onabort = () => {
+        this.transactions.delete(transaction);
+        context.signal?.removeEventListener("abort", abort);
+        reject(
+          failure ||
+            transaction.error ||
+            new DOMException("Cookie transaction aborted", "AbortError"),
+        );
+      };
+      transaction.onerror = () => {};
+    });
+    return outcome;
+  }

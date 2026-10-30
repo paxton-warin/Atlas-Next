@@ -16,6 +16,36 @@ const toBase64 = globalThis.btoa.bind(globalThis),
 const chars = String.fromCharCode;
 const random = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
 export type CookieOperation = "get" | "set";
+export type CookieViewEntry = {id: string; name: string; value: string; path: string; created: number; expiresAt: number | null};
+export type CookieViewDelta = {baseVersion: number; baseRevision: number; upsert: CookieViewEntry[]; remove: string[]};
+export function validateCookieViewEntries(value: unknown): value is CookieViewEntry[] {
+  return Array.isArray(value) && value.length <= 180 && value.every(v => v &&
+    Object.keys(v).every(k => ["id","name","value","path","created","expiresAt"].includes(k)) &&
+    [v.id,v.name,v.value,v.path].every(s => typeof s === "string" && s.length <= 32768) &&
+    Number.isFinite(v.created) && (v.expiresAt === null || Number.isFinite(v.expiresAt)));
+}
+export function cookieViewString(entries: CookieViewEntry[], now = Date.now()): string {
+  return entries.filter(e => e.expiresAt === null || e.expiresAt > now)
+    .slice().sort((a,b) => b.path.length-a.path.length || a.created-b.created || a.id.localeCompare(b.id))
+    .map(e => e.name ? e.name+"="+e.value : e.value).join("; ");
+}
+export function validateCookieViewDelta(value: unknown): value is CookieViewDelta {
+  const v = value as CookieViewDelta;
+  return !!v && Object.keys(v).every(k => ["baseVersion","baseRevision","upsert","remove"].includes(k)) &&
+    Number.isSafeInteger(v.baseVersion) && v.baseVersion >= 0 && Number.isSafeInteger(v.baseRevision) && v.baseRevision >= 0 &&
+    validateCookieViewEntries(v.upsert) && v.upsert.length <= 1 && Array.isArray(v.remove) && v.remove.length <= 1 &&
+    v.remove.every(s => typeof s === "string" && s.length <= 32768);
+}
+export function applyCookieViewDelta(entries: CookieViewEntry[], delta: CookieViewDelta): CookieViewEntry[] {
+  if (!validateCookieViewEntries(entries) || !validateCookieViewDelta(delta)) throw new DOMException("Invalid cookie delta", "SecurityError");
+  const now = Date.now();
+  const next = new Map(entries.filter(e => e.expiresAt === null || e.expiresAt > now).map(e => [e.id,e]));
+  for (const id of delta.remove) next.delete(id);
+  for (const entry of delta.upsert) next.set(entry.id,entry);
+  const values = [...next.values()];
+  if (!validateCookieViewEntries(values)) throw new DOMException("Cookie view exceeds its local allowance", "QuotaExceededError");
+  return values;
+}
 export type CookieResult = {
   documentId: string;
   sequence: number;
@@ -24,6 +54,10 @@ export type CookieResult = {
   viewVersion: number;
   expiresAt: number | null;
   error?: string;
+  localMode?: 2;
+  cookieRevision?: number;
+  entries?: CookieViewEntry[];
+  delta?: CookieViewDelta;
 };
 const aad = (
   documentId: string,
@@ -106,6 +140,10 @@ export function openCookieResult(
           "viewVersion",
           "expiresAt",
           "error",
+          "localMode",
+          "cookieRevision",
+          "entries",
+          "delta",
         ].includes(k),
     ) ||
     result.documentId !== expected.documentId ||
@@ -122,7 +160,12 @@ export function openCookieResult(
         "QuotaExceededError",
         "InvalidStateError",
         "UnknownError",
-      ].includes(result.error))
+      ].includes(result.error)) ||
+    (result.localMode !== undefined && result.localMode !== 2) ||
+    (result.localMode === 2 && (!Number.isSafeInteger(result.cookieRevision) || result.cookieRevision! < 0 ||
+      (result.operation === "get" ? !validateCookieViewEntries(result.entries) || result.delta !== undefined :
+        !validateCookieViewDelta(result.delta) || result.entries !== undefined || result.view !== ""))) ||
+    (result.localMode === undefined && (result.cookieRevision !== undefined || result.entries !== undefined || result.delta !== undefined))
   )
     throw new DOMException("Invalid cookie result binding", "SecurityError");
   return result;

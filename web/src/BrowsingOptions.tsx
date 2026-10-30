@@ -1,13 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { ChevronDown, Globe2, RefreshCw, ExternalLink } from "lucide-react";
+import { ChevronDown, Globe2, RefreshCw } from "lucide-react";
 
 export default function BrowsingOptions({
   node,
   reconnect,
   routing,
   problem,
-  directUrl,
-  hideDirectOption = false,
 }: {
   node?: { name: string; online: boolean };
   reconnect?: () => void;
@@ -22,12 +20,13 @@ export default function BrowsingOptions({
   const id = useId();
   useEffect(() => {
     if (!open) return;
-    if (open)
-      root.current
-        ?.querySelector<HTMLElement>(
-          '[role="menuitem"]:not([disabled]):not([aria-disabled="true"])',
-        )
-        ?.focus();
+    const first = root.current?.querySelector<HTMLElement>(
+      '[role="menuitem"]:not([disabled]):not([aria-disabled="true"])',
+    );
+    // Status-only popout menus still need keyboard focus so Escape/Tab work.
+    (
+      first || root.current?.querySelector<HTMLElement>('[role="menu"]')
+    )?.focus();
     const outside = (e: PointerEvent) => {
       if (!root.current?.contains(e.target as Node)) {
         setOpen(false);
@@ -80,6 +79,7 @@ export default function BrowsingOptions({
         <div
           id={id}
           role="menu"
+          tabIndex={-1}
           aria-label="Connection options"
           className="browsing-options-menu"
           onKeyDown={(e) => {
@@ -150,32 +150,6 @@ export default function BrowsingOptions({
               )}
             </>
           )}
-          {!hideDirectOption &&
-            (directUrl && !problem ? (
-              <a
-                href={directUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                role="menuitem"
-                tabIndex={-1}
-                onClick={close}
-                title="Open this browsing runtime directly in a new tab."
-              >
-                <ExternalLink size={14} />
-                Open direct node tab
-              </a>
-            ) : (
-              <button
-                type="button"
-                role="menuitem"
-                tabIndex={-1}
-                disabled
-                title="Open a website with an active connection first."
-              >
-                <ExternalLink size={14} />
-                Open direct node tab
-              </button>
-            ))}
         </div>
       )}
     </div>

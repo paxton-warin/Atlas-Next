@@ -1,15 +1,26 @@
+import { createLocalStorageOwnerV2 } from "./sandbox-local-owners-v2.ts";
+import type { LocalActorAuthority } from "./local-authority.ts";
+import { getProfileLimits } from "./profile-limits.ts";
 /** Trusted frontend coordinator for durable website storage. Owner credentials
  * never cross a document port. The server sees only document commit markers;
  * values travel directly between the opaque document and this browser worker.
  */
+import { registrationFailure } from "./registration-error.ts";
 export async function createSandboxStorageOwner(options: {
   workerURL: string | URL;
+  localAuthority?: LocalActorAuthority;
+  nativeV2?: boolean;
+  profileId?: string | null;
+  profileContextId?: string;
+  /** Normal same-origin profile only; legacy/opaque owners keep network ACKs. */
+  localReceipts?: boolean;
   /** Existing validated browsing-session credentials, supplied by trusted code
    * only. The server must authenticate this registration against the live lease. */
   registrationHeaders: () => HeadersInit | Promise<HeadersInit>;
   window?: Window & typeof globalThis;
   timeoutMs?: number;
 }) {
+  if (options.localAuthority) return createLocalStorageOwnerV2({...options,localAuthority:options.localAuthority});
   const owner = options.window ?? window;
   const frontend = owner.location.origin;
   const asset = new URL(String(options.workerURL), frontend);
@@ -29,11 +40,12 @@ export async function createSandboxStorageOwner(options: {
     headers: {
       ...Object.fromEntries(new Headers(await options.registrationHeaders())),
       "content-type": "application/json",
+      ...(options.localReceipts === true ? { "x-atlas-local-receipts": "1" } : {}),
     },
     body: "{}",
     signal: owner.AbortSignal.timeout(timeoutMs),
   });
-  if (!registration.ok) throw new Error("storage_owner_registration_failed");
+  if (!registration.ok) throw await registrationFailure(registration, "storage_owner_registration_failed");
   const grant = await registration.json();
   if (
     !/^[A-Za-z0-9_-]{43}$/.test(grant.capability) ||
@@ -112,6 +124,22 @@ export async function createSandboxStorageOwner(options: {
   }
   worker.onmessage = ({ data }) => {
     if (!live || !data) return;
+    if (
+      data.type === "profile-native-change" &&
+      options.profileId &&
+      data.profileId === options.profileId
+    ) {
+      owner.dispatchEvent(
+        new owner.CustomEvent("atlas:profile-native-change", {
+          detail: {
+            profileId: options.profileId,
+            origin: data.origin,
+            kind: "local",
+          },
+        }),
+      );
+      return;
+    }
     if (data.type === "unavailable") {
       dispose();
     } else if (data.type === "ready") {
@@ -140,9 +168,16 @@ export async function createSandboxStorageOwner(options: {
   }, timeoutMs);
   const socket = new URL(grant.websocket, frontend);
   socket.protocol = socket.protocol === "https:" ? "wss:" : "ws:";
-  worker.postMessage({ type: "initialize", socketURL: socket.href });
+  worker.postMessage({
+    type: "initialize",
+    socketURL: socket.href,
+    profileId: options.profileId,
+    profileContextId: options.profileContextId,
+    ...(options.localReceipts === true && grant.localReceipts === true ? { localReceipts: true } : {}),
+  });
   await ready;
   return {
+    get live() { return live; },
     async bind({
       documentId,
       website,
@@ -174,7 +209,7 @@ export async function createSandboxStorageOwner(options: {
         body: JSON.stringify({ documentId }),
         signal: owner.AbortSignal.timeout(timeoutMs),
       });
-      if (!response.ok) throw new Error("storage_document_registration_failed");
+      if (!response.ok) throw await registrationFailure(response, "storage_document_registration_failed");
       const document = await response.json();
       if (
         document.documentId !== documentId ||
@@ -195,7 +230,13 @@ export async function createSandboxStorageOwner(options: {
           pending.set(documentId, { resolve, reject, timer });
         });
         worker.postMessage(
-          { type: "bind-document", documentId, website: site.href, sessionId },
+          {
+            type: "bind-document",
+            documentId,
+            website: site.href,
+            sessionId,
+            quotaBytes: getProfileLimits(options.profileId).localBytes,
+          },
           [channel.port1],
         );
         await bound;

@@ -6,13 +6,20 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export async function installSameOriginRuntime(app, {
-  directory, originFor, runtimeConfig, fixture = false,
+  directory, originFor, runtimeConfig, fixture = false, profileRuntimeEngine,
 }) {
   const headers = async (_req, reply) => {
     // Do not impose the opaque bootstrap's restrictive resource allowlists on
     // the complete rewriting runtime. It must load modules, workers and Wasm.
     reply.removeHeader("Content-Security-Policy");
-    reply.header("X-Frame-Options", "SAMEORIGIN");
+    if (profileRuntimeEngine === "scramjet-controller") {
+      for (const name of [
+        "X-Frame-Options",
+        "Cross-Origin-Opener-Policy",
+        "Cross-Origin-Embedder-Policy",
+        "Permissions-Policy",
+      ]) reply.removeHeader(name);
+    } else reply.header("X-Frame-Options", "SAMEORIGIN");
     reply.header("Referrer-Policy", "no-referrer");
   };
   await app.register(async function runtimeAssets(scope) {

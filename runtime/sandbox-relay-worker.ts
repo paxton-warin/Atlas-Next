@@ -21,6 +21,45 @@ export function propagatePinnedRelayStreamFailures(session: any) {
   const original = session?.stream_response;
   if (typeof original !== "function")
     throw new Error("relay_transport_version_unsupported");
+  // A held request can be removed without a native CURLMSG_DONE callback. Only
+  // reconcile its JS counters AFTER native removal, and only for the exact
+  // callback object still owned by that handle generation. Natural completion
+  // (including completion inside native removal) wins and is never decremented twice.
+  type RequestOwner = { id: number; callback: unknown; scheduled: boolean };
+  const owners = new Map<number, RequestOwner>();
+  const remove = session.remove_request_now;
+  const scheduleRemove = session.remove_request;
+  const tracksRequests =
+    typeof remove === "function" &&
+    typeof scheduleRemove === "function" &&
+    Array.isArray(session.requests_list) &&
+    typeof session.request_callbacks === "object";
+  if (tracksRequests) {
+    session.remove_request_now = function (handle: number) {
+      if (!this.requests_list.includes(handle)) return;
+      const owner = owners.get(handle);
+      const result = remove.call(this, handle);
+      if (owner && owners.get(handle) === owner) {
+        owners.delete(handle);
+        if (this.request_callbacks[owner.id] === owner.callback) {
+          delete this.request_callbacks[owner.id];
+          if (this.active_requests > 0) this.active_requests--;
+        }
+      }
+      return result;
+    };
+    session.remove_request = function (handle: number) {
+      const owner = owners.get(handle);
+      if (!owner) return scheduleRemove.call(this, handle);
+      if (owner.scheduled) return;
+      owner.scheduled = true;
+      // Preserve the pin's deferred cleanup, but bind the timer to this request
+      // generation so a reused pointer cannot be freed by an older timer.
+      setTimeout(() => {
+        if (owners.get(handle) === owner) this.remove_request_now(handle);
+      }, 1);
+    };
+  }
   session.stream_response = function (
     url: string,
     headers: any,
@@ -28,12 +67,39 @@ export function propagatePinnedRelayStreamFailures(session: any) {
     signal: AbortSignal,
   ) {
     let output: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let failure: Error | undefined;
-    return original.call(
+    let terminal = false;
+    const detach = () => signal?.removeEventListener("abort", abort);
+    const finish = (code: number) => {
+      if (terminal) return;
+      // The vendor clears its closed-over request handle inside end(). Late
+      // native headers MUST be gated before that happens: _http_get_info(null)
+      // otherwise corrupts Wasm state after an ordinary navigation cancellation.
+      terminal = true;
+      detach();
+      if (code !== 0) {
+        failure = new Error(
+          code === -1 ? "relay_request_aborted" : "relay_upstream_failed",
+        );
+        try {
+          output?.error(failure);
+        } catch {}
+        void reader?.cancel(failure).catch(() => {});
+      }
+      end(code);
+    };
+    const abort = () => finish(-1);
+    const requestId = this.last_request_id;
+    const handle = original.call(
       this,
       url,
       (source: ReadableStream<Uint8Array>) => {
-        const reader = source.getReader();
+        if (terminal) {
+          void source.cancel().catch(() => {});
+          return;
+        }
+        reader = source.getReader();
         const body = new ReadableStream<Uint8Array>({
           start(controller) {
             output = controller;
@@ -41,7 +107,7 @@ export function propagatePinnedRelayStreamFailures(session: any) {
           },
           async pull(controller) {
             try {
-              const chunk = await reader.read();
+              const chunk = await reader!.read();
               if (failure) throw failure;
               if (chunk.done) controller.close();
               else controller.enqueue(chunk.value);
@@ -52,22 +118,31 @@ export function propagatePinnedRelayStreamFailures(session: any) {
             }
           },
           cancel(reason) {
-            return reader.cancel(reason);
+            return reader!.cancel(reason);
           },
         });
         headers(body);
       },
-      (code: number) => {
-        if (code > 0) {
-          failure = new Error("relay_upstream_failed");
-          try {
-            output?.error(failure);
-          } catch {}
-        }
-        end(code);
-      },
-      signal,
+      finish,
+      // Do not install the pinned bundle's ungated abort listener. The instance
+      // adapter owns the signal and preserves native cleanup through end(-1).
+      undefined,
     );
+    if (
+      tracksRequests &&
+      Number.isInteger(requestId) &&
+      this.request_callbacks[requestId]
+    )
+      owners.set(handle, {
+        id: requestId,
+        callback: this.request_callbacks[requestId],
+        scheduled: false,
+      });
+    if (!terminal) signal?.addEventListener("abort", abort, { once: true });
+    // request_async assigns/starts the returned native handle only AFTER this
+    // function returns; synchronous end(-1) here would see a null handle too.
+    if (!terminal && signal?.aborted) queueMicrotask(abort);
+    return handle;
   };
 }
 

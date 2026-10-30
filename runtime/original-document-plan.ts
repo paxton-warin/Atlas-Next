@@ -6,7 +6,6 @@ import type {
   OriginalDocumentPolicy,
   OriginalInlineReceipt,
 } from "./original-document-policy.ts";
-import { rendererTarget } from "./opaque-renderer.ts";
 import { qualifyInlineSVG } from "./inline-svg.ts";
 import { parseNativeSrcset, serializeNativeSrcset } from "./native-srcset.ts";
 type Kind = "script" | "style" | "image" | "font" | "media";
@@ -156,12 +155,16 @@ export function createOriginalDocumentPlan(options: {
           nonce = attr(element, "nonce") ?? undefined,
           integrity = attr(element, "integrity") ?? undefined;
         if(tag === "iframe") {
-          const src=attr(element,"src"), tokens=(attr(element,"sandbox")??"").split(/\s+/);
-          const target=src===null?undefined:rendererTarget(new URL(src,baseURL).href,logical.href);
-          if(!target||attr(element,"srcdoc")!==null||!tokens.includes("allow-scripts")||tokens.includes("allow-same-origin"))throw failure("original_plan_unsupported_element");
-          try {policy.checkURL({url:target.href,kind:"frame"});}
-          catch(error){if((error as any)?.code!=="original_policy_denied")throw error;remove.call(element);continue;}
-          set.call(element,"runtimekit-attr-src",target.href);removeAttr.call(element,"src");
+          const src=attr(element,"src");
+          if(attr(element,"srcdoc")!==null)throw failure("original_plan_unsupported_element");
+          if(src!==null && src!=="" && src!=="about:blank") {
+            const target=new URL(policy.upgradeURL(new URL(src,baseURL).href));
+            if(!/^https?:$/.test(target.protocol)||target.username||target.password)throw failure("original_plan_unsupported_element");
+            try {policy.checkURL({url:target.href,kind:"frame"});}
+            catch(error){if((error as any)?.code!=="original_policy_denied")throw error;remove.call(element);continue;}
+            set.call(element,"runtimekit-attr-src",target.href);
+          }
+          removeAttr.call(element,"src");
         }
         if (tag === "source" && !["picture", "video", "audio"].includes(element.parentElement?.localName.toLowerCase() ?? ""))
           throw failure("original_plan_source_parent_unsupported");

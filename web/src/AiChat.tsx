@@ -1,92 +1,57 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  ArrowUp,
-  Check,
-  Copy,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
+import {
+  getActiveProfile,
+  getActiveLocalAuthority,
+} from "../../runtime/profile-context.ts";
+import { sameLocalActorAuthority } from "../../runtime/local-authority.ts";
+import "./atlas-v21-ai.css";
+import {
   MessageSquare,
   Plus,
-  Paperclip,
   FileText,
   X,
   RefreshCw,
   Search,
   Sparkles,
-  Square,
   Trash2,
 } from "lucide-react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
-import { normalizeMath } from "./chat-math";
-import { api, readLocal, writeLocal } from "./model";
+import { api, profileLocalKey, readLocal, writeLocal } from "./model";
+import { AiComposer, type AiComposerHandle } from "./ai-composer";
+import { AiMessageView } from "./ai-message";
+import { readAiComposerState } from "./ai-composer-state";
+import {
+  createAiStreamPublisher,
+  restoreAiChats,
+  type AiMessage as Message,
+  type AiChatRecord as Chat,
+} from "./ai-chat-state";
 import {
   acceptedFiles,
   readAttachment,
   withAttachments,
   type Attachment,
 } from "./chat-files";
-type Message = {
-  attachments?: Attachment[];
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  provider?: string;
-  model?: string;
-};
-type Chat = {
-  id: string;
-  title: string;
-  titleRequested?: boolean;
-  updated: number;
-  messages: Message[];
-  failure?: { userId: string; error: string; retryAt: number };
-};
 function restored(): Chat[] {
-  const values = readLocal<any>("atlas.chats", []);
-  return Array.isArray(values)
-    ? values
-        .filter(
-          (c) =>
-            c &&
-            typeof c.id === "string" &&
-            typeof c.title === "string" &&
-            Array.isArray(c.messages),
-        )
-        .slice(0, 50)
-        .map((c) => ({
-          ...c,
-          messages: c.messages
-            .filter(
-              (m: any) =>
-                m &&
-                ["user", "assistant"].includes(m.role) &&
-                typeof m.content === "string",
-            )
-            .slice(-60)
-            .map((m: Message) => ({
-              ...m,
-              attachments: Array.isArray(m.attachments)
-                ? m.attachments
-                    .filter(
-                      (f) =>
-                        f &&
-                        typeof f.id === "string" &&
-                        typeof f.name === "string" &&
-                        typeof f.text === "string" &&
-                        f.text.length <= 12000,
-                    )
-                    .slice(0, 3)
-                : undefined,
-            })),
-        }))
-    : [];
+  return restoreAiChats(readLocal<unknown>("atlas.chats", []));
 }
 export default function AiChat() {
-  const [chats, setChats] = useState<Chat[]>(restored),
-    [selected, setSelected] = useState(""),
-    [draft, setDraft] = useState(""),
+  const [chats, setChatsState] = useState<Chat[]>(restored),
+    [selected, setSelected] = useState(
+      () =>
+        readAiComposerState(
+          undefined,
+          profileLocalKey("atlas.chats") + ":composer-v1",
+        ).selected,
+    ),
     [query, setQuery] = useState(""),
     [busy, setBusy] = useState(false),
     [attachments, setAttachments] = useState<Attachment[]>([]),
@@ -94,6 +59,9 @@ export default function AiChat() {
     [now, setNow] = useState(Date.now()),
     [error, setError] = useState(""),
     [copied, setCopied] = useState(""),
+    [visible, setVisible] = useState(true),
+    [chatLimit, setChatLimit] = useState(50),
+    [messageWindow, setMessageWindow] = useState({ id: "", start: 0 }),
     [allowGeminiDataUse, setAllowGeminiDataUse] = useState(
       () => readLocal<boolean>("atlas.ai.geminiConsent", false) === true,
     );
@@ -103,62 +71,237 @@ export default function AiChat() {
     provider?: string | null;
     geminiDataUse?: boolean;
   } | null>(null);
+  const scope = useRef({
+    key: profileLocalKey("atlas.chats"),
+    profile: getActiveProfile(),
+    authority: getActiveLocalAuthority(),
+  });
+  const scopeCurrent = useCallback(
+    () =>
+      profileLocalKey("atlas.chats") === scope.current.key &&
+      getActiveProfile() === scope.current.profile &&
+      (scope.current.authority
+        ? sameLocalActorAuthority(
+            scope.current.authority,
+            getActiveLocalAuthority(),
+          )
+        : !getActiveLocalAuthority()),
+    [],
+  );
   const control = useRef<AbortController | null>(null),
     bottom = useRef<HTMLDivElement>(null),
-    input = useRef<HTMLTextAreaElement>(null);
+    panel = useRef<HTMLDivElement>(null),
+    scroller = useRef<HTMLDivElement>(null),
+    composer = useRef<AiComposerHandle>(null);
   const files = useRef<HTMLInputElement>(null),
     busyRef = useRef(false),
     fileRead = useRef(false),
-    titleRequests = useRef(new Map<string, AbortController>());
+    titleRequests = useRef(new Map<string, AbortController>()),
+    mounted = useRef(true),
+    visibleRef = useRef(true),
+    followTail = useRef(true),
+    configFlight = useRef(false),
+    stream = useRef<ReturnType<typeof createAiStreamPublisher> | null>(null),
+    activeReply = useRef<{
+      chatId: string;
+      userId: string;
+      assistantId: string;
+    } | null>(null),
+    saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
+    copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
+    lastSaved = useRef<Chat[] | undefined>(undefined),
+    prependAnchor = useRef<{ top: number; height: number } | null>(null);
   const chatsRef = useRef(chats);
-  chatsRef.current = chats;
-  const current = chats.find((c) => c.id === selected);
-  async function refresh() {
+  const changeChats = useCallback(
+    (change: (old: Chat[]) => Chat[]) => {
+      if (!scopeCurrent()) return;
+      const next = change(chatsRef.current);
+      if (next === chatsRef.current) return;
+      // Terminal/pagehide flushes can persist the newest buffered tokens before
+      // React schedules its next render. This ref never stores a stale event copy.
+      chatsRef.current = next;
+      if (mounted.current) setChatsState(next);
+    },
+    [scopeCurrent],
+  );
+  const current = useMemo(
+    () => chats.find((c) => c.id === selected),
+    [chats, selected],
+  );
+  const filteredChats = useMemo(() => {
+    const needle = query.toLowerCase();
+    return chats.filter((c) => c.title.toLowerCase().includes(needle));
+  }, [chats, query]);
+  const messageStart =
+    messageWindow.id === selected
+      ? messageWindow.start
+      : Math.max(0, (current?.messages.length ?? 0) - 40);
+  const persist = useCallback(() => {
+    if (!scopeCurrent() || lastSaved.current === chatsRef.current) return;
+    if (writeLocal("atlas.chats", chatsRef.current))
+      lastSaved.current = chatsRef.current;
+    else if (mounted.current)
+      setError(
+        "Device storage is full. Delete an old chat to save this conversation.",
+      );
+  }, [scopeCurrent]);
+  const flush = useCallback(() => {
+    stream.current?.flush();
+    composer.current?.flushDraft();
+    persist();
+  }, [persist]);
+  const stopReply = useCallback(() => {
+    stream.current?.flush();
+    const active = activeReply.current;
+    activeReply.current = null;
+    if (active)
+      changeChats((old) =>
+        old.map((chat) =>
+          chat.id === active.chatId
+            ? {
+                ...chat,
+                messages: chat.messages.filter(
+                  (message) =>
+                    message.id !== active.assistantId || message.content,
+                ),
+                failure: {
+                  userId: active.userId,
+                  error: "Reply stopped.",
+                  retryAt: 0,
+                },
+              }
+            : chat,
+        ),
+      );
+    control.current?.abort();
+    persist();
+  }, [changeChats, persist]);
+  const refresh = useCallback(async () => {
+    if (configFlight.current || !scopeCurrent()) return;
+    configFlight.current = true;
     try {
-      setConfig(await api("/ai/config"));
+      const next = await api("/ai/config");
+      if (mounted.current && scopeCurrent()) setConfig(next);
     } catch {
-      setError("AI settings could not be loaded.");
+      if (mounted.current && scopeCurrent())
+        setError("AI settings could not be loaded.");
+    } finally {
+      configFlight.current = false;
     }
-  }
+  }, [scopeCurrent]);
   useEffect(() => {
-    void refresh();
-    window.addEventListener("focus", refresh);
+    const update = () => {
+      const next = !document.hidden && !panel.current?.closest("[hidden]");
+      if (visibleRef.current === next) return;
+      visibleRef.current = next;
+      setVisible(next);
+      stream.current?.visibilityChanged();
+    };
+    const observer = new MutationObserver(update);
+    for (
+      let node: Element | null = panel.current;
+      node;
+      node = node.parentElement
+    )
+      observer.observe(node, { attributes: true, attributeFilter: ["hidden"] });
+    document.addEventListener("visibilitychange", update);
+    update();
     return () => {
-      window.removeEventListener("focus", refresh);
-      control.current?.abort();
-      titleRequests.current.forEach((abort) => abort.abort());
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", update);
     };
   }, []);
   useEffect(() => {
-    const save = () => {
-      if (!writeLocal("atlas.chats", chatsRef.current))
-        setError(
-          "Device storage is full. Delete an old chat to save this conversation.",
-        );
+    mounted.current = true;
+    const focus = () => {
+      if (visibleRef.current) void refresh();
     };
-    if (!busy) {
-      save();
-      return;
-    }
-    const timer = setTimeout(save, 200);
-    return () => clearTimeout(timer);
-  }, [chats, busy]);
-  useEffect(() => {
-    const flush = () => writeLocal("atlas.chats", chatsRef.current);
-    window.addEventListener("pagehide", flush);
+    void refresh();
+    window.addEventListener("focus", focus);
     return () => {
+      mounted.current = false;
+      window.removeEventListener("focus", focus);
+      stopReply();
+      titleRequests.current.forEach((abort) => abort.abort());
+      clearTimeout(copyTimer.current);
+    };
+  }, [refresh, stopReply]);
+  useEffect(() => {
+    if (visible) void refresh();
+  }, [visible, refresh]);
+  useEffect(() => {
+    if (!busy) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = undefined;
+      persist();
+    } else if (saveTimer.current === undefined) {
+      // A coarse, single pending save is independent of the display cadence.
+      // Hidden250ms publications must not trigger a full-archive save each time.
+      saveTimer.current = setTimeout(() => {
+        saveTimer.current = undefined;
+        persist();
+      }, 1000);
+    }
+  }, [chats, busy, persist]);
+  useEffect(() => {
+    const beforeRevoke = (event: Event) => {
+      if (
+        (event as CustomEvent).detail?.generation ===
+        scope.current.authority?.localAuthGeneration
+      ) {
+        stopReply();
+        flush();
+      }
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("atlas:profile-local-before-revoke", beforeRevoke);
+    return () => {
+      clearTimeout(saveTimer.current);
       window.removeEventListener("pagehide", flush);
+      window.removeEventListener(
+        "atlas:profile-local-before-revoke",
+        beforeRevoke,
+      );
       flush();
     };
-  }, []);
+  }, [flush, stopReply]);
   useEffect(() => {
-    bottom.current?.scrollIntoView({ block: "nearest" });
-  }, [current?.messages.at(-1)?.content, selected]);
+    followTail.current = true;
+    const start = Math.max(
+      0,
+      (chatsRef.current.find((c) => c.id === selected)?.messages.length ?? 0) -
+        40,
+    );
+    setMessageWindow((old) =>
+      old.id === selected && old.start === start
+        ? old
+        : { id: selected, start },
+    );
+  }, [selected]);
+  useLayoutEffect(() => {
+    const anchor = prependAnchor.current,
+      node = scroller.current;
+    if (!anchor || !node) return;
+    node.scrollTop = anchor.top + node.scrollHeight - anchor.height;
+    prependAnchor.current = null;
+  }, [messageStart]);
   useEffect(() => {
-    if (!current?.failure?.retryAt) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [current?.failure?.retryAt]);
+    if (visible && followTail.current)
+      bottom.current?.scrollIntoView({ block: "nearest" });
+  }, [current?.messages.at(-1)?.content, selected, visible]);
+  useEffect(() => {
+    const retryAt = current?.failure?.retryAt;
+    if (!retryAt || !visible) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = () => {
+      const value = Date.now();
+      setNow(value);
+      if (retryAt > value)
+        timer = setTimeout(tick, Math.min(1000, retryAt - value));
+    };
+    tick();
+    return () => clearTimeout(timer);
+  }, [current?.failure?.retryAt, visible]);
   const retrySeconds = Math.max(
     0,
     Math.ceil(((current?.failure?.retryAt || 0) - now) / 1000),
@@ -215,7 +358,7 @@ export default function AiChat() {
         result.title.trim() &&
         result.title.length <= 100
       )
-        setChats((old) =>
+        changeChats((old) =>
           old.map((c) => (c.id === id ? { ...c, title: result.title } : c)),
         );
     } catch {
@@ -229,13 +372,14 @@ export default function AiChat() {
     if (busyRef.current || fileRead.current) return;
     setAttachments([]);
     setSelected("");
-    setDraft("");
+    composer.current?.setDraft("");
     setError("");
-    input.current?.focus();
+    composer.current?.focus();
   }
   async function submit(e?: FormEvent, retry = false) {
     e?.preventDefault();
     if (busyRef.current || fileRead.current || !config?.configured) return;
+    const draft = composer.current?.getDraft() || "";
     const failed = current?.messages.find(
       (m) => m.id === current.failure?.userId,
     );
@@ -283,11 +427,11 @@ export default function AiChat() {
     }
     busyRef.current = true;
     setSelected(id);
-    if (!retry || draft.trim() === question) setDraft("");
+    if (!retry || draft.trim() === question) composer.current?.setDraft("");
     if (!retry) setAttachments([]);
     setBusy(true);
     setError("");
-    setChats((old) =>
+    changeChats((old) =>
       current
         ? old.map((c) =>
             c.id === id
@@ -308,13 +452,37 @@ export default function AiChat() {
               messages: [user, assistant],
             },
             ...old,
-          ].slice(0, 50),
+          ],
     );
     const abort = new AbortController();
     control.current = abort;
     let done = false,
-      answer = "",
       retryAt = 0;
+    const publisher = createAiStreamPublisher({
+      visible: () => visibleRef.current,
+      publish(snapshot) {
+        changeChats((old) =>
+          old.map((chat) =>
+            chat.id === id
+              ? {
+                  ...chat,
+                  messages: chat.messages.map((message) =>
+                    message.id === assistant.id
+                      ? { ...message, ...snapshot }
+                      : message,
+                  ),
+                }
+              : chat,
+          ),
+        );
+      },
+    });
+    stream.current = publisher;
+    activeReply.current = {
+      chatId: id,
+      userId: user.id,
+      assistantId: assistant.id,
+    };
     try {
       const response = await fetch("/api/ai/chat", {
         method: "POST",
@@ -336,7 +504,7 @@ export default function AiChat() {
       const reader = response.body.getReader(),
         decoder = new TextDecoder();
       let buffer = "";
-      while (true) {
+      consume: while (true) {
         const part = await reader.read();
         if (part.done) break;
         buffer += decoder.decode(part.value, { stream: true });
@@ -347,64 +515,45 @@ export default function AiChat() {
           if (!line.trim()) continue;
           const event = JSON.parse(line);
           if (event.type === "error") throw Error(event.message);
-          if (event.type === "done") done = true;
+          if (event.type === "done") {
+            done = true;
+            publisher.flush();
+            // The application protocol is terminal here; a provider keeping
+            // HTTP open must not retain a completed UI request indefinitely.
+            void reader.cancel().catch(() => {});
+            break consume;
+          }
           if (
             event.type === "source" &&
             typeof event.provider === "string" &&
             typeof event.model === "string"
           )
-            setChats((old) =>
-              old.map((c) =>
-                c.id === id
-                  ? {
-                      ...c,
-                      messages: c.messages.map((m) =>
-                        m.id === assistant.id
-                          ? {
-                              ...m,
-                              provider: event.provider,
-                              model: event.model,
-                            }
-                          : m,
-                      ),
-                    }
-                  : c,
-              ),
-            );
-          if (event.type === "delta" && typeof event.text === "string") {
-            answer += event.text;
-            setChats((old) =>
-              old.map((c) =>
-                c.id === id
-                  ? {
-                      ...c,
-                      messages: c.messages.map((m) =>
-                        m.id === assistant.id
-                          ? { ...m, content: m.content + event.text }
-                          : m,
-                      ),
-                    }
-                  : c,
-              ),
-            );
-          }
+            publisher.source({ provider: event.provider, model: event.model });
+          if (event.type === "delta" && typeof event.text === "string")
+            publisher.delta(event.text);
         }
       }
       if (!done)
         throw Error("The connection closed before the reply finished.");
       if (!current || current.titleRequested === false) {
-        setChats((old) =>
+        changeChats((old) =>
           old.map((c) => (c.id === id ? { ...c, titleRequested: true } : c)),
         );
-        void nameChat(id, messages.find((m) => m.role === "user")!, answer);
+        publisher.flush();
+        void nameChat(
+          id,
+          messages.find((m) => m.role === "user")!,
+          publisher.text(),
+        );
       }
     } catch (e) {
+      publisher.flush();
       const message = abort.signal.aborted
         ? "Reply stopped."
         : (e as Error).message;
       setNow(Date.now());
       abort.abort();
-      setChats((old) =>
+      changeChats((old) =>
         old.map((c) =>
           c.id === id
             ? {
@@ -418,22 +567,50 @@ export default function AiChat() {
         ),
       );
     } finally {
+      publisher.close();
+      if (stream.current === publisher) {
+        stream.current = null;
+        activeReply.current = null;
+      }
       setBusy(false);
       busyRef.current = false;
       control.current = null;
+      if (!mounted.current) persist();
     }
   }
-  async function copy(message: Message) {
-    try {
-      await navigator.clipboard.writeText(message.content);
-      setCopied(message.id);
-      setTimeout(() => setCopied(""), 1500);
-    } catch {
-      setError("Select the message text to copy it.");
-    }
-  }
+  const submitAction = useRef(() => {});
+  useLayoutEffect(() => {
+    // Stable composer callbacks must observe the committed conversation, not a
+    // speculative parent render interrupted before commit.
+    submitAction.current = () => {
+      void submit();
+    };
+  });
+  const submitComposer = useCallback(() => submitAction.current(), []);
+  const attachComposer = useCallback(() => files.current?.click(), []);
+  const draftFailure = useCallback(() => {
+    if (mounted.current && scopeCurrent())
+      setError(
+        "Your draft is still in this tab, but device storage did not save it.",
+      );
+  }, [scopeCurrent]);
+  const copy = useCallback(
+    async (message: Message) => {
+      try {
+        await navigator.clipboard.writeText(message.content);
+        if (!mounted.current || !scopeCurrent()) return;
+        setCopied(message.id);
+        clearTimeout(copyTimer.current);
+        copyTimer.current = setTimeout(() => setCopied(""), 1500);
+      } catch {
+        if (mounted.current && scopeCurrent())
+          setError("Select the message text to copy it.");
+      }
+    },
+    [scopeCurrent],
+  );
   return (
-    <div className="ai-chat">
+    <div className="ai-chat" ref={panel}>
       <aside className="chat-sidebar">
         <button
           className="button primary"
@@ -453,48 +630,59 @@ export default function AiChat() {
           />
         </label>
         <div className="chat-list">
-          {chats
-            .filter((c) => c.title.toLowerCase().includes(query.toLowerCase()))
-            .map((chat) => (
-              <div
-                className={
-                  "chat-item " + (selected === chat.id ? "selected" : "")
-                }
-                key={chat.id}
+          {filteredChats.slice(0, chatLimit).map((chat) => (
+            <div
+              className={
+                "chat-item " + (selected === chat.id ? "selected" : "")
+              }
+              key={chat.id}
+            >
+              <button
+                disabled={busy || reading}
+                title={chat.title}
+                aria-label={chat.title}
+                onClick={() => {
+                  setAttachments([]);
+                  setSelected(chat.id);
+                  setError("");
+                  composer.current?.setDraft("");
+                }}
               >
-                <button
-                  disabled={busy || reading}
-                  title={chat.title}
-                  aria-label={chat.title}
-                  onClick={() => {
-                    setAttachments([]);
-                    setSelected(chat.id);
-                    setError("");
-                    setDraft("");
-                  }}
-                >
-                  <MessageSquare size={15} />
-                  <span>{chat.title}</span>
-                </button>
-                <button
-                  className="icon-button"
-                  aria-label={"Delete chat " + chat.title}
-                  disabled={busy || reading}
-                  onClick={() => {
-                    if (confirm("Delete this chat from this browser?")) {
-                      titleRequests.current.get(chat.id)?.abort();
-                      setChats((old) => old.filter((c) => c.id !== chat.id));
-                      if (selected === chat.id) newChat();
-                    }
-                  }}
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            ))}
+                <MessageSquare size={15} />
+                <span>{chat.title}</span>
+              </button>
+              <button
+                className="icon-button"
+                aria-label={"Delete chat " + chat.title}
+                disabled={busy || reading}
+                onClick={() => {
+                  if (confirm("Delete this chat from this browser?")) {
+                    titleRequests.current.get(chat.id)?.abort();
+                    changeChats((old) => old.filter((c) => c.id !== chat.id));
+                    if (selected === chat.id) newChat();
+                  }
+                }}
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+          {filteredChats.length > chatLimit && (
+            <button
+              type="button"
+              className="button"
+              onClick={() => setChatLimit((n) => n + 50)}
+            >
+              Show earlier chats ({filteredChats.length - chatLimit})
+            </button>
+          )}
           {!chats.length && <p className="muted">No chats yet.</p>}
         </div>
-        <small>Chats are saved on this device.</small>
+        <small>
+          {getActiveProfile()
+            ? "Chats are saved locally and backed up to your Atlas account."
+            : "Chats are saved in this browser."}
+        </small>
       </aside>
       <section className="chat-main">
         <header className="chat-header">
@@ -515,6 +703,12 @@ export default function AiChat() {
         </header>
         <div
           className="chat-messages"
+          ref={scroller}
+          onScroll={(event) => {
+            const node = event.currentTarget;
+            followTail.current =
+              node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+          }}
           role="log"
           aria-label="Chat messages"
           aria-live="polite"
@@ -523,7 +717,7 @@ export default function AiChat() {
             {!current?.messages.length ? (
               <div className="chat-empty">
                 <Sparkles size={28} />
-                <h1>New chat</h1>
+                <h1>What can I help with?</h1>
                 <p>
                   Ask a question or attach text, code, a PDF or a Word document.
                 </p>
@@ -536,8 +730,8 @@ export default function AiChat() {
                     <button
                       key={text}
                       onClick={() => {
-                        setDraft(text);
-                        input.current?.focus();
+                        composer.current?.setDraft(text);
+                        composer.current?.focus();
                       }}
                     >
                       {text}
@@ -546,83 +740,37 @@ export default function AiChat() {
                 </div>
               </div>
             ) : (
-              current.messages.map((message) => (
-                <article
-                  className={"chat-message " + message.role}
-                  key={message.id}
-                >
-                  <div className="chat-author">
-                    {message.role === "user" ? "You" : "Atlas AI"}
-                    {message.role === "assistant" && message.provider && (
-                      <span className="chat-author-source">
-                        {message.provider} · {message.model}
-                      </span>
-                    )}
-                  </div>
-                  {message.attachments?.length ? (
-                    <div className="chat-attachments sent">
-                      {message.attachments.map((file) => (
-                        <details key={file.id}>
-                          <summary>
-                            <FileText size={15} />
-                            <span>{file.name}</span>
-                          </summary>
-                          <pre>{file.text}</pre>
-                        </details>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div className="chat-message-content">
-                    {message.content ? (
-                      <Markdown
-                        remarkPlugins={[remarkGfm, remarkMath]}
-                        rehypePlugins={[
-                          [
-                            rehypeKatex,
-                            {
-                              trust: false,
-                              throwOnError: false,
-                              maxExpand: 1000,
-                              maxSize: 20,
-                            },
-                          ],
-                        ]}
-                        skipHtml
-                        components={{
-                          a: (props) => (
-                            <a
-                              {...props}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                            />
-                          ),
-                          img: () => null,
-                        }}
-                      >
-                        {normalizeMath(message.content)}
-                      </Markdown>
-                    ) : (
-                      <span className="thinking">
-                        <span className="spinner" />
-                        Generating…
-                      </span>
-                    )}
-                  </div>
-                  {message.content && (
-                    <button
-                      className="message-copy"
-                      aria-label="Copy message"
-                      onClick={() => void copy(message)}
-                    >
-                      {copied === message.id ? (
-                        <Check size={13} />
-                      ) : (
-                        <Copy size={13} />
-                      )}
-                    </button>
-                  )}
-                </article>
-              ))
+              <>
+                {messageStart > 0 && (
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => {
+                      const node = scroller.current;
+                      if (node)
+                        prependAnchor.current = {
+                          top: node.scrollTop,
+                          height: node.scrollHeight,
+                        };
+                      followTail.current = false;
+                      setMessageWindow({
+                        id: selected,
+                        start: Math.max(0, messageStart - 40),
+                      });
+                    }}
+                  >
+                    Show earlier messages ({messageStart})
+                  </button>
+                )}
+                {current.messages.slice(messageStart).map((message) => (
+                  <AiMessageView
+                    key={message.id}
+                    message={message}
+                    copied={copied === message.id}
+                    onCopy={copy}
+                  />
+                ))}
+              </>
             )}
             <div ref={bottom} />
           </div>
@@ -666,10 +814,11 @@ export default function AiChat() {
                     checked={allowGeminiDataUse}
                     onChange={(event) => {
                       setAllowGeminiDataUse(event.target.checked);
-                      writeLocal(
-                        "atlas.ai.geminiConsent",
-                        event.target.checked,
-                      );
+                      if (scopeCurrent())
+                        writeLocal(
+                          "atlas.ai.geminiConsent",
+                          event.target.checked,
+                        );
                     }}
                   />
                   Allow Google Gemini as a backup. Google may use messages and
@@ -715,61 +864,27 @@ export default function AiChat() {
                 e.target.value = "";
               }}
             />
-            <form className="chat-composer" onSubmit={submit}>
-              <button
-                type="button"
-                className="chat-attach"
-                aria-label="Attach files"
-                title="Attach text, code, PDF or DOCX · up to 3 files, 2 MB each"
-                disabled={busy || reading}
-                onClick={() => files.current?.click()}
-              >
-                <Paperclip size={19} />
-              </button>
-              <textarea
-                ref={input}
-                aria-label="Message Atlas AI"
-                placeholder="Message Atlas AI"
-                value={draft}
-                maxLength={12000}
-                rows={2}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === "Enter" &&
-                    !e.shiftKey &&
-                    !e.nativeEvent.isComposing
-                  ) {
-                    e.preventDefault();
-                    void submit();
-                  }
-                }}
-              />
-              {busy ? (
-                <button
-                  type="button"
-                  aria-label="Stop reply"
-                  onClick={() => control.current?.abort()}
-                >
-                  <Square size={16} />
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  aria-label="Send AI message"
-                  disabled={
-                    !config?.configured ||
-                    reading ||
-                    (!draft.trim() && !attachments.length)
-                  }
-                >
-                  <ArrowUp size={18} />
-                </button>
-              )}
-            </form>
+            <AiComposer
+              ref={composer}
+              configured={!!config?.configured}
+              reading={reading}
+              busy={busy}
+              attachmentCount={attachments.length}
+              draftKey={scope.current.key + ":composer-v1"}
+              selected={selected}
+              current={scopeCurrent}
+              onDraftFailure={draftFailure}
+              onSubmit={submitComposer}
+              onAttach={attachComposer}
+              onStop={stopReply}
+            />
             <div className="chat-disclosure">
               Messages and extracted file text are sent to the configured
-              provider and saved on this device. Check important answers.
+              provider.{" "}
+              {getActiveProfile()
+                ? "Chats are backed up to your Atlas account."
+                : "Chats are saved in this browser."}{" "}
+              Check important answers.
             </div>
           </div>
         </div>

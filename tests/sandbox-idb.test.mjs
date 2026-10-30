@@ -163,3 +163,12 @@ test("prototype-forged Date and Error values cannot hide enumerable clone payloa
   });
   assert.equal(calls, 0);
 });
+
+test('normal document values and IDB keys retain native cross-realm structured-clone types', async()=>{
+  const {runInNewContext}=await import('node:vm');
+  const value=runInNewContext('({plain:{save:"durable"},date:new Date(123),map:new Map([["a",new Set([1,2])]]),bytes:new Uint8Array([1,2,3]),view:new DataView(new Uint8Array([4,5]).buffer),buffer:new ArrayBuffer(4),regex:/game/i})');
+  assert.ok(boundedIDBValueBytes(value)>0);
+  const native=structuredClone(value);
+  assert.equal(compareSandboxKeys(value.date,native.date),0);
+  assert.equal(compareSandboxKeys(value.buffer,native.buffer),0);
+});

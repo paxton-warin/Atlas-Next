@@ -19,17 +19,30 @@ import { loadRuntimeConfig, watchRuntimeSession } from "./connection";
 import { watchFavicon } from "./favicon";
 import { matchesShortcut, normalizeShortcut } from "./panic-shortcut";
 import { installPageBridge } from "./page-bridge";
+import { createManagedFormSubmitter } from "./managed-form";
+import { createLocalDownloadInstaller } from "./local-download";
 import { attachFullscreenKeyboard } from "./fullscreen-keyboard";
 import { createDirectTabUrl, directTabTarget } from "./direct-tab";
 import { encodeTarget, decodeTarget } from "./url-codec";
 import { installOpaqueRenderer, type OpaqueResource } from "./opaque-renderer";
 import { createHttpCachePlugin } from "./http-cache";
 import { createLogicalStoragePlugin } from "./logical-storage";
+import {
+  createScramjetProfilePlugin,
+  getScramjetProfileBridge,
+  neutralizeScramjetCookies,
+  scramjetProfileLoadReady,
+} from "./scramjet-profile";
+import { installProfileWebSocketTransport } from "./scramjet-websocket";
+import profileWorkerURL from "./scramjet-profile-workers.ts?worker&url";
 import { createRequestHeadersPlugin } from "./request-headers";
 import { createYouTubeAdblockPlugin } from "./youtube-adblock";
 import { createVerifiedStylesheetPlugin } from "./verified-stylesheet";
 import { createDiscordScriptSelectorPlugin } from "./discord-script-selector";
+import { checkpointControllerRoot } from "./website-checkpoint";
 const globals = window as any;
+const submitManagedForm = createManagedFormSubmitter(window);
+const installLocalDownloads = createLocalDownloadInstaller(window);
 const opaqueRequests = new WeakMap<
   object,
   {
@@ -231,6 +244,19 @@ const notify = (type: string, data: Record<string, unknown> = {}) => {
   parent.postMessage({ atlas: 1, type, ...data }, config.appOrigin);
 };
 const sessionWatch = watchRuntimeSession(() => ticket, notify);
+const profileBridge = config.profileRuntime === true ? getScramjetProfileBridge(window) : undefined;
+if (config.profileRuntime === true && !profileBridge) {
+  const message = "Your profile saves are not ready. Reopen this tab from Atlas.";
+  const panel = document.createElement("main");
+  const heading = document.createElement("h1");
+  heading.textContent = "Website saves unavailable";
+  const detail = document.createElement("p");
+  detail.textContent = message;
+  panel.append(heading, detail);
+  document.body.replaceChildren(panel);
+  notify("boot-error", { message });
+  throw Error("PROFILE_RUNTIME_BRIDGE_MISSING");
+}
 const records = new Map<
   string,
   {
@@ -243,6 +269,8 @@ const records = new Map<
     guards?: Map<Document, DocumentGuard>;
     renderers?: Map<Document, () => void>;
     diagnostics?: DiagnosticLog;
+    profile?: ReturnType<typeof createScramjetProfilePlugin>;
+    checkpointRoot?: { window: Window & typeof globalThis; document: Document; logicalURL(): string };
   }
 >();
 let panicKey = "";
@@ -251,15 +279,17 @@ let controller: any;
 let initialization: Promise<void> | undefined;
 const container = document.getElementById("frames")!;
 async function init() {
-  await migrateCookies();
+  if (!profileBridge) await migrateCookies();
   const sw = await activateWorker("/worker.js");
   // Use the fork's shipped bootstrap and matching HTTP transport unchanged.
   // loadRest avoids its init() returning the old active worker during an update.
   const bootstrapPath = "/bootstrap/bootstrap-client.js";
   const { loadRest } = await import(/* @vite-ignore */ bootstrapPath);
+  if (profileBridge && (!config.relayOrigin || !config.relayTicket))
+    throw Error("PROFILE_RUNTIME_RELAY_MISSING");
   controller =
     config.relayOrigin && config.relayTicket
-      ? await createRelayController(sw, config.relayOrigin, config.relayTicket)
+      ? await createRelayController(sw, config.relayOrigin, config.relayTicket, profileBridge ? neutralizeScramjetCookies : undefined)
       : await loadRest(sw, {
           transport: "http",
           workerPath: "/worker.js",
@@ -272,7 +302,17 @@ async function init() {
           runtimekitControllerInjectPath: "/controller/controller.inject.js",
           runtimekitControllerWorkerPath: "/controller/controller.worker.js",
         });
+  window.addEventListener("pagehide", (event) => {
+    if (!event.persisted) controller?.disposeRequestChannel?.();
+  });
   controller.config.codec = { encode: encodeTarget, decode: decodeTarget };
+  if (profileBridge) {
+    // Keep original worker code in its normal script/module URL. The pin's
+    // data: encapsulation has no hierarchical base for rewritten /~/ imports.
+    controller.runtimekitConfig.flags.encapsulateWorkers = false;
+    const disposeSockets = installProfileWebSocketTransport(controller.transport, profileBridge);
+    window.addEventListener("pagehide", (event) => { if (!event.persisted) disposeSockets(); });
+  }
   await Promise.race([
     controller.wait(),
     new Promise((_, reject) =>
@@ -308,9 +348,13 @@ function destroy(id: string) {
   if (!record) return;
   clearTimeout(record.timer);
   record.disposeFavicon?.();
+  record.profile?.dispose();
   for (const guard of record.guards?.values() || []) guard.dispose();
   for (const dispose of record.renderers?.values() || []) dispose();
   diagnosticModes.delete(id);
+  // Cancel this exact frame capability before removing its owner/realm.
+  // CSS-hidden live tabs do not execute this destruction path.
+  if (record.frame) controller?.abortFrameRequests?.(record.frame.prefix);
   record.element.remove();
   if (record.frame && controller) {
     const i = controller.frames.indexOf(record.frame);
@@ -348,6 +392,9 @@ function attachPageBridge(
 ) {
   const record = records.get(id)!;
   if (!record || !client) return;
+  if (win === record.element.contentWindow) {
+    record.checkpointRoot = { window: win, document: win.document, logicalURL: () => client.url.href };
+  }
   record.guards ??= new Map();
   if (!record.guards.has(win.document)) {
     while (record.guards.size >= 16) {
@@ -361,6 +408,7 @@ function attachPageBridge(
       id,
       pageUrl: () => client.url.href,
       fixture: config.fixture === true,
+      ...(profileBridge ? { sampleRisk: false } : {}),
       enabled: () => siteModes[new URL(client.url.href).origin] === true,
       onTitle: (title) => {
         if (win === record.element.contentWindow)
@@ -386,6 +434,8 @@ function attachPageBridge(
     origin: client.url.origin,
     context: standalone ? "top-level" : "embedded",
   });
+  // The reviewed renderer stays native/opaque in profile mode too. Its fetches
+  // still pass through this frame's assigned transport and profile cookie hooks.
   const disposeRenderer = installOpaqueRenderer(win, client, {
     fixture: config.fixture === true,
     fetchResource: (url, credentials, kind) =>
@@ -397,7 +447,7 @@ function attachPageBridge(
       notify("runtime-compatibility", {
         id,
         origin: client.url.origin,
-        rule: "opaque-renderer-v14",
+        rule: "opaque-renderer-reviewed",
         state,
         resources,
       });
@@ -471,8 +521,23 @@ function attachPageBridge(
       notify("popup-focus", { id });
     };
   }
+  installLocalDownloads(win, {
+    pageURL: () => client.url.href,
+    nativeBlobURL: (url) => globals.$runtimekit.unrewriteBlob(
+      url, client.context, client.meta,
+    ),
+  });
   installPageBridge(win, {
     topName: record.element.name,
+    isRoot: win === record.element.contentWindow,
+    submitToRoot: (form, submitter) => submitManagedForm(form, submitter, {
+      window: record.element.contentWindow!,
+      pageUrl: client.url.href,
+      encode: (url) => globals.$runtimekit.transformUrl(
+        publicUrl(url), record.frame.context,
+        { origin: new URL(client.url.href), base: new URL(client.url.href) },
+      ),
+    }),
     pageUrl: () => client.url.href,
     focusSearch: () => notify("focus-search", { id }),
     open: (url, name, opener, noOpener) => {
@@ -519,61 +584,11 @@ function attachPageBridge(
         window: childWindow,
         name: child.element.name,
         submit(form: HTMLFormElement, submitter?: HTMLElement | null) {
-          const button = submitter as
-            | HTMLButtonElement
-            | HTMLInputElement
-            | null;
-          const effective = (
-            attr: string,
-            buttonValue: string | undefined,
-            formValue: string,
-          ) => (button?.hasAttribute(attr) ? buttonValue! : formValue);
-          // The fork restores URL attributes, but not the camel-case formAction getter.
-          const action = button?.hasAttribute("formaction")
-            ? button.getAttribute("formaction")!
-            : form.getAttribute("action") || client.url.href;
-          const submitted = document.createElement("form");
-          submitted.action = encode(
-            publicUrl(
-              new URL(
-                action || client.url.href,
-                form.baseURI || client.url.href,
-              ).href,
-            ),
-          );
-          submitted.target = child.element.name;
-          submitted.method = effective(
-            "formmethod",
-            button?.formMethod,
-            form.method,
-          );
-          submitted.enctype = effective(
-            "formenctype",
-            button?.formEnctype,
-            form.enctype,
-          );
-          submitted.acceptCharset = form.acceptCharset || "UTF-8";
-          submitted.hidden = true;
-          for (const [name, value] of new FormData(form, button)) {
-            const input = document.createElement("input");
-            input.name = name;
-            if (typeof value === "string") {
-              input.type = "hidden";
-              input.value = value;
-            } else {
-              input.type = "file";
-              const transfer = new DataTransfer();
-              transfer.items.add(value);
-              input.files = transfer.files;
-            }
-            submitted.append(input);
-          }
-          document.body.append(submitted);
-          try {
-            HTMLFormElement.prototype.submit.call(submitted);
-          } finally {
-            setTimeout(() => submitted.remove(), 0);
-          }
+          submitManagedForm(form, submitter, {
+            window: childWindow,
+            pageUrl: client.url.href,
+            encode: (value) => encode(publicUrl(value)),
+          });
         },
       };
     },
@@ -691,9 +706,22 @@ function createRecord(id: string, engine: string) {
   {
     const { UrlWatcherPlugin, CatchEscapedLinksPlugin } =
       globals.$runtimekitUtils;
+    const storagePlugin = profileBridge
+      ? createScramjetProfilePlugin(globals, {
+          ...profileBridge,
+          topLevelURL: () => [record.url, popups.get(id)?.baseUrl, profileBridge.topLevelURL()]
+            .find((url): url is string => typeof url === 'string' && /^https?:\/\//.test(url))!,
+        }, {
+          host: window,
+          frameId: id,
+          workerURL: profileWorkerURL,
+          onError: (error) => notify("error", { id, message: (error as Error)?.message || "Website saves are unavailable." }),
+        })
+      : createLogicalStoragePlugin(globals);
+    if (profileBridge) record.profile = storagePlugin as ReturnType<typeof createScramjetProfilePlugin>;
     record.frame = controller.createFrame(element, {
       plugins: [
-        createLogicalStoragePlugin(globals),
+        storagePlugin,
         pageBridgePlugin(id),
         diagnosticsPlugin(id),
         createYouTubeAdblockPlugin(globals, () => youtubeAdblock),
@@ -724,6 +752,12 @@ function createRecord(id: string, engine: string) {
   element.addEventListener("load", () => {
     const r = records.get(id);
     if (!r) return;
+    if (profileBridge) {
+      const document = element.contentDocument;
+      if (!document) return;
+      const nativeURL = Object.getOwnPropertyDescriptor(Document.prototype, "URL")!.get!.call(document);
+      if (!scramjetProfileLoadReady(nativeURL, document.contentType, r.profile?.hasDocument(document) === true)) return;
+    }
     clearTimeout(r.timer);
     r.disposeFavicon?.();
     notify("loaded", { id });
@@ -871,6 +905,19 @@ window.addEventListener("message", async (event) => {
       return;
     }
     if (typeof id !== "string" || id.length > 100) return;
+    if (type === "profile-checkpoint") {
+      const { requestId, origin } = event.data;
+      if (typeof requestId !== "string" || !/^[a-f0-9-]{36}$/i.test(requestId) || typeof origin !== "string") return;
+      try {
+        if (!profileBridge || id !== profileBridge.frameId) throw Error("PROFILE_CHECKPOINT_ROOT_REQUIRED");
+        const result = checkpointControllerRoot(records.get(id), origin);
+        notify("profile-checkpoint-result", { id, requestId, ok: true, supported: result.supported });
+      } catch (error) {
+        notify("profile-checkpoint-result", { id, requestId, ok: false,
+          code: error instanceof Error ? error.message : "PROFILE_CHECKPOINT_FAILED" });
+      }
+      return;
+    }
     if (type === "compatibility-config") {
       siteModes = sanitizeSiteModes(event.data.sites);
       const r = records.get(id);

@@ -1,9 +1,18 @@
+import { createLocalCookieOwnerV2 } from "./sandbox-local-owners-v2.ts";
+import type { LocalActorAuthority } from "./local-authority.ts";
+import { createCookieViewClock } from "./cookie-view-cache.ts";
 /** Trusted frontend coordinator for durable website cookies. Owner credentials
  * never cross a document port. The server sees encrypted filtered-view results,
  * not cookie plaintext or the private result keys; network authority stays here.
  */
+import { registrationFailure } from "./registration-error.ts";
 export async function createSandboxCookieOwner(options: {
   workerURL: string | URL;
+  localAuthority?: LocalActorAuthority;
+  nativeV2?: boolean;
+  profileId?: string | null;
+  cacheViews?: boolean;
+  profileContextId?: string;
   browserSessionId: string;
   forbiddenOrigins?: string[];
   /** Existing validated browsing-session credentials, supplied by trusted code
@@ -12,7 +21,9 @@ export async function createSandboxCookieOwner(options: {
   window?: Window & typeof globalThis;
   timeoutMs?: number;
 }) {
+  if (options.localAuthority) return createLocalCookieOwnerV2({...options,localAuthority:options.localAuthority});
   const owner = options.window ?? window;
+  const viewClock = options.cacheViews ? createCookieViewClock(owner, options.profileId) : undefined;
   const frontend = owner.location.origin;
   const asset = new URL(String(options.workerURL), frontend);
   if (
@@ -31,11 +42,13 @@ export async function createSandboxCookieOwner(options: {
     headers: {
       ...Object.fromEntries(new Headers(await options.registrationHeaders())),
       "content-type": "application/json",
+      ...(viewClock ? { "x-atlas-cookie-view": "1" } : {}),
     },
     body: "{}",
     signal: owner.AbortSignal.timeout(timeoutMs),
   });
-  if (!registration.ok) throw new Error("cookies_owner_registration_failed");
+  if (!registration.ok) throw await registrationFailure(registration, "cookies_owner_registration_failed");
+  viewClock?.authorize?.(registration.headers.get("x-atlas-cookie-view-epoch"));
   const grant = await registration.json();
   if (
     !/^[A-Za-z0-9_-]{43}$/.test(grant.capability) ||
@@ -69,8 +82,48 @@ export async function createSandboxCookieOwner(options: {
       reject: (error: Error) => void;
       timer: ReturnType<typeof setTimeout>;
       detach: () => void;
+      sent: boolean;
+      bytes: number;
+      send: () => void;
+      deadline: number;
+      expire: () => void;
     }
   >();
+  // Website startup legitimately fans out into many resource requests. Bound
+  // the in-flight worker load, not normal bursts at the first 32 operations.
+  // Queued operations retain FIFO order, cancellation and their original
+  // deadline. No write is retried or acknowledged before its worker result.
+  const networkQueue: string[] = [];
+  let networkActive = 0, networkBytes = 0, pumpingNetwork = false;
+  function takeNetwork(id: string) {
+    const item = networkPending.get(id);
+    if (!item) return;
+    networkPending.delete(id);
+    networkBytes -= item.bytes;
+    if (item.sent) networkActive--;
+    else {
+      const queued = networkQueue.indexOf(id);
+      if (queued !== -1) networkQueue.splice(queued, 1);
+    }
+    clearTimeout(item.timer);
+    item.detach();
+    return item;
+  }
+  function pumpNetwork() {
+    if (!live || pumpingNetwork) return;
+    pumpingNetwork = true;
+    try {
+      while (networkActive < 16 && networkQueue.length) {
+        const id = networkQueue.shift()!;
+        const item = networkPending.get(id);
+        if (!item) continue;
+        if (Date.now() >= item.deadline) { item.expire(); continue; }
+        item.sent = true;
+        networkActive++;
+        item.send();
+      }
+    } finally { pumpingNetwork = false; }
+  }
   let live = true,
     readyResolve!: () => void,
     readyReject!: (error: Error) => void;
@@ -103,6 +156,9 @@ export async function createSandboxCookieOwner(options: {
   function dispose() {
     if (!live) return;
     live = false;
+    // A server revocation/worker failure must retire even a warm local view.
+    // Other owners keep their durable data; their next read revalidates it.
+    try { viewClock?.invalidate(); } catch { /* The facade's next protocol read still fails explicitly. */ }
     clearTimeout(startTimer);
     readyReject(new Error("cookies_owner_disposed"));
     for (const value of pending.values()) {
@@ -116,6 +172,8 @@ export async function createSandboxCookieOwner(options: {
       value.reject(new Error("cookies_owner_disposed"));
     }
     networkPending.clear();
+    networkQueue.length = 0;
+    networkActive = networkBytes = 0;
     for (const value of bindings.values()) value.port.close();
     bindings.clear();
     worker.terminate();
@@ -129,17 +187,31 @@ export async function createSandboxCookieOwner(options: {
   }
   worker.onmessage = ({ data }) => {
     if (!live || !data) return;
+    if (
+      data.type === "profile-native-change" &&
+      options.profileId &&
+      data.profileId === options.profileId
+    ) {
+      owner.dispatchEvent(
+        new owner.CustomEvent("atlas:profile-native-change", {
+          detail: {
+            profileId: options.profileId,
+            origin: data.origin,
+            kind: "cookies",
+          },
+        }),
+      );
+      return;
+    }
     if (data.type === "network-result") {
-      const item = networkPending.get(data.id);
+      const item = takeNetwork(data.id);
       if (!item) return;
-      networkPending.delete(data.id);
-      clearTimeout(item.timer);
-      item.detach();
       if (data.error)
         item.reject(
           new DOMException("Cookie network operation failed", data.error),
         );
       else item.resolve(data.result);
+      pumpNetwork();
     } else if (data.type === "unavailable") {
       dispose();
     } else if (data.type === "ready") {
@@ -172,6 +244,8 @@ export async function createSandboxCookieOwner(options: {
     type: "initialize",
     socketURL: socket.href,
     browserSessionId: options.browserSessionId,
+    profileId: options.profileId,
+    profileContextId: options.profileContextId,
     forbiddenOrigins: options.forbiddenOrigins,
   });
   await ready;
@@ -181,9 +255,14 @@ export async function createSandboxCookieOwner(options: {
     lines?: string[],
   ) {
     if (!live) return Promise.reject(new Error("cookies_owner_disposed"));
-    if (networkPending.size >= 32)
+    const { signal: _signal, ...fixed } = context;
+    const capturedLines = lines?.slice();
+    const bytes = 1024 + Object.entries(fixed).reduce((sum, [key, value]) =>
+      sum + 2 * (key.length + (typeof value === "string" ? value.length : 16)), 0)
+      + (capturedLines?.reduce((sum, line) => sum + 2 * line.length, 0) ?? 0);
+    if (networkPending.size >= 512 || networkBytes + bytes > 2 * 1024 * 1024)
       return Promise.reject(
-        new DOMException("Cookie control backpressure", "QuotaExceededError"),
+        new DOMException("Cookie request queue allowance exceeded", "QuotaExceededError"),
       );
     if (context.signal?.aborted) return Promise.reject(context.signal.reason);
     const id = owner.crypto.randomUUID();
@@ -191,51 +270,56 @@ export async function createSandboxCookieOwner(options: {
       const detach = () =>
         context.signal?.removeEventListener("abort", cancelled);
       const cancel = (reason: unknown) => {
-        if (!networkPending.delete(id)) return;
-        clearTimeout(timer);
-        detach();
-        worker.postMessage({ type: "cancel-network", id });
+        const item = takeNetwork(id);
+        if (!item) return;
+        if (item.sent) {
+          try { worker.postMessage({ type: "cancel-network", id }); }
+          catch { /* Cancellation still rejects; no uncertain write is replayed. */ }
+        }
         reject(reason);
+        pumpNetwork();
       };
       const cancelled = () =>
         cancel(
           context.signal?.reason ??
             new DOMException("Cookie request aborted", "AbortError"),
         );
-      const timer = setTimeout(
-        () =>
-          cancel(
+      const expire = () => cancel(
             new DOMException(
               "Cookie network operation timed out; commit may be durable",
               "TimeoutError",
             ),
-          ),
-        timeoutMs,
       );
-      networkPending.set(id, { resolve, reject, timer, detach });
+      const deadline = Date.now() + timeoutMs;
+      const timer = setTimeout(expire, timeoutMs);
+      networkPending.set(id, { resolve, reject, timer, detach, sent: false, bytes,
+        deadline, expire,
+        send: () => {
+          try {
+            worker.postMessage({ type, id, context: fixed,
+              ...(capturedLines ? { lines: capturedLines } : {}) });
+          } catch (error) { cancel(error); }
+        },
+      });
+      networkBytes += bytes;
       context.signal?.addEventListener("abort", cancelled, { once: true });
-      const { signal: _signal, ...fixed } = context;
-      try {
-        worker.postMessage({
-          type,
-          id,
-          context: fixed,
-          ...(lines ? { lines } : {}),
-        });
-      } catch (error) {
-        cancel(error);
-      }
+      networkQueue.push(id);
+      pumpNetwork();
     });
   }
 
   return {
+    get live() { return live; },
     getRequestHeader: (
       context: import("./sandbox-cookies.ts").CookieRequestContext,
     ) => network("request-header", context) as Promise<string>,
     storeResponseCookies: (
       lines: string[],
       context: import("./sandbox-cookies.ts").CookieRequestContext,
-    ) => network("response-cookies", context, lines),
+    ) => {
+      viewClock?.invalidate();
+      return network("response-cookies", context, lines).finally(() => viewClock?.invalidate());
+    },
     async bind({
       documentId,
       website,
@@ -269,7 +353,7 @@ export async function createSandboxCookieOwner(options: {
         body: JSON.stringify({ documentId }),
         signal: owner.AbortSignal.timeout(timeoutMs),
       });
-      if (!response.ok) throw new Error("cookies_document_registration_failed");
+      if (!response.ok) throw await registrationFailure(response, "cookies_document_registration_failed");
       const document = await response.json();
       if (
         document.documentId !== documentId ||

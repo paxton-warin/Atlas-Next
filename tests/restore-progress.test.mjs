@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+import {resolve} from 'node:path';
+const {build}=createRequire(import.meta.resolve('vite'))('esbuild');
+const output=await build({bundle:true,write:false,platform:'browser',format:'esm',stdin:{resolveDir:resolve('web/src'),contents:"export {restorePresentation} from './restore-progress.ts'"}});
+const {restorePresentation:present}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
+const base={completedBytes:0,completedRecords:0,downloadedBytes:0,namespaces:0,elapsedMs:0};
+test('planning is indeterminate and never fabricates ETA',()=>{for(const phase of ['planning','discovering'])assert.deepEqual({...present({...base,phase}),label:undefined},{percent:undefined,label:undefined,eta:undefined});});
+test('percentage uses restored bytes rather than record count or elapsed time',()=>{const p=present({...base,phase:'restoring',totalBytes:10000,completedBytes:2500,completedRecords:999,elapsedMs:2000});assert.equal(p.percent,24);assert.equal(p.eta,'About 6 seconds remaining');});
+test('ETA waits for enough measured work and remains approximate',()=>{assert.equal(present({...base,phase:'restoring',totalBytes:10000,completedBytes:1,elapsedMs:1000}).eta,'Calculating time remaining…');assert.equal(present({...base,phase:'restoring',totalBytes:10000,completedBytes:5000,elapsedMs:100}).eta,'Calculating time remaining…');});
+test('completed data stays below100 until local catalog publication succeeds',()=>{assert.equal(present({...base,phase:'restoring',completedBytes:100,totalBytes:100}).percent,98);assert.equal(present({...base,phase:'finalizing'}).percent,99);assert.equal(present({...base,phase:'ready'}).percent,100);});

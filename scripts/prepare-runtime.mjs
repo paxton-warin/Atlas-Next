@@ -5,6 +5,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { adaptRelayCredentialRotation } from "./runtime-relay-rotation.mjs";
+import { adaptHttpEngineLifecycle } from "./runtime-httpengine-lifecycle.mjs";
+import { adaptRuntimeWorkerGlobals } from "./runtime-worker-globals.mjs";
+import { adaptNormalRuntimeCore } from "./runtime-normal-core.mjs";
+import { adaptControllerDecode } from "./runtime-controller-decode.mjs";
+import { adaptToggleAttribute } from "./runtime-toggle-attribute.mjs";
+import { adaptLiteralEval } from "./runtime-literal-eval.mjs";
+import { adaptRequestCancellationArtifact, adaptRequestCancellationCore } from "./runtime-request-cancellation.mjs";
 const fork = JSON.parse(
   await readFile(new URL("./runtime-fork.json", import.meta.url)),
 );
@@ -34,9 +41,14 @@ for (const [file, asset] of Object.entries(fork.assets)) {
   await cp(join(fork.directory, "app/vendor", file), target);
   let bytes = await readFile(target);
   if (file === "httpengine-client.js") {
-    bytes = adaptRelayCredentialRotation(bytes);
+    bytes = adaptHttpEngineLifecycle(adaptRelayCredentialRotation(bytes));
     await writeFile(target, bytes);
   }
+  if (file === "runtimekit.js") bytes = adaptRequestCancellationCore(adaptLiteralEval(adaptToggleAttribute(bytes)));
+  if (file === "controller.inject.js") bytes = adaptControllerDecode(bytes);
+  if (["controller.api.js", "controller.worker.js", "controller.inject.js"].includes(file))
+    bytes = adaptRequestCancellationArtifact(file, bytes);
+  await writeFile(target, bytes);
   hashes[asset.path] = hash(bytes);
   // CloudFront's dynamic/no-cache behavior need not perform edge compression.
   // Build variants once; do not compress on the browsing request's critical path.
@@ -51,6 +63,18 @@ for (const [file, asset] of Object.entries(fork.assets)) {
       await writeFile(target + suffix, compressed);
     else await rm(target + suffix, { force: true });
   }
+}
+// The opaque build retains its independent source/policy pin. Normal Window
+// and worker variants retain their qualified fixes plus the cancellation bridge.
+if (fork.assets["runtimekit.js"]) {
+ for (const [path, adapt] of [["runtime/runtimekit-normal.js", adaptNormalRuntimeCore], ["runtime/runtimekit-worker.js", adaptRuntimeWorkerGlobals]]) {
+  const bytes = adaptRequestCancellationCore(adaptLiteralEval(adaptToggleAttribute(adapt(await readFile(join(fork.directory, "app/vendor/runtimekit.js"))))));
+  const target = join(root, path);
+  await writeFile(target, bytes);
+  hashes[path] = hash(bytes);
+  await writeFile(target + ".br", brotliCompressSync(bytes));
+  await writeFile(target + ".gz", gzipSync(bytes));
+ }
 }
 async function walk(dir) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -69,8 +93,8 @@ await writeFile(
     {
       source: fork.source,
       commit: fork.commit,
-      packaging: "pinned app/vendor artifacts with qualified relay credential rotation",
-      adaptations: ["scripts/runtime-relay-rotation.mjs"],
+      packaging: "pinned app/vendor artifacts with qualified relay rotation, request lifecycle and cancellation protocol",
+      adaptations: ["scripts/runtime-relay-rotation.mjs", "scripts/runtime-httpengine-lifecycle.mjs", "scripts/runtime-request-cancellation.mjs", "scripts/runtime-request-cancellation-source.mjs", "scripts/runtime-normal-core.mjs", "scripts/runtime-worker-globals.mjs", "scripts/runtime-toggle-attribute.mjs", "scripts/runtime-controller-decode.mjs", "scripts/runtime-literal-eval.mjs", "scripts/runtime-pure-literal-eval.ts"],
       core: "2.0.67-alpha.2",
       controller: "0.0.14",
       hashes,

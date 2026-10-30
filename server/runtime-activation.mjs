@@ -3,12 +3,15 @@
 import { resolve } from "node:path";
 export function opaqueRuntimeSettings(env = process.env, cwd = process.cwd()) {
   const mode = env.ATLAS_BROWSER_RUNTIME || "held";
-  if (!["held", "opaque-v2", "same-origin"].includes(mode))
-    throw Error("ATLAS_BROWSER_RUNTIME must be held, opaque-v2 or same-origin.");
+  if (!["held", "opaque-v2", "same-origin", "same-origin-profile"].includes(mode))
+    throw Error("ATLAS_BROWSER_RUNTIME must be held, opaque-v2, same-origin or same-origin-profile.");
   const active = mode === "opaque-v2";
-  if (active && env.LOCAL_RELAY_MODE !== "frontend")
+  const profile = mode === "same-origin-profile";
+  if ((active || profile) && env.LOCAL_RELAY_MODE !== "frontend")
     throw Error(
-      "The combined opaque runtime requires LOCAL_RELAY_MODE=frontend.",
+      profile
+        ? "The same-origin profile runtime requires LOCAL_RELAY_MODE=frontend."
+        : "The combined opaque runtime requires LOCAL_RELAY_MODE=frontend.",
     );
   return Object.freeze({
     opaqueRuntimeEnabled: active,
@@ -16,7 +19,13 @@ export function opaqueRuntimeSettings(env = process.env, cwd = process.cwd()) {
     opaqueAssetsDir: active
       ? resolve(cwd, env.OPAQUE_ASSETS_DIR || "dist/opaque-runtime")
       : null,
-    ...(mode === "same-origin" ? {
+    ...(profile ? {
+      profileRuntimeEnabled: true,
+      profileRuntimeActivated: true,
+      profileRuntimeEngine: "scramjet-controller",
+      profileAssetsDir: resolve(cwd, env.OPAQUE_ASSETS_DIR || "dist/opaque-runtime"),
+    } : {}),
+    ...(mode === "same-origin" || profile ? {
       sameOriginRuntime: true,
       runtimePath: "/browse/runtime/",
       runtimeAssetsDir: resolve(cwd, "dist/runtime"),

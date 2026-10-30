@@ -6,8 +6,8 @@ export const SANDBOX_CSP =
 // Four core ports plus explicitly named optional capabilities form a one-shot grant.
 // The bootstrap runs before any website script. It consumes the grant event;
 // ordinary website postMessage listeners never receive those ports again.
-export const SANDBOX_CAPABILITY_BOOTSTRAP = `(()=>{
-  const documentId=location.pathname.split('/').pop(),nonce=location.hash.slice(1),owner=location.origin;
+const CAPABILITY_BOOTSTRAP_TEMPLATE = `(()=>{
+  const documentId=location.pathname.split('/').pop(),nonce=__ATLAS_BOOTSTRAP_NONCE__,owner=location.origin;
   let bound=false;const offer=new MessageChannel();
   offer.port1.onmessage=function bind(event){
     if(bound||event.data?.protocol!==2||event.data?.type!=='bind-capabilities'||event.data?.documentId!==documentId||event.data?.nonce!==nonce)return;
@@ -18,8 +18,14 @@ export const SANDBOX_CAPABILITY_BOOTSTRAP = `(()=>{
     dispatchEvent(new CustomEvent('atlas:document-capabilities',{detail:{documentId,control,storage,indexedDB,network,...optional}}));
     control.postMessage({protocol:2,documentId,type:'bound'});
   };offer.port1.start();
-  if(parent!==window)parent.postMessage({protocol:2,documentId,nonce,type:'sandbox-ready'},owner,[offer.port2]);
+  const ready=()=>{let target=top;for(let i=0;i<__ATLAS_CONTROLLER_OPENER_DEPTH__;i++)target=target?.opener?.top;if(target&&target!==window)target.postMessage({protocol:2,documentId,nonce,type:'sandbox-ready'},owner,[offer.port2]);};
+  if(document.readyState==='complete')ready();else addEventListener('load',ready,{once:true});
 })();`;
+export const SANDBOX_CAPABILITY_BOOTSTRAP =
+  CAPABILITY_BOOTSTRAP_TEMPLATE.replace(
+    "__ATLAS_BOOTSTRAP_NONCE__",
+    "location.hash.slice(1)",
+  ).replace("__ATLAS_CONTROLLER_OPENER_DEPTH__", "0");
 export function installSandboxFramePrototype(
   app,
   {
@@ -30,9 +36,13 @@ export function installSandboxFramePrototype(
     bootstrapURL,
     nativeResourceOrigin,
     rendererHelperPrefix,
+    nestedFramePolicy,
+    documentOrigin = "opaque",
   } = {},
 ) {
-  app.get("/browse/frame/:id", (req, reply) => {
+  if (!["opaque", "same-origin"].includes(documentOrigin))
+    throw TypeError("Invalid frame document origin mode.");
+  const serveFrame = (req, reply) => {
     if (!/^[a-zA-Z0-9_-]{16,96}$/.test(req.params.id))
       return reply.code(404).send();
     const endpointOrigin =
@@ -65,7 +75,7 @@ export function installSandboxFramePrototype(
           )
         : csp;
     let bootstrapScript = `<script>${trustedBootstrap.replaceAll("</script", "<\\/script")}</script>`;
-    if(capabilities)finalCSP += "; worker-src blob:";
+    if (capabilities) finalCSP += "; worker-src blob:";
     if (bootstrapURL) {
       const raw =
         typeof bootstrapURL === "function" ? bootstrapURL(req) : bootstrapURL;
@@ -88,7 +98,7 @@ export function installSandboxFramePrototype(
           "style-src 'unsafe-inline'",
           "style-src 'unsafe-inline' blob:",
         );
-      bootstrapScript = `<script crossorigin="anonymous" src="${url.href.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"></script>`;
+      bootstrapScript = `<script crossorigin="anonymous"${documentOrigin === "same-origin" ? ' data-atlas-document-origin="same-origin"' : ""} src="${url.href.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"></script>`;
     }
     const resourceOrigin =
       capabilities && nativeResourceOrigin?.(req, req.params.id);
@@ -124,24 +134,66 @@ export function installSandboxFramePrototype(
       finalCSP += "; media-src blob: " + prefix + "resource/";
       finalCSP += "; font-src blob:";
     }
-    const rendererPrefix = capabilities && rendererHelperPrefix?.(req, req.params.id);
+    const nested = capabilities && nestedFramePolicy?.(req, req.params.id);
+    if (req.url.startsWith("/browse/popup/") && nested?.kind !== "popup")
+      return reply.code(404).send();
+    if (nested)
+      finalCSP = finalCSP.replace(
+        "sandbox allow-scripts;",
+        "sandbox allow-scripts allow-popups;",
+      );
+    const capabilitiesBootstrap = CAPABILITY_BOOTSTRAP_TEMPLATE.replace(
+      "__ATLAS_BOOTSTRAP_NONCE__",
+      nested?.bootstrapNonce
+        ? JSON.stringify(nested.bootstrapNonce)
+        : "location.hash.slice(1)",
+    ).replace(
+      "__ATLAS_CONTROLLER_OPENER_DEPTH__",
+      String(nested?.controllerOpenerDepth ?? 0),
+    );
+    const rendererPrefix =
+      capabilities && rendererHelperPrefix?.(req, req.params.id);
     if (rendererPrefix) {
-      const u = new URL(rendererPrefix), owner = new URL(typeof bootstrapURL === "function" ? bootstrapURL(req) : bootstrapURL);
-      if (u.origin !== owner.origin || u.pathname !== "/browse/renderer/v1/" + req.params.id + "/" || u.search || u.hash || u.username || u.password)
+      const u = new URL(rendererPrefix),
+        owner = new URL(
+          typeof bootstrapURL === "function" ? bootstrapURL(req) : bootstrapURL,
+        );
+      if (
+        u.origin !== owner.origin ||
+        u.pathname !== "/browse/renderer/v1/" + req.params.id + "/" ||
+        u.search ||
+        u.hash ||
+        u.username ||
+        u.password
+      )
         throw TypeError("Invalid reserved renderer prefix");
-      finalCSP += "; frame-src " + u.href;
+      finalCSP +=
+        "; frame-src " + u.href + (nested?.prefix ? " " + nested.prefix : "");
     }
+    if (nested?.prefix && !rendererPrefix)
+      finalCSP += "; frame-src " + nested.prefix;
+    // Opaque ancestors cannot match frame-ancestors 'self'/XFO SAMEORIGIN.
+    // Only authenticated controller reservations may opt into nested embedding;
+    // the immutable sandbox and one-document port bootstrap remain mandatory.
+    if (nested?.nested)
+      finalCSP = finalCSP.replace(/; frame-ancestors 'self'/, "");
+    if (nested?.nested) reply.removeHeader("X-Frame-Options");
+    else reply.header("X-Frame-Options", "SAMEORIGIN");
+    // This explicit profile runtime shares the frontend's physical origin.
+    // Its profile ports remain, but no opaque sandbox/CSP boundary is claimed.
+    if (documentOrigin === "same-origin") {
+      reply.removeHeader("Content-Security-Policy");
+      reply.header("X-Atlas-Document-Origin", "same-origin");
+    } else reply.header("Content-Security-Policy", finalCSP);
     return reply
       .header("Cache-Control", "no-store")
       .header("Vary", "Host, Origin")
-      .header("Content-Security-Policy", finalCSP)
-      .header("X-Frame-Options", "SAMEORIGIN")
       .header("X-Content-Type-Options", "nosniff")
       .header("Referrer-Policy", "no-referrer")
       .type("text/html; charset=utf-8")
       .send(
         capabilities
-          ? `<!doctype html><meta charset="utf-8"><title>Atlas website</title>${bootstrapScript}<script>${SANDBOX_CAPABILITY_BOOTSTRAP}</script>`
+          ? `<!doctype html><meta charset="utf-8"><title>Atlas website</title>${bootstrapScript}<script>${capabilitiesBootstrap}</script>`
           : `<!doctype html><meta charset="utf-8"><title>Atlas sandbox capability prototype</title><script>
       (()=>{
         const documentId=location.pathname.split('/').pop();
@@ -157,5 +209,7 @@ export function installSandboxFramePrototype(
       })();
       </script>`,
       );
-  });
+  };
+  app.get("/browse/frame/:id", serveFrame);
+  app.get("/browse/popup/:id", serveFrame);
 }

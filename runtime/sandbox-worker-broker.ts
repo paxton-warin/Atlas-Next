@@ -1,3 +1,4 @@
+import { getProfileLimits } from "./profile-limits.ts";
 /** Trusted, parent-document-bound dedicated-worker authority. Entry source is
  * same-logical-origin, worker-src checked before EVERY hop, and transferred only
  * after MIME/size/header checks. Worker requests use the WORKER response policy,
@@ -21,6 +22,7 @@ const keys = (value: object, allowed: readonly string[]) =>
 const workerId = /^worker_[a-f0-9]{48}$/;
 const sourceMIME = /^(?:text|application)\/(?:java|ecma)script$/i;
 export function createSandboxWorkerBroker(options: {
+  enforceOriginalPolicy?: boolean;
   documentId: string;
   documentURL: string;
   frontendOrigin: string;
@@ -34,6 +36,8 @@ export function createSandboxWorkerBroker(options: {
     documentURL: string;
   }) => NetworkOptions["fetch"];
   factory: IDBFactory;
+  profileId?: string | null;
+  profileContextId?: string;
   post(message: object, transfer: Transferable[]): void;
   channel?: () => MessageChannel;
   timeoutMs?: number;
@@ -200,7 +204,7 @@ export function createSandboxWorkerBroker(options: {
       } catch {
         throw failure("worker_source_encoding_denied");
       }
-      const contentPolicies = values("content-security-policy").flatMap((v) =>
+      const contentPolicies = options.enforceOriginalPolicy === false ? [] : values("content-security-policy").flatMap((v) =>
         v
           .split(",")
           .map((p) => p.trim())
@@ -307,6 +311,9 @@ export function createSandboxWorkerBroker(options: {
         website: prepared.value.url,
         frontendOrigin: options.frontendOrigin,
         factory: options.factory,
+        profileId: options.profileId,
+        profileContextId: options.profileContextId,
+        limits: { quotaBytes: getProfileLimits(options.profileId).idbBytes },
       });
       record.close.push(idbBinding.dispose);
       return {

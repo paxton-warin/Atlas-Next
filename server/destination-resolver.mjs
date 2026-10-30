@@ -19,6 +19,7 @@ export function createDestinationResolver({
   timeoutMs = 8_000,
   maxEntries = 512,
   maxPending = 256,
+  onMetric = () => {},
 } = {}) {
   if (
     !Number.isFinite(ttlMs) ||
@@ -45,10 +46,14 @@ export function createDestinationResolver({
     if (cached && cached.expires > now()) {
       cache.delete(key);
       cache.set(key, cached);
+      onMetric("dns-cache-hit", 1);
       return copy(cached.addresses);
     }
     cache.delete(key);
-    if (pending.has(key)) return copy(await pending.get(key));
+    if (pending.has(key)) {
+      onMetric("dns-coalesced", 1);
+      return copy(await pending.get(key));
+    }
     // Count underlying OS requests until they settle, even after our deadline.
     // dns.lookup has no cancellation API; timed-out work must stay bounded too.
     if (activeLookups >= maxPending)
@@ -57,9 +62,10 @@ export function createDestinationResolver({
       });
 
     activeLookups++;
+    const started = now();
     const request = Promise.resolve()
       .then(() => lookup(hostname, { all: true }))
-      .finally(() => activeLookups--);
+      .finally(() => { activeLookups--; onMetric("dns-lookup", Math.max(0, now() - started)); });
     let timer;
     const deadline = new Promise((_, reject) => {
       timer = setTimeout(

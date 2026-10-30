@@ -2,14 +2,15 @@ import { requestOrigin, createUpgradeOrigin } from "./request-origin.mjs";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { server as wisp, logging } from "@mercuryworkshop/wisp-js/server";
+import { createPerformanceMetrics } from "./performance-metrics.mjs";
 import { Socket } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
 import { createDestinationResolver } from "./destination-resolver.mjs";
 export { isPublicIp } from "./destination-resolver.mjs";
 import { resolve } from "node:path";
 import { connectionErrorBody } from "./node-ticket.mjs";
-export function guardedSocket({ fixture = false, blockedHosts = [] } = {}) {
-  const resolveDestination = createDestinationResolver();
+export function guardedSocket({ fixture = false, blockedHosts = [], metrics } = {}) {
+  const resolveDestination = createDestinationResolver({ onMetric: (kind, value) => metrics?.record(kind, value) });
   return class GuardedTcp {
     constructor(hostname, port) {
       this.hostname = hostname;
@@ -22,17 +23,27 @@ export function guardedSocket({ fixture = false, blockedHosts = [] } = {}) {
     async connect() {
       const allowedFixture =
         fixture &&
-        ["127.0.0.1", "localhost"].includes(this.hostname) &&
-        this.port === 4199;
+        (["127.0.0.1", "localhost"].includes(this.hostname) ||
+          (this.hostname === "fixture.localhost" && process.env.NODE_ENV === "test" && process.env.ATLAS_TEST_FIXTURE === "1" && process.env.ATLAS_TEST_FIXTURE_PORT === "4299")) &&
+        this.port ===
+          (process.env.NODE_ENV === "test" &&
+          process.env.ATLAS_TEST_FIXTURE === "1" &&
+          /^\d{4,5}$/.test(process.env.ATLAS_TEST_FIXTURE_PORT || "") &&
+          Number(process.env.ATLAS_TEST_FIXTURE_PORT) >= 1024 &&
+          Number(process.env.ATLAS_TEST_FIXTURE_PORT) <= 65535
+            ? Number(process.env.ATLAS_TEST_FIXTURE_PORT)
+            : 4199);
       if (
         !allowedFixture &&
         (blockedHosts.includes(this.hostname.toLowerCase()) ||
           ![80, 443].includes(this.port))
       )
         throw Error("Destination rejected");
-      const addresses = await resolveDestination(this.hostname, {
-        allowPrivate: allowedFixture,
-      });
+      const dnsStart = performance.now();
+      let addresses;
+      try { addresses = await resolveDestination(this.hostname, { allowPrivate: allowedFixture }); }
+      finally { metrics?.record("dns", performance.now() - dnsStart); }
+      const tcpStart = performance.now();
       await new Promise((ok, bad) => {
         const socket = (this.socket = new Socket());
         socket.setNoDelay(true);
@@ -45,12 +56,20 @@ export function guardedSocket({ fixture = false, blockedHosts = [] } = {}) {
         socket.once("connect", () => {
           clearTimeout(abort);
           socket.setTimeout(0);
+          metrics?.record("tcp", performance.now() - tcpStart);
+          this.connectedAt = performance.now();
           ok();
         });
         socket.on("data", (data) => {
+          if (!this.receivedFirst) {
+            this.receivedFirst = true;
+            metrics?.record("first-byte", performance.now() - this.connectedAt);
+          }
+          metrics?.record("tcp-bytes-in", data.length);
           const waiter = this.waiters.shift();
           if (waiter) waiter(data);
           else this.queue.push(data);
+          metrics?.record("tcp-queue", this.queue.length);
           if (this.queue.length >= 32) socket.pause();
         });
         socket.on("close", () => {
@@ -84,6 +103,7 @@ export function guardedSocket({ fixture = false, blockedHosts = [] } = {}) {
       await new Promise((ok, bad) =>
         this.socket.write(data, (e) => (e ? bad(e) : ok())),
       );
+      metrics?.record("tcp-bytes-out", data.length);
     }
     pause() {
       if (this.queue.length >= 32) this.socket?.pause();
@@ -107,7 +127,11 @@ export async function createRuntime({
   authorize,
   health,
   relayMaintenance = {},
+  maxConnections = Number(process.env.ATLAS_RELAY_MAX_CONNECTIONS ?? 200),
 }) {
+  if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || maxConnections > 2048)
+    throw new TypeError("ATLAS_RELAY_MAX_CONNECTIONS / maxConnections must be an integer from 1 through 2048.");
+  const metrics = createPerformanceMetrics();
   const app = Fastify({
     logger: false,
     trustProxy: process.env.TRUST_PROXY
@@ -127,7 +151,7 @@ export async function createRuntime({
     parse_real_ip: false,
   });
   const Tcp = guardedSocket({
-    fixture,
+    fixture, metrics,
     blockedHosts: [
       new URL(appOrigin).hostname,
       new URL(runtimeOrigin).hostname,
@@ -142,7 +166,11 @@ export async function createRuntime({
   const retiredIdleMs = relayMaintenance.retiredIdleMs ?? 60000;
   const pongTimeoutMs = relayMaintenance.pongTimeoutMs ?? 65000;
   const maintenanceIntervalMs = relayMaintenance.intervalMs ?? 10000;
-  const relayTotals = { rejectedCapacity: 0, reclaimedRetired: 0, deadPeers: 0 };
+  const relayTotals = {
+    rejectedCapacity: 0,
+    reclaimedRetired: 0,
+    deadPeers: 0,
+  };
   const getAuthorization = (req, origin, purpose = "runtime", options) => {
     const raw =
       req.headers.authorization?.replace(/^Bearer /, "") ||
@@ -173,6 +201,7 @@ export async function createRuntime({
     try {
       assignment = getAuthorization(req, req.headers.origin, "relay");
     } catch {
+      metrics.record("relay-upgrade-rejected");
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
     }
@@ -189,9 +218,11 @@ export async function createRuntime({
       n = perIp.get(ip) || 0;
     const sessionKey = assignment?.session;
     const sessionCount = sessionKey ? sessions.get(sessionKey) || 0 : 0;
-    if ((!authorize && n >= 24) || sessionCount >= 12 || sockets.size >= 200) {
+    if ((!authorize && n >= 24) || sessionCount >= 12 || sockets.size >= maxConnections) {
       relayTotals.rejectedCapacity++;
-      socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 5\r\n\r\n");
+      socket.end(
+        "HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 5\r\n\r\n",
+      );
       return;
     }
     sockets.add(socket);
@@ -206,6 +237,8 @@ export async function createRuntime({
     socket.on("close", () => {
       sockets.delete(socket);
       authorizations.delete(socket);
+      const relay = relays.get(socket);
+      if (relay) metrics.record("relay-closed-" + (relay.closeReason || "end"));
       relays.delete(socket);
       if (sessionKey) {
         const left = (sessions.get(sessionKey) || 1) - 1;
@@ -229,7 +262,8 @@ export async function createRuntime({
         const connection = new wisp.ServerConnection(ws, req.url, {
           TCPSocket: Tcp,
           wisp_version:
-            req.headers["sec-websocket-protocol"] && wisp.options.wisp_version === 2
+            req.headers["sec-websocket-protocol"] &&
+            wisp.options.wisp_version === 2
               ? 2
               : 1,
         });
@@ -244,8 +278,12 @@ export async function createRuntime({
           lastPong: now,
         };
         relays.set(socket, relay);
-        ws.on("message", () => { relay.lastActivity = maintenanceNow(); });
-        ws.on("pong", () => { relay.lastPong = maintenanceNow(); });
+        ws.on("message", () => {
+          relay.lastActivity = maintenanceNow();
+        });
+        ws.on("pong", () => {
+          relay.lastPong = maintenanceNow();
+        });
         void (async () => {
           try {
             await connection.setup();
@@ -271,6 +309,7 @@ export async function createRuntime({
       // quiet but healthy website WebSocket/media stream is never idle-closed.
       if (now - relay.lastPong > pongTimeoutMs) {
         relayTotals.deadPeers++;
+        relay.closeReason = "peer";
         relay.ws.terminate();
         continue;
       }
@@ -280,34 +319,46 @@ export async function createRuntime({
         !Number.isFinite(relay.ticketExpiresAt) ||
         Object.keys(relay.connection.streams).length ||
         now - relay.lastActivity < retiredIdleMs
-      ) continue;
+      )
+        continue;
       // Old httpengine builds cache a relay by its ticket-bearing URL. Reap
       // only an empty superseded relay after its replacement is established.
       // Unique idle relays and every relay containing a live TCP stream stay.
-      const replacement = [...relays.values()].some((next) =>
-        next !== relay && next.ready && next.ws.readyState === WebSocket.OPEN &&
-        next.session === relay.session && next.generation === relay.generation &&
-        next.ticketExpiresAt > relay.ticketExpiresAt &&
-        now - next.lastPong <= pongTimeoutMs,
+      const replacement = [...relays.values()].some(
+        (next) =>
+          next !== relay &&
+          next.ready &&
+          next.ws.readyState === WebSocket.OPEN &&
+          next.session === relay.session &&
+          next.generation === relay.generation &&
+          next.ticketExpiresAt > relay.ticketExpiresAt &&
+          now - next.lastPong <= pongTimeoutMs,
       );
       if (replacement) {
         relayTotals.reclaimedRetired++;
+        relay.closeReason = "retired";
         relay.ws.terminate();
       }
     }
   };
-  const maintenanceTimer = setInterval(maintainConnections, maintenanceIntervalMs);
+  const maintenanceTimer = setInterval(
+    maintainConnections,
+    maintenanceIntervalMs,
+  );
   maintenanceTimer.unref();
   app.decorate("maintainConnections", maintainConnections);
-  const activeSessionCount = () => {
+  const activeSessionIds = () => {
     const now = maintenanceNow();
     const active = new Set();
     for (const [socket, relay] of relays) {
       if (
-        !relay.ready || relay.ws.readyState !== WebSocket.OPEN ||
-        !relay.session || active.has(relay.session) ||
+        !relay.ready ||
+        relay.ws.readyState !== WebSocket.OPEN ||
+        !relay.session ||
+        active.has(relay.session) ||
         now - relay.lastPong > pongTimeoutMs
-      ) continue;
+      )
+        continue;
       try {
         // Count an authenticated browsing assignment, not every ticket/socket.
         // Revalidate without touching the lease: revoked, moved, idle-expired,
@@ -318,20 +369,22 @@ export async function createRuntime({
         // An open TCP/WebSocket handle is not proof of a current assignment.
       }
     }
-    return active.size;
+    return [...active];
   };
+  app.decorate("connectionSessionIds", activeSessionIds);
   app.decorate("connectionStats", () => ({
     connections: sockets.size,
     sessions: sessions.size,
-    activeSessions: activeSessionCount(),
+    activeSessions: activeSessionIds().length,
     maxConnectionsPerSession: Math.max(0, ...sessions.values()),
-    emptyConnections: [...relays.values()].filter((relay) =>
-      relay.ready && !Object.keys(relay.connection.streams).length,
+    emptyConnections: [...relays.values()].filter(
+      (relay) => relay.ready && !Object.keys(relay.connection.streams).length,
     ).length,
-    activeStreams: [...relays.values()].reduce((total, relay) =>
-      total + Object.keys(relay.connection.streams).length, 0,
+    activeStreams: [...relays.values()].reduce(
+      (total, relay) => total + Object.keys(relay.connection.streams).length,
+      0,
     ),
-    capacity: 200,
+    capacity: maxConnections,
     perSessionCapacity: 12,
     ...relayTotals,
   }));
@@ -339,17 +392,24 @@ export async function createRuntime({
     for (const [socket, check] of authorizations) {
       try {
         check();
-      } catch {
+      } catch (error) {
+        const reason = error?.code === "SESSION_REVOKED" ? "revoked"
+          : error?.code === "SESSION_EXPIRED" ? "expired"
+          : error?.code === "CONTROL_UNAVAILABLE" ? "control" : "invalid";
+        const relay = relays.get(socket);
+        if (relay) relay.closeReason = reason;
         socket.destroy();
       }
     }
   };
+  app.decorate("performanceSnapshot", () => metrics.snapshot());
   const authorizationTimer = authorize
     ? setInterval(recheckConnections, 5000)
     : null;
   authorizationTimer?.unref();
   app.decorate("recheckConnections", recheckConnections);
   app.addHook("onClose", () => {
+    metrics.close();
     if (authorizationTimer) clearInterval(authorizationTimer);
     clearInterval(maintenanceTimer);
     for (const s of sockets) s.destroy();

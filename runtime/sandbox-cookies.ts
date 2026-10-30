@@ -1,3 +1,11 @@
+import {
+  profileDatabaseName,
+  appendProfileJournal,
+} from "./profile-journal.ts";
+import {
+  assertProfileWrite,
+  assertProfileWriteCached,
+} from "./profile-permissions.ts";
 /** Frontend-owned browser cookie authority for the opaque runtime.
  * The persistent jar never enters an untrusted document. Document capabilities
  * expose only a URL-bound, path/domain/Secure/SameSite-filtered non-HttpOnly
@@ -66,6 +74,9 @@ type Outcome = { accepted: number; rejected: string[]; revision: number };
 type View = { value: string; revision: number; expiresAt: number | null };
 type Options = {
   factory: IDBFactory;
+  profileId?: string | null;
+  profileContextId?: string;
+  onNativeCommit?: (origin: string) => void;
   /** Shared by all tabs in ONE logical browser session, not a per-tab ID. */
   browserSessionId: string;
   forbiddenOrigins: string[];
@@ -344,6 +355,7 @@ function cookieMatches(
 }
 
 export class SandboxCookieJar {
+  private readonly factory: IDBFactory;
   private readonly database: Promise<IDBDatabase>;
   private readonly forbidden: Set<string>;
   private readonly options: Required<
@@ -354,7 +366,12 @@ export class SandboxCookieJar {
   private readonly transactions = new Set<IDBTransaction>();
   private readonly channel?: BroadcastChannel;
   private closed = false;
+  // Access timestamps/expired-row housekeeping are not cookie visibility.
+  // Reserve one maintenance read per 15 seconds before awaiting permits, so
+  // concurrent resource/header reads cannot all turn into disk writes.
+  private nextReadMaintenanceAt = 0;
   constructor(options: Options) {
+    this.factory = options.factory;
     if (
       !/^[A-Za-z0-9_-]{16,128}$/.test(options.browserSessionId) ||
       !Array.isArray(options.forbiddenOrigins)
@@ -363,7 +380,12 @@ export class SandboxCookieJar {
         "Cookie authority requires a trusted browser session and forbidden frontend origins",
       );
     this.options = {
-      browserSessionId: options.browserSessionId,
+      browserSessionId: options.profileId
+        ? "profile-" + options.profileId
+        : options.browserSessionId,
+      profileId: options.profileId ?? null,
+      profileContextId: options.profileContextId ?? "",
+      onNativeCommit: options.onNativeCommit ?? (() => {}),
       now: options.now || Date.now,
       maxCookies: options.maxCookies ?? 3000,
       maxCookiesPerSite: options.maxCookiesPerSite ?? 180,
@@ -380,7 +402,10 @@ export class SandboxCookieJar {
       options.forbiddenOrigins.map((value) => url(value).hostname),
     );
     this.database = new Promise((resolve, reject) => {
-      const request = options.factory.open(SANDBOX_COOKIE_DATABASE, 1);
+      const request = options.factory.open(
+        profileDatabaseName(SANDBOX_COOKIE_DATABASE, options.profileId),
+        1,
+      );
       request.onupgradeneeded = () => {
         request.result.createObjectStore("cookies", { keyPath: "id" });
         request.result.createObjectStore("meta");
@@ -400,11 +425,29 @@ export class SandboxCookieJar {
       };
     });
     if (typeof BroadcastChannel !== "undefined") {
-      this.channel = new BroadcastChannel("atlas.browsing.cookies.v2");
+      this.channel = new BroadcastChannel(
+        profileDatabaseName("atlas.browsing.cookies.v2", options.profileId),
+      );
       this.channel.onmessage = (event) => {
         if (event.data?.type === "changed") this.notify(false);
       };
     }
+  }
+  private journal(
+    tx: IDBTransaction,
+    origin: string,
+    changes: unknown[],
+    revision: number,
+  ) {
+    if (!this.options.profileId || !changes.length) return;
+    const payload = { changes, revision };
+    appendProfileJournal(tx.objectStore("meta"), {
+      profileId: this.options.profileId,
+      kind: "cookies",
+      origin,
+      payload,
+      bytes: 2 * JSON.stringify(payload).length,
+    });
   }
   private check(value: string) {
     const target = url(value);
@@ -459,11 +502,31 @@ export class SandboxCookieJar {
         context.signal.reason ||
         new DOMException("Cookie read aborted", "AbortError")
       );
+    let canMutate = false;
+    const now = this.options.now();
+    if (now >= this.nextReadMaintenanceAt || this.nextReadMaintenanceAt > now + 15000) {
+      this.nextReadMaintenanceAt = now + 15000;
+      try {
+        await assertProfileWrite(
+          this.factory,
+          this.options.profileId,
+          context.request.origin,
+          this.options.profileContextId,
+        );
+        canMutate = true;
+      } catch {
+        // A fenced reader may still read its committed cookies. Only actual
+        // writes/maintenance require the current durable writer permit.
+      }
+    }
     const db = await this.database;
     if (this.closed)
       throw new DOMException("Cookie authority is closed", "InvalidStateError");
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction(["cookies", "meta"], "readwrite"),
+      const transaction = db.transaction(
+          ["cookies", "meta"],
+          canMutate ? "readwrite" : "readonly",
+        ),
         store = transaction.objectStore("cookies"),
         meta = transaction.objectStore("meta"),
         revision = meta.get("revision"),
@@ -476,10 +539,26 @@ export class SandboxCookieJar {
         try {
           const now = this.options.now(),
             selected: Cookie[] = [];
+          const journal: unknown[] = [];
           for (const cookie of request.result as Cookie[]) {
             if (cookie.expires !== null && cookie.expires <= now) {
-              store.delete(cookie.id);
-              changed = true;
+              if (
+                canMutate &&
+                cookie.site ===
+                  (parseDomain(context.request.hostname, {
+                    allowPrivateDomains: true,
+                  }).domain || context.request.hostname)
+              ) {
+                assertProfileWriteCached(
+                  this.factory,
+                  this.options.profileId,
+                  context.request.origin,
+                  this.options.profileContextId,
+                );
+                store.delete(cookie.id);
+                journal.push({ op: "delete", cookie });
+                changed = true;
+              }
               continue;
             }
             if (
@@ -492,8 +571,9 @@ export class SandboxCookieJar {
               )
             ) {
               selected.push(cookie);
-              // Last access is authority metadata, not a document-view change.
-              if (cookie.accessed !== now)
+              // Last access is sampled metadata, not a document-view change.
+              // Reads between maintenance windows remain native readonly I/O.
+              if (canMutate && cookie.accessed !== now)
                 store.put({ ...cookie, accessed: now });
             }
           }
@@ -504,7 +584,10 @@ export class SandboxCookieJar {
               a.id.localeCompare(b.id),
           );
           const version = (revision.result || 0) + (changed ? 1 : 0);
-          if (changed) meta.put(version, "revision");
+          if (changed) {
+            meta.put(version, "revision");
+            this.journal(transaction, context.request.origin, journal, version);
+          }
           result = {
             value: selected
               .map((cookie) =>
@@ -529,7 +612,12 @@ export class SandboxCookieJar {
       };
       transaction.oncomplete = () => {
         this.transactions.delete(transaction);
-        if (changed) this.notify();
+        if (changed) {
+          this.notify();
+          try {
+            this.options.onNativeCommit(context.request.origin);
+          } catch {}
+        }
         resolve(result!);
       };
       transaction.onabort = () => {
@@ -561,6 +649,12 @@ export class SandboxCookieJar {
       lines.some((line) => typeof line !== "string")
     )
       throw new TypeError("Set-Cookie requires separate bounded header lines");
+    await assertProfileWrite(
+      this.factory,
+      this.options.profileId,
+      context.request.origin,
+      this.options.profileContextId,
+    );
     const db = await this.database;
     if (this.closed)
       throw new DOMException("Cookie authority is closed", "InvalidStateError");
@@ -587,13 +681,28 @@ export class SandboxCookieJar {
       context.signal?.addEventListener("abort", abort, { once: true });
       request.onsuccess = () => {
         try {
+          assertProfileWriteCached(
+            this.factory,
+            this.options.profileId,
+            context.request.origin,
+            this.options.profileContextId,
+          );
           if (context.signal?.aborted) return abort();
           const now = this.options.now(),
             all = new Map<string, Cookie>();
+          const journal: unknown[] = [];
           for (const cookie of request.result as Cookie[]) {
             if (cookie.expires !== null && cookie.expires <= now) {
-              store.delete(cookie.id);
-              changed = true;
+              if (
+                cookie.site ===
+                (parseDomain(context.request.hostname, {
+                  allowPrivateDomains: true,
+                }).domain || context.request.hostname)
+              ) {
+                store.delete(cookie.id);
+                journal.push({ op: "delete", cookie });
+                changed = true;
+              }
             } else all.set(cookie.id, cookie);
           }
           let accepted = 0;
@@ -635,6 +744,7 @@ export class SandboxCookieJar {
             if (cookie.expires !== null && cookie.expires <= now) {
               if (all.delete(cookie.id)) {
                 store.delete(cookie.id);
+                journal.push({ op: "delete", cookie });
                 changed = true;
               }
               continue;
@@ -642,6 +752,7 @@ export class SandboxCookieJar {
             if (previous) cookie.created = previous.created;
             all.set(cookie.id, cookie);
             store.put(cookie);
+            journal.push({ op: "set", cookie });
             changed = true;
           }
           const perSite = new Map<string, number>();
@@ -664,7 +775,20 @@ export class SandboxCookieJar {
           // IDB requests are processed in order: the meta read predates getAll's
           // success task; its result is available before the later write task.
           const version = (revision.result || 0) + (changed ? 1 : 0);
-          if (changed) meta.put(version, "revision");
+          if (changed) {
+            meta.put(version, "revision");
+            // Bounded pre-read certificates for a later explicit local-v2 cut.
+            // These do not alter v1 payloads, receipts or writer semantics.
+            const storedUpperBound=(request.result as Cookie[]).reduce((n,row)=>n+bytes(JSON.stringify(row)),0)+
+              (journal as {op:string;cookie:Cookie}[]).reduce((n,change)=>n+(change.op==="set"?bytes(JSON.stringify(change.cookie)):0),0);
+            meta.put({format:2,scope:"complete-stored-jar",revision:version,bytes:storedUpperBound,
+              count:request.result.length+journal.length},"local-cookie-migration-size-v2");
+            for (const change of journal as {op:string;cookie:Cookie}[]) {
+              if (change.op === "delete") meta.delete(["local-cookie-size-v2",change.cookie.id]);
+              else meta.put({bytes:bytes(JSON.stringify(change.cookie)),revision:version},["local-cookie-size-v2",change.cookie.id]);
+            }
+            this.journal(transaction, context.request.origin, journal, version);
+          }
           result = { accepted, rejected, revision: version };
         } catch (error) {
           failure = error;
@@ -674,7 +798,12 @@ export class SandboxCookieJar {
       transaction.oncomplete = () => {
         this.transactions.delete(transaction);
         context.signal?.removeEventListener("abort", abort);
-        if (changed) this.notify();
+        if (changed) {
+          this.notify();
+          try {
+            this.options.onNativeCommit(context.request.origin);
+          } catch {}
+        }
         resolve(result!);
       };
       transaction.onabort = () => {
@@ -942,6 +1071,9 @@ export class SandboxCookieJar {
     };
   }
   async endSession() {
+    // An account profile is one durable logical browser across frontend hosts.
+    // Closing one branch is not the end of every website's profile session.
+    if (this.options.profileId) return;
     if (this.closed)
       throw new DOMException("Cookie authority is closed", "InvalidStateError");
     const db = await this.database;
@@ -955,13 +1087,24 @@ export class SandboxCookieJar {
         store = tx.objectStore("cookies"),
         request = store.getAll();
       let changed = false;
+      const journal: unknown[] = [];
       request.onsuccess = () => {
         for (const cookie of request.result as Cookie[])
           if (cookie.sessionId === this.options.browserSessionId) {
             store.delete(cookie.id);
+            journal.push({ op: "delete", cookie });
             changed = true;
           }
-        if (changed) meta.put((revision.result || 0) + 1, "revision");
+        if (changed) {
+          const version = (revision.result || 0) + 1;
+          meta.put(version, "revision");
+          this.journal(
+            tx,
+            "https://" + (journal[0] as any).cookie.domain,
+            journal,
+            version,
+          );
+        }
       };
       tx.oncomplete = () => {
         this.transactions.delete(tx);

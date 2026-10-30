@@ -1,3 +1,11 @@
+import { createPerformanceMetrics } from "./performance-metrics.mjs";
+import { installHubEndpoints } from "./hub-endpoints.mjs";
+import { installHubControl } from "./hub-control.mjs";
+import {
+  hubBranchSettings,
+  validateHubBranchConfig,
+  installHubBranch,
+} from "./hub-branch.mjs";
 import { OPAQUE_RUNTIME_PROTOCOL } from "./runtime-capabilities.mjs";
 import { installReservedRendererHelper } from "./reserved-renderer-helper.mjs";
 import { installFrontendControllerAPI } from "./frontend-controller.mjs";
@@ -51,11 +59,33 @@ export const defaults = () => ({
   staticDir: resolve("dist/web"),
   dynamicOrigins: true,
   nodesEnabled: false,
+  controllerOwnerLimit: Number(process.env.ATLAS_CONTROLLER_MAX_OWNERS ?? 2048),
   // Defaults held. Release activation is explicit, never inferred from assets.
   ...opaqueRuntimeSettings(),
+  ...hubBranchSettings(),
 });
 export async function createApp(options = {}) {
   const config = { ...defaults(), ...options };
+  if (!Number.isSafeInteger(config.controllerOwnerLimit) ||
+      config.controllerOwnerLimit < 1 || config.controllerOwnerLimit > 8192)
+    throw new TypeError("ATLAS_CONTROLLER_MAX_OWNERS must be an integer from 1 through 8192.");
+  const profileController = config.profileRuntimeEnabled === true &&
+    config.profileRuntimeEngine === "scramjet-controller";
+  if (
+    config.profileRuntimeActivated &&
+    (!config.profileRuntimeEnabled ||
+      !config.profileAssetsDir ||
+      config.localRelayMode !== "frontend" ||
+      !config.appOrigin.startsWith("https://") ||
+      (profileController ? !config.sameOriginRuntime : config.sameOriginRuntime) ||
+      (config.profileRuntimeEngine !== undefined && !profileController) ||
+      config.opaqueRuntimeEnabled ||
+      config.opaqueRuntimeActivated)
+  )
+    throw Error(
+      "Same-origin profile activation requires HTTPS, frontend relay mode, verified profile assets, an explicit matching runtime engine and no opaque runtime activation.",
+    );
+  validateHubBranchConfig(config);
   if (
     config.opaqueRuntimeActivated &&
     (!config.opaqueRuntimeEnabled ||
@@ -103,11 +133,32 @@ export async function createApp(options = {}) {
     runtimeOrigin: config.runtimeOrigin,
     localRelayMode: config.localRelayMode,
     sameOriginRuntime: config.sameOriginRuntime === true,
+    profileRuntimeEngine: profileController ? config.profileRuntimeEngine : undefined,
   });
   app.decorate("nodePool", pool);
   app.decorate("store", store);
   app.decorate("atlasConfig", config);
-  app.addHook("onClose", () => db.close());
+  let frontendDocuments;
+  const hubBranch = await installHubBranch(app, {
+    config,
+    originFor,
+    seal,
+    unseal,
+    fetch: options.hubFetch,
+    store,
+    pool,
+    authorizeReservedDocument: (req, id, kind) =>
+      frontendDocuments?.documentNavigation(req, id, kind) === true,
+  });
+  await installHubEndpoints(app, {
+    config,
+    store,
+    pool,
+    fetch: options.hubEndpointFetch,
+  });
+  app.decorate("hubBranch", hubBranch);
+  const performanceMetrics = createPerformanceMetrics();
+  app.addHook("onClose", async () => { performanceMetrics.close(); await pool.close(); db.close(); });
   const fail = (message, statusCode = 400) =>
     Object.assign(new Error(message), { statusCode });
   const text = (v, min, max) => {
@@ -115,16 +166,50 @@ export async function createApp(options = {}) {
       throw fail(`Enter between ${min} and ${max} characters.`);
     return v.trim();
   };
+  // Enforce the same fixed-window limit atomically with one statement.
+  // Each key self-resets on expiry; global expired-row GC is housekeeping only.
+  const rateIncrement = db.prepare(
+    "INSERT INTO limits(key,count,reset) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN limits.reset<? THEN 1 ELSE limits.count+1 END, reset=CASE WHEN limits.reset<? THEN excluded.reset ELSE limits.reset END RETURNING count",
+  );
+  const rateExpire = db.prepare("DELETE FROM limits WHERE reset<?");
+  let nextRateSweep = 0;
   const rate = (key, max, window) => {
     const now = Date.now();
-    db.prepare("DELETE FROM limits WHERE reset<?").run(now);
-    db.prepare(
-      "INSERT INTO limits VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1",
-    ).run(key, now + window);
-    if (db.prepare("SELECT count FROM limits WHERE key=?").get(key).count > max)
-      throw fail("Please wait before trying again.", 429);
+    if (now >= nextRateSweep) {
+      rateExpire.run(now);
+      nextRateSweep = now + 1000;
+    }
+    const row = rateIncrement.get(key, now + window, now, now);
+    if (row.count > max) throw fail("Please wait before trying again.", 429);
   };
   const requestLimits = createRequestLimits(store, rate);
+  installHubControl(app, {
+    config,
+    store,
+    pool,
+    requestLimits,
+    performance: () => ({ main: performanceMetrics.snapshot(),
+      nodeControl: pool.controlStats(), nodes: pool.performanceStats() }),
+    verifyAdministrator: async ({ password, code }) => {
+      const admin = get("admin");
+      if (
+        !admin ||
+        typeof password !== "string" ||
+        password.length > 128 ||
+        !(await argon2.verify(admin.password, password))
+      )
+        throw fail("Verification failed.", 401);
+      const value = String(code || ""),
+        hash = digest(value);
+      if (admin.recovery.includes(hash)) {
+        admin.recovery = admin.recovery.filter((x) => x !== hash);
+        set("admin", admin);
+        audit("admin.recovery_used");
+      } else if (!verifyOtp(unseal(admin.secret), value))
+        throw fail("Verification failed. Use a fresh authenticator code.", 401);
+      audit("admin.hub_verified");
+    },
+  });
   const limitIp = (req, key) => requestLimits.limit(req.ip, key);
   const ip = (req) => digest(normalizeClientIp(req.ip));
   const name = secure ? "__Host-atlas-admin" : "atlas-admin";
@@ -180,15 +265,25 @@ export async function createApp(options = {}) {
     return true;
   }
   app.addHook("onRequest", async (req, reply) => {
-    const controllerEndpoints = config.opaqueRuntimeEnabled || config.sameOriginRuntime
-      ? [
-          originFor(req),
-          ...pool
-            .list()
-            .filter((n) => n.id !== "local")
-            .map((n) => n.endpoint),
-        ]
-      : [];
+    // Marker responses never render a document. Do not enumerate/prune every
+    // browsing lease and node twice for each synchronous cookie/storage result.
+    // Authentication and document-owner checks run unchanged in later hooks.
+    const markerPath = req.url.split("?")[0];
+    if (markerPath === "/health" ||
+        (req.method === "POST" && /^\/browse\/(?:cookies\/result|storage\/commit)\/[A-Za-z0-9_-]{43}$/.test(markerPath))) {
+      reply.header("Referrer-Policy", "no-referrer")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("X-Frame-Options", "DENY")
+        .header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+      return;
+    }
+    // CSP needs endpoint strings, not live session counters or lease pruning.
+    // Keep the exact current endpoint allowlist without global SQL maintenance.
+    const controllerNodeEndpoints = db.prepare("SELECT endpoint FROM nodes WHERE id != 'local' ORDER BY id").all().map(n => n.endpoint);
+    const controllerEndpoints =
+      config.opaqueRuntimeEnabled || config.profileRuntimeEnabled || config.sameOriginRuntime
+        ? [originFor(req), ...controllerNodeEndpoints]
+        : [];
     const controllerConnect = controllerEndpoints
       .flatMap((value) => {
         const url = new URL(value),
@@ -206,22 +301,24 @@ export async function createApp(options = {}) {
       );
     reply.header(
       "Content-Security-Policy",
-      `default-src 'self'; script-src 'self'${config.opaqueRuntimeEnabled ? " 'wasm-unsafe-eval'" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ${controllerConnect}; frame-src 'self' ${config.runtimeOrigin} ${pool
-        .list()
-        .filter((n) => n.id !== "local")
-        .map((n) => n.endpoint)
-        .join(
-          " ",
-        )}; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors ${req.url.startsWith("/games/") ? "'self'" : "'none'"}`,
+      `default-src 'self'; script-src 'self'${config.opaqueRuntimeEnabled || config.profileRuntimeEnabled ? " 'wasm-unsafe-eval'" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'${profileController ? " filesystem:" : ""} ${controllerConnect}; frame-src 'self' ${config.runtimeOrigin} ${controllerNodeEndpoints.join(" ")}; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors ${req.url.startsWith("/games/") ? "'self'" : "'none'"}`,
     );
-    reply.header(
+    if (!profileController) reply.header(
       "Permissions-Policy",
       `camera=(self "${config.runtimeOrigin}"), microphone=(self "${config.runtimeOrigin}"), geolocation=()`,
     );
     if (secure) reply.header("Strict-Transport-Security", "max-age=31536000");
     if (req.url.startsWith("/api/")) {
       reply.header("Cache-Control", "no-store");
-      if (req.url === "/api/nodes/heartbeat") return;
+      if (
+        req.url === "/api/nodes/heartbeat" ||
+        req.url === "/api/internal/hub/branches" ||
+        req.url === "/api/internal/hub/branch-transitions" ||
+        req.url === "/api/internal/hub/qualification-aliases" ||
+        req.url.split("?")[0].startsWith("/api/internal/hub/control") ||
+        req.url === "/api/internal/hub/endpoints"
+      )
+        return;
       if (req.headers.origin && req.headers.origin !== originFor(req))
         throw fail("Origin mismatch.", 403);
       if (
@@ -236,34 +333,80 @@ export async function createApp(options = {}) {
         session(req, !["GET", "HEAD", "OPTIONS"].includes(req.method));
         return;
       }
+      let profileSubject, ordinarySubject;
+      try {
+        profileSubject = await hubBranch.profileRateSubject(req);
+        if (!profileSubject) ordinarySubject = await hubBranch.ordinaryRateSubject(req);
+      }
+      catch (error) {
+        // Invalid/unauthorized attempts do not gain a profile-specific budget.
+        limitIp(req, "api");
+        throw error;
+      }
+      if (profileSubject) {
+        requestLimits.limitSubject(profileSubject.userId + "\0" + profileSubject.profileId, "profile-sync");
+        return;
+      }
+      if (ordinarySubject) {
+        req.verifiedRateSubject = ordinarySubject.userId + "\0" + ordinarySubject.profileId;
+        requestLimits.limitVerified(req.verifiedRateSubject, "api");
+        return;
+      }
       limitIp(req, "api");
     }
   });
   app.setErrorHandler((err, req, reply) =>
     reply.code(err.statusCode || 500).send(
-      req.url.split("?")[0] === "/api/browse/session" ||
-        req.url.split("?")[0] === "/runtime-config" ||
-        req.url.startsWith("/api/browse/controller/") ||
-        req.url.split("?")[0] === "/api/admin/nodes/controller-select"
-        ? connectionErrorBody(err)
-        : {
-            error: err.statusCode
-              ? err.message
-              : "The request could not be completed.",
-          },
+      req.url.startsWith("/api/hub/")
+        ? {
+            error: {
+              code:
+                typeof err.code === "string" && /^HUB_[A-Z_]+$/.test(err.code)
+                  ? err.code
+                  : "HUB_REQUEST_FAILED",
+              message: err.statusCode
+                ? err.message
+                : "The Hub request could not be completed.",
+            },
+          }
+        : req.url.split("?")[0] === "/api/browse/session" ||
+            req.url.split("?")[0] === "/runtime-config" ||
+            req.url.startsWith("/api/browse/controller/") ||
+            req.url.split("?")[0] === "/api/admin/nodes/controller-select"
+          ? connectionErrorBody(err)
+          : {
+              error: err.statusCode
+                ? err.message
+                : "The request could not be completed.",
+            },
     ),
   );
   app.get("/api/config", (req) => ({
     name: get("siteName") || "Atlas",
-    runtimeOrigin: config.sameOriginRuntime ? originFor(req) : config.runtimeOrigin,
+    runtimeOrigin: config.sameOriginRuntime
+      ? originFor(req)
+      : config.runtimeOrigin,
     ...(config.sameOriginRuntime ? { runtimePath: "/browse/runtime/" } : {}),
     engines: ["scramjet"],
     nodeRouting: config.nodesEnabled,
     runtimeProtocols: {
-      sameOrigin: { version: 1, activated: config.sameOriginRuntime === true, runtimePath: "/browse/runtime/" },
+      sameOrigin: {
+        version: 1,
+        activated: config.sameOriginRuntime === true,
+        runtimePath: "/browse/runtime/",
+      },
       opaque: {
         ...OPAQUE_RUNTIME_PROTOCOL,
         activated: config.opaqueRuntimeActivated === true && !!runtimeAssets,
+      },
+      profile: {
+        version: 2,
+        activated: config.profileRuntimeActivated === true && !!runtimeAssets,
+        documentOrigin: "same-origin",
+        ...(profileController ? {
+          engine: "scramjet-controller",
+          runtimePath: "/browse/runtime/",
+        } : {}),
       },
     },
   }));
@@ -588,24 +731,37 @@ export async function createApp(options = {}) {
   });
   app.post("/api/browse/session", async (req) => {
     limitIp(req, "browse");
-    return pool.operate(req.body || {}, originFor(req), config.runtimeOrigin);
+    return pool.operate(
+      req.body || {},
+      originFor(req),
+      config.runtimeOrigin,
+      req.hubGrant
+        ? { grant: req.hubGrant, validatedAt: req.hubValidatedAt }
+        : undefined,
+    );
   });
   app.delete("/api/browse/session", (req) => {
     pool.release(req.body?.session, originFor(req));
     return { ok: true };
   });
-  let frontendDocuments;
-  if (config.opaqueRuntimeEnabled) {
+  if (config.opaqueRuntimeEnabled || config.profileRuntimeEnabled) {
     frontendDocuments = installFrontendControllerAPI(app, {
       pool,
       originFor,
-      limitBrowse: (req) => limitIp(req, "browse"),
+      maxOwners: config.controllerOwnerLimit,
+      documentOrigin: config.profileRuntimeEnabled ? "same-origin" : "opaque",
+      runtimeTickets: profileController,
+      limitBrowse: (req) => req.verifiedRateSubject
+        ? requestLimits.limitVerified(req.verifiedRateSubject, "browse")
+        : limitIp(req, "browse"),
       administrator: session,
     });
     installReservedRendererHelper(app, {
       originFor,
-      authorizeReservation: (req, id) => frontendDocuments.rendererOwner(req, id),
-      validateReservation: binding => frontendDocuments.rendererOwnerValid(binding),
+      authorizeReservation: (req, id) =>
+        frontendDocuments.rendererOwner(req, id),
+      validateReservation: (binding) =>
+        frontendDocuments.rendererOwnerValid(binding),
     });
     installNativeResourceGateway(app, {
       originFor,
@@ -623,12 +779,19 @@ export async function createApp(options = {}) {
       }),
     });
   }
-  if (config.opaqueRuntimeEnabled && config.opaqueAssetsDir) {
+  if (
+    (config.opaqueRuntimeEnabled && config.opaqueAssetsDir) ||
+    (config.profileRuntimeEnabled && config.profileAssetsDir)
+  ) {
     runtimeAssets = installOpaqueRuntimeAssets(app, {
-      directory: config.opaqueAssetsDir,
+      directory: config.profileRuntimeEnabled ? config.profileAssetsDir : config.opaqueAssetsDir,
+      documentOrigin: config.profileRuntimeEnabled ? "same-origin" : "opaque",
+      documents: !profileController,
+      ...(profileController ? { engine: "scramjet-controller" } : {}),
       originFor,
       nativeResourceOrigin: frontendDocuments.resourceOrigin,
       rendererHelperPrefix: frontendDocuments.rendererPrefix,
+      nestedFramePolicy: frontendDocuments.nestedPolicy,
       relayOrigins: (req) => [
         originFor(req),
         ...pool
@@ -651,6 +814,11 @@ export async function createApp(options = {}) {
   app.get("/api/admin/nodes", (req) => {
     session(req);
     return pool.list({ includeConcurrency: true });
+  });
+  app.get("/api/admin/performance", (req) => {
+    session(req);
+    return { main: performanceMetrics.snapshot(), nodeControl: pool.controlStats(),
+      nodes: pool.performanceStats() };
   });
   app.get("/api/admin/ccu", (req) => {
     session(req);
@@ -683,9 +851,12 @@ export async function createApp(options = {}) {
   if (config.sameOriginRuntime)
     await installSameOriginRuntime(app, {
       directory: config.runtimeAssetsDir || resolve("dist/runtime"),
+      profileRuntimeEngine: profileController ? "scramjet-controller" : undefined,
       originFor,
       runtimeConfig: (ticket, origin) => pool.sameOriginConfig(ticket, origin),
-      fixture: process.env.NODE_ENV === "test" && process.env.ATLAS_TEST_FIXTURE === "1",
+      fixture:
+        process.env.NODE_ENV === "test" &&
+        process.env.ATLAS_TEST_FIXTURE === "1",
     });
   if (existsSync(config.staticDir)) {
     await app.register(fastifyStatic, { root: config.staticDir });
@@ -693,7 +864,15 @@ export async function createApp(options = {}) {
       if (
         req.method !== "GET" ||
         req.url.startsWith("/api/") ||
-        (config.sameOriginRuntime && ["/~/", "/runtime/", "/controller/", "/clients/", "/bootstrap/", "/browse/runtime/"].some(prefix => req.url.startsWith(prefix))) ||
+        (config.sameOriginRuntime &&
+          [
+            "/~/",
+            "/runtime/",
+            "/controller/",
+            "/clients/",
+            "/bootstrap/",
+            "/browse/runtime/",
+          ].some((prefix) => req.url.startsWith(prefix))) ||
         (req.url.startsWith("/_control/") &&
           req.url.split("?")[0] !== config.adminPath)
       )

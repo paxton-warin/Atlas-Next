@@ -1,11 +1,31 @@
 import { test, expect, type Page } from "@playwright/test";
+
+async function navigate(page: Page, name: string) {
+  const menu = page.getByRole("button", { name: "Menu", exact: true });
+  const mobile = await menu.isVisible();
+  if (mobile && (await menu.getAttribute("aria-expanded")) !== "true")
+    await menu.click();
+  await page
+    .getByRole("navigation", { name: "Atlas pages" })
+    .getByRole("button", { name, exact: true })
+    .click();
+  if (mobile) await expect(menu).toHaveAttribute("aria-expanded", "false");
+}
 async function home(page: Page) {
   await page.goto("/");
   await page.getByRole("button", { name: "Use defaults" }).click();
 }
 async function launch(page: Page, url = "http://127.0.0.1:4199/fixture") {
-  await page.getByLabel("Search the web").fill(url);
-  await page.getByRole("button", { name: "Search", exact: true }).click();
+  const hero = page.getByLabel("Search the web");
+  const address = page.getByLabel("Address bar");
+  await expect(hero.or(address)).toBeVisible();
+  if (await hero.isVisible()) {
+    await hero.fill(url);
+    await page.getByRole("button", { name: "Search", exact: true }).click();
+  } else {
+    await address.fill(url);
+    await address.press("Enter");
+  }
 }
 const website = (page: Page) =>
   page
@@ -60,10 +80,7 @@ for (const engine of ["scramjet"]) {
       .getByRole("button", { name: "Browser", exact: true })
       .click();
     await page.getByRole("button", { name: /Top tabs/ }).click();
-    await page
-      .locator(".main-nav")
-      .getByRole("button", { name: "Browser", exact: true })
-      .click();
+    await navigate(page, "Browser");
     await expect(page.locator(".horizontal-tabs .tab-favicon")).toBeVisible();
     await page.screenshot({ path: `evidence/favicons/${engine}-tabs.png` });
     await page.reload();
@@ -107,10 +124,7 @@ test("welcome wizard, polished home, themes and saved preferences", async ({
   await page.getByRole("button", { name: "Open Atlas", exact: true }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Theme Moss" }).click();
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "Browser", exact: true })
-    .click();
+  await navigate(page, "Browser");
   await expect(
     page.getByRole("heading", { name: /^Good (morning|afternoon|evening)\./ }),
   ).toBeVisible();
@@ -131,24 +145,24 @@ test("welcome wizard, polished home, themes and saved preferences", async ({
     ),
   ).toBe("forest");
 });
-test("new tab keeps subtle borders and the hero without a wide sidebar", async ({
+test("new tab follows V2.1 flat surfaces, compact greeting and expandable rail", async ({
   page,
 }) => {
   await page.clock.install({ time: new Date("2026-09-11T16:00:00Z") });
   await home(page);
-  await expect(page.getByLabel("Atlas version 0.1.1")).toHaveText("v0.1.1");
+  await expect(page.getByLabel("Atlas version 1.0")).toHaveText("v1.0");
   await expect(page.locator(".shortcut-target")).toHaveCount(4);
   await expect(
     page.locator(".shortcut-target").filter({ hasText: "Discord" }),
   ).toHaveCount(0);
-  await expect(page.locator(".home-hero h1")).toHaveCSS("font-size", "80px");
+  await expect(page.locator(".home-hero h1")).toHaveCSS("font-size", "23px");
   await expect(page.locator(".main-panel")).toHaveCSS(
     "border-top-width",
-    "1px",
+    "0px",
   );
   await expect(page.locator(".main-panel")).toHaveCSS(
     "border-top-left-radius",
-    "12px",
+    "0px",
   );
   for (const selector of [
     ".sidebar",
@@ -158,24 +172,26 @@ test("new tab keeps subtle borders and the hero without a wide sidebar", async (
   ]) {
     await expect(page.locator(selector).first()).toHaveCSS(
       "border-top-width",
-      "1px",
+      "0px",
     );
   }
   await expect(page.locator(".shortcut-target > span").first()).toHaveCSS(
     "width",
-    "52px",
+    "44px",
   );
-  await expect(page.locator(".hero-search")).toHaveCSS("min-height", "60px");
+  await expect(page.locator(".hero-search")).toHaveCSS("min-height", "48px");
   await expect(page.locator(".main-panel")).toHaveCSS(
     "background-color",
-    "rgba(0, 0, 0, 0)",
+    await page
+      .locator(".atlas")
+      .evaluate((el) => getComputedStyle(el).backgroundColor),
   );
-  await expect(page.locator(".sidebar")).toHaveCSS("width", "44px");
+  await expect(page.locator(".topbar")).toHaveCSS("width", "56px");
   await expect(page.getByLabel("Address bar")).toHaveCount(0);
   await page.keyboard.press("Control+k");
   await expect(page.getByLabel("Search the web")).toBeFocused();
   await page.getByRole("button", { name: "Expand tabs", exact: true }).click();
-  await expect(page.locator(".sidebar")).toHaveCSS("width", "180px");
+  await expect(page.locator(".topbar")).toHaveCSS("width", "232px");
   await page.reload();
   await expect(
     page.getByRole("button", { name: "Collapse tabs", exact: true }),
@@ -193,9 +209,7 @@ test("new tab keeps subtle borders and the hero without a wide sidebar", async (
   await page.getByRole("button", { name: "New tab", exact: true }).click();
   await expect(page.locator(".home-hero h1")).toBeVisible();
   await expect(page.locator(".browser-toolbar")).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Atlas fixture", exact: true })
-    .click();
+  await page.getByRole("tab", { name: "Atlas fixture", exact: true }).click();
   await expect(
     website(page).getByRole("heading", { name: "Proxy fixture ready" }),
   ).toBeVisible();
@@ -240,7 +254,7 @@ test("new tab retires the old built-in Discord shortcut but preserves custom sho
     );
   }, custom);
   await page.goto("/");
-  await expect(page.getByLabel("Atlas version 0.1.1")).toHaveText("v0.1.1");
+  await expect(page.getByLabel("Atlas version 1.0")).toHaveText("v1.0");
   await expect(page.locator(".shortcut-target")).toHaveCount(2);
   await expect(
     page.locator(".shortcut-target").filter({ hasText: "My docs" }),
@@ -268,10 +282,7 @@ test("new tab customization, light mode, small screens and reduced motion", asyn
   await page.getByRole("button", { name: "Customize", exact: true }).click();
   await page.getByRole("button", { name: "Theme Dune" }).click();
   await page.getByRole("button", { name: "Mode light" }).click();
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "Browser", exact: true })
-    .click();
+  await navigate(page, "Browser");
   await expect(page.locator("html")).toHaveAttribute("data-mode", "light");
   await page.mouse.move(0, 0);
   await page.screenshot({ path: "evidence/newtab/light.png" });
@@ -307,10 +318,7 @@ test("new tab customization, light mode, small screens and reduced motion", asyn
   }
   await page.getByRole("button", { name: "Customize", exact: true }).click();
   await page.getByRole("button", { name: "Minimal", exact: true }).click();
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "Browser", exact: true })
-    .click();
+  await navigate(page, "Browser");
   await expect(page.locator(".ambient")).toHaveClass("ambient solid");
   await expect(page.locator(".ambient")).toHaveCSS("background-image", "none");
 });
@@ -392,10 +400,7 @@ test("Scramjet actual HTTP, cookies, storage, fetch, WebSocket and stable frame"
     .getAttribute("src");
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Theme Dune" }).click();
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "Browser", exact: true })
-    .click();
+  await navigate(page, "Browser");
   await expect(site.locator("#stored")).toHaveText("persisted");
   expect(
     await page
@@ -443,7 +448,7 @@ test("mobile layout has no horizontal overflow", async ({ page }) => {
     animations: "disabled",
     path: "evidence/home-mobile.png",
   });
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await navigate(page, "Settings");
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -627,11 +632,34 @@ test("single admin enrollment, verified ticket reply, catalog, logout and recove
     .locator(".ticket-row")
     .filter({ has: page.locator("strong").getByText("2048", { exact: true }) })
     .click();
-  await page.getByLabel("Visible in catalog").uncheck();
-  await page.getByRole("button", { name: "Save game", exact: true }).click();
-  await expect(
-    page.getByText("Puzzle · Hidden", { exact: true }),
-  ).toBeVisible();
+  try {
+    await page.getByLabel("Visible in catalog").uncheck();
+    await page.getByRole("button", { name: "Save game", exact: true }).click();
+    await expect(
+      page.getByText("Puzzle · Hidden", { exact: true }),
+    ).toBeVisible();
+  } finally {
+    // This server is shared by the whole serial browser suite. Restore the
+    // actual catalog through the same owner UI, not a later presentation mock.
+    if (!(await page.getByLabel("Visible in catalog").isVisible())) {
+      await page
+        .locator(".ticket-row")
+        .filter({
+          has: page.locator("strong").getByText("2048", { exact: true }),
+        })
+        .click();
+    }
+    await page.getByLabel("Visible in catalog").check();
+    await page.getByRole("button", { name: "Save game", exact: true }).click();
+    await expect
+      .poll(
+        async () =>
+          (await (await page.request.get("/api/catalog")).json()).find(
+            (item: any) => item.id === "2048",
+          )?.enabled,
+      )
+      .toBe(1);
+  }
   await page.getByLabel("Filter owner catalog").selectOption("app");
   await page.getByLabel("Search owner catalog").fill("Spotify");
   await page
@@ -927,7 +955,7 @@ test("compact browser, plain labels and focus mode preserve the loaded website",
     site.getByRole("heading", { name: "Proxy fixture ready" }),
   ).toBeVisible();
   const bar = await page.locator(".browser-toolbar").boundingBox();
-  expect(bar!.height).toBeLessThanOrEqual(45);
+  expect(bar!.height).toBe(48);
   await page.getByRole("button", { name: "Enter focus mode" }).click();
   await expect(page.locator(".topbar")).toBeHidden();
   await expect(

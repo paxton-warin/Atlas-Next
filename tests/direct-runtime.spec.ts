@@ -1,4 +1,5 @@
 import { test, expect, type Page, type BrowserContext } from "@playwright/test";
+import { openLegacyStandalone } from "./popout-fixture";
 const site = (page: Page) =>
   page.frameLocator('iframe[title="Proxied website"]');
 async function popout(page: Page, context: BrowserContext) {
@@ -16,10 +17,7 @@ async function popout(page: Page, context: BrowserContext) {
       .frameLocator('iframe[title="Proxied website"]')
       .getByRole("heading", { name: "Proxy fixture ready" }),
   ).toBeVisible();
-  const opened = context.waitForEvent("page");
-  await page.getByRole("button", { name: "Connection options" }).click();
-  await page.getByRole("menuitem", { name: "Open direct node tab" }).click();
-  const direct = await opened;
+  const direct = await openLegacyStandalone(page, context);
   await expect(
     site(direct).getByRole("heading", { name: "Proxy fixture ready" }),
   ).toBeVisible();

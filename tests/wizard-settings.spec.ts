@@ -1,4 +1,16 @@
 import { test, expect, type Page } from "@playwright/test";
+
+async function navigate(page: Page, name: string) {
+  const menu = page.getByRole("button", { name: "Menu", exact: true });
+  const mobile = await menu.isVisible();
+  if (mobile && (await menu.getAttribute("aria-expanded")) !== "true")
+    await menu.click();
+  await page
+    .getByRole("navigation", { name: "Atlas pages" })
+    .getByRole("button", { name, exact: true })
+    .click();
+  if (mobile) await expect(menu).toHaveAttribute("aria-expanded", "false");
+}
 import { readFileSync } from "node:fs";
 const presets = [
   "Atlas",
@@ -23,7 +35,7 @@ const finish = async (page: Page) => {
     .click();
 };
 async function settingsTab(page: Page) {
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await navigate(page, "Settings");
   await page
     .locator(".settings-nav")
     .getByRole("button", { name: "Tab & icon", exact: true })

@@ -1,7 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { ArrowUpRight, Globe2, Search } from "lucide-react";
 import { api } from "./model";
-import { searchShortcutLabel } from "../../runtime/browser-shortcuts";
 
 // Atlas's existing suggestions provider is called through the current frontend origin.
 export default function SearchBox({
@@ -141,13 +140,9 @@ export default function SearchBox({
           }
         }}
       />
-      {toolbar ? (
-        <kbd>{searchShortcutLabel()}</kbd>
-      ) : (
-        <button aria-label="Search" type="submit">
-          <ArrowUpRight size={20} />
-        </button>
-      )}
+      <button aria-label={toolbar ? "Go to address" : "Search"} type="submit">
+        <ArrowUpRight size={toolbar ? 16 : 20} />
+      </button>
       {open && (
         <div
           className="search-suggestions"

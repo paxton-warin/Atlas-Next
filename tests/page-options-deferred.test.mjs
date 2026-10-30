@@ -20,7 +20,7 @@ test("deferred Page options has no menu entry, panel mount or menu state wiring"
   assert.match(menu, /Connection options/);
   assert.match(menu, /Session pinned/);
   assert.match(menu, /Reconnect node/);
-  assert.match(menu, /Open direct node tab/);
+  assert.doesNotMatch(menu, /Open direct node tab/);
   assert.match(read("App.tsx"), /<BrowsingOptions/);
   assert.match(read("Popout.tsx"), /<BrowsingOptions/);
 });

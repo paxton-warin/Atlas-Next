@@ -14,9 +14,11 @@ import { pathToFileURL } from "node:url";
 import Fastify from "fastify";
 import { buildOpaqueRuntime } from "../scripts/build-opaque-runtime.mjs";
 import { installOpaqueRuntimeAssets } from "../server/opaque-runtime-assets.mjs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { installHubBranch } from "../server/hub-branch.mjs";
 import { OPAQUE_HTTPENGINE_SOURCE_SHA256 } from "../server/runtime-capabilities.mjs";
-import { HTTP_ENGINE_ROTATION_SHA256 } from "../scripts/runtime-relay-rotation.mjs";
+import { HTTP_ENGINE_LIFECYCLE_SHA256, adaptHttpEngineLifecycle } from "../scripts/runtime-httpengine-lifecycle.mjs";
+import { adaptRelayCredentialRotation } from "../scripts/runtime-relay-rotation.mjs";
 test("opaque assets are reproducible, pin-checked and hash-allowlisted; dynamic relay CSP is never immutable", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "atlas-asset-manifest-"));
   const app = Fastify({ logger: false });
@@ -45,9 +47,14 @@ test("opaque assets are reproducible, pin-checked and hash-allowlisted; dynamic 
   assert.match(engine.toString(), /atlas_ws_send/);
   assert.equal(
     createHash("sha256")
-      .update(await readFile("runtime/public/clients/httpengine-client.js"))
+      // Units run before the application build. Derive the qualified normal
+      // engine from immutable input; generated public/dist assets are checked
+      // separately by the candidate build gate, not inherited from a workspace.
+      .update(adaptHttpEngineLifecycle(adaptRelayCredentialRotation(
+        await readFile("upstream/scramjet-ls-bypass/app/vendor/httpengine-client.js"),
+      )))
       .digest("hex"),
-    HTTP_ENGINE_ROTATION_SHA256,
+    HTTP_ENGINE_LIFECYCLE_SHA256,
   );
   let relays = ["https://first.node.example"];
   const assets = installOpaqueRuntimeAssets(app, {
@@ -130,4 +137,98 @@ test("production-image server tree imports and starts without build-only scripts
     (await app.inject("/api/config")).json().runtimeProtocols.opaque.activated,
     false,
   );
+});
+
+test("Hub-gated opaque pages load only manifest-hashed public bootstrap assets without a cookie", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "atlas-hub-bootstrap-cors-")),
+    app = Fastify();
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { force: true, recursive: true });
+  });
+  const manifest = await buildOpaqueRuntime({ outdir: directory }),
+    origin = "https://frontend.example";
+  await installHubBranch(app, {
+    config: {
+      appOrigin: origin,
+      hubOrigin: "https://hub.example",
+      hubBranchId: randomUUID(),
+      hubBranchSecret: "s".repeat(43),
+      hubUiOnlyLab: true,
+    },
+    originFor: () => origin,
+    seal: String,
+    unseal: String,
+  });
+  const assets = installOpaqueRuntimeAssets(app, {
+    directory,
+    originFor: () => origin,
+  });
+  for (const method of ["GET", "HEAD"]) {
+    const value = await app.inject({
+      method,
+      url: assets.bootstrap,
+      headers: { origin: "null" },
+    });
+    assert.equal(value.statusCode, 200, value.body);
+    assert.equal(value.headers["access-control-allow-origin"], "*");
+    assert.match(value.headers["content-type"], /application\/javascript/);
+  }
+  assert.equal(
+    (await app.inject({ url: "/api/hub/profile", headers: { origin: "null" } }))
+      .statusCode,
+    401,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        url: "/browse/frame/private_document_123456789",
+        headers: { origin: "null" },
+      })
+    ).statusCode,
+    401,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        url: "/browse/assets/arbitrary.js",
+        headers: { origin: "null" },
+      })
+    ).statusCode,
+    401,
+  );
+  assert.equal(
+    (
+      await app.inject({
+        url: "/browse/assets/document-0000000000000000.js",
+        headers: { origin: "null" },
+      })
+    ).statusCode,
+    404,
+  );
+  assert.equal(manifest.bootstrap, assets.bootstrap.split("/").at(-1));
+});
+
+
+test("prior storage workers remain explicit, hash-pinned and independently addressable", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "atlas-storage-worker-history-"));
+  const app = Fastify();
+  t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  const manifest = await buildOpaqueRuntime({ outdir: directory });
+  const bytes = Buffer.from("/* synthetic previous storage worker */");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const name = "storage-" + sha256.slice(0, 16) + ".js";
+  await writeFile(join(directory, name), bytes);
+  manifest.previousStorageWorkers = { [name]: { sha256 } };
+  await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
+  const active = installOpaqueRuntimeAssets(app, { directory, originFor: () => "https://frontend.example", documents: false });
+  assert.equal(active.workers.storage, "/browse/assets/" + manifest.workers.storage);
+  const old = await app.inject("/browse/assets/" + name);
+  assert.equal(old.statusCode, 200);
+  assert.equal(old.body, bytes.toString());
+  assert.match(old.headers["cache-control"], /immutable/);
+  assert.equal((await app.inject("/browse/assets/storage-ffffffffffffffff.js")).statusCode, 404);
+  await writeFile(join(directory, name), "tampered");
+  const rejected = Fastify(); t.after(() => rejected.close());
+  assert.throws(() => installOpaqueRuntimeAssets(rejected, { directory, originFor: () => "https://frontend.example", documents: false }), /hash mismatch/);
 });

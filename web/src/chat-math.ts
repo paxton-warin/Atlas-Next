@@ -1,36 +1,61 @@
-/** Normalize common model math delimiters without changing Markdown code examples. */
+import { unified } from "unified";
+import remarkParse from "remark-parse";
+
+const markdown = unified().use(remarkParse);
+type Span = { start: number; end: number };
+
+/** Normalize model delimiters using Markdown's actual code and container bounds. */
 export function normalizeMath(source: string): string {
-  let result = "",
-    i = 0;
-  while (i < source.length) {
-    const rest = source.slice(i);
-    if (i === 0 || source[i - 1] === "\n") {
-      const fence = /^( {0,3})(`{3,}|~{3,})[^\n]*\n/.exec(rest);
-      if (fence) {
-        const marker = fence[2][0],
-          length = fence[2].length;
-        const close = new RegExp(
-          `^ {0,3}${marker}{${length},}[ \\t]*(?:\\n|$)`,
-          "m",
-        );
-        const tail = rest.slice(fence[0].length),
-          end = close.exec(tail);
-        const count = end
-          ? fence[0].length + end.index + end[0].length
-          : rest.length;
-        result += rest.slice(0, count);
-        i += count;
-        continue;
-      }
-      // Indented Markdown code remains literal too.
-      if (/^( {4}|\t)/.test(rest)) {
-        const end = source.indexOf("\n", i);
-        const count = end < 0 ? source.length : end + 1;
-        result += source.slice(i, count);
-        i = count;
-        continue;
-      }
+  if (!/\\[([]|\$\$/.test(source)) return source;
+  const protectedSpans: Span[] = [],
+    containers: Array<Span & { prefix: string }> = [];
+  const tree = markdown.parse(source);
+  const visit = (
+    node: typeof tree | (typeof tree.children)[number],
+    nested = false,
+  ) => {
+    const start = node.position?.start.offset,
+      end = node.position?.end.offset;
+    if (start === undefined || end === undefined) return;
+    if (
+      ["code", "inlineCode", "html", "link", "image", "definition"].includes(
+        node.type,
+      )
+    ) {
+      protectedSpans.push({ start, end });
+      return;
     }
+    if (nested && ["paragraph", "heading"].includes(node.type)) {
+      const line = source.lastIndexOf("\n", start - 1) + 1;
+      // Keep quote markers; replace list markers with equally wide continuation spaces.
+      const prefix = source
+        .slice(line, start)
+        .replace(/(?:[-+*]|\d+[.)])[ \t]+/g, (match) =>
+          " ".repeat(match.length),
+        );
+      containers.push({ start, end, prefix });
+    }
+    if ("children" in node)
+      for (const child of node.children)
+        visit(
+          child as typeof node,
+          nested || node.type === "listItem" || node.type === "blockquote",
+        );
+  };
+  visit(tree);
+  protectedSpans.sort((a, b) => a.start - b.start);
+  let result = "",
+    i = 0,
+    protectedIndex = 0;
+  while (i < source.length) {
+    while (protectedSpans[protectedIndex]?.end <= i) protectedIndex++;
+    const protectedSpan = protectedSpans[protectedIndex];
+    if (protectedSpan && i >= protectedSpan.start) {
+      result += source.slice(i, protectedSpan.end);
+      i = protectedSpan.end;
+      continue;
+    }
+    const rest = source.slice(i);
     if (source[i] === "`") {
       const ticks = /^`+/.exec(rest)![0];
       let end = source.indexOf(ticks, i + ticks.length);
@@ -63,10 +88,26 @@ export function normalizeMath(source: string): string {
         if (slashes % 2 === 0) break;
         end = source.indexOf(delimiter, end + 2);
       }
-      if (end >= 0) {
-        const formula = source.slice(i + 2, end).trim();
+      if (end >= 0 && (!protectedSpan || end < protectedSpan.start)) {
+        const prefix =
+          containers.find(
+            (container) => i >= container.start && end <= container.end,
+          )?.prefix ?? "";
+        const formula = source
+          .slice(i + 2, end)
+          .split("\n")
+          .map((line, index) =>
+            index && prefix && line.startsWith(prefix)
+              ? line.slice(prefix.length)
+              : line,
+          )
+          .join("\n")
+          .trim();
+        const separation = `\n${prefix}\n`;
         result +=
-          delimiter === "\\)" ? `$${formula}$` : `\n\n$$\n${formula}\n$$\n\n`;
+          delimiter === "\\)"
+            ? `$${formula}$`
+            : `${separation}${prefix}$$\n${prefix}${formula.replaceAll("\n", "\n" + prefix)}\n${prefix}$$${separation}${prefix}`;
         i = end + 2;
         continue;
       }

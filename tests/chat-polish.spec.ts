@@ -1,4 +1,16 @@
 import { test, expect, type Page } from "@playwright/test";
+
+async function navigate(page: Page, name: string) {
+  const menu = page.getByRole("button", { name: "Menu", exact: true });
+  const mobile = await menu.isVisible();
+  if (mobile && (await menu.getAttribute("aria-expanded")) !== "true")
+    await menu.click();
+  await page
+    .getByRole("navigation", { name: "Atlas pages" })
+    .getByRole("button", { name, exact: true })
+    .click();
+  if (mobile) await expect(menu).toHaveAttribute("aria-expanded", "false");
+}
 import { resolve } from "node:path";
 async function ai(page: Page) {
   await page.route("**/api/ai/config", (route) =>
@@ -12,10 +24,7 @@ async function ai(page: Page) {
   );
   await page.goto("/");
   await page.getByRole("button", { name: "Use defaults" }).click();
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "AI", exact: true })
-    .click();
+  await navigate(page, "AI");
 }
 const reply = (content = "A complete reply.") =>
   [
@@ -60,10 +69,7 @@ test("chat titles summarize meaning once, persist, and leave replies responsive"
   await expect(page.locator(".chat-message.assistant")).toHaveCount(2);
   expect(titleCalls).toBe(1);
   await page.reload();
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "AI", exact: true })
-    .click();
+  await navigate(page, "AI");
   await page
     .locator(".chat-item")
     .getByRole("button", { name: "Healthy Tomato Plants", exact: true })
@@ -95,10 +101,7 @@ test("failed replies retry in place after cooldown, including after reload", asy
   await expect(page.getByRole("alert")).toContainText("minute");
   await expect(page.getByRole("button", { name: /Retry in/ })).toBeDisabled();
   await page.reload();
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "AI", exact: true })
-    .click();
+  await navigate(page, "AI");
   await page.locator(".chat-item").getByRole("button").first().click();
   await expect(page.locator(".chat-message.user")).toHaveCount(1);
   await page.getByRole("button", { name: "Retry reply", exact: true }).click();
@@ -157,10 +160,7 @@ test("document attachments extract text locally, preview, remove and persist", a
     page.locator(".chat-attachments.sent pre").first(),
   ).toContainText("PDF fixture project notes");
   await page.reload();
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "AI", exact: true })
-    .click();
+  await navigate(page, "AI");
   await page.locator(".chat-item").getByRole("button").first().click();
   await expect(page.locator(".chat-attachments.sent")).toContainText(
     "chat-text.docx",
@@ -261,9 +261,6 @@ test("late title completion never resurrects a deleted conversation", async ({
   release();
   await expect(page.locator(".chat-item")).toHaveCount(0);
   await page.reload();
-  await page
-    .locator(".main-nav")
-    .getByRole("button", { name: "AI", exact: true })
-    .click();
+  await navigate(page, "AI");
   await expect(page.locator(".chat-item")).toHaveCount(0);
 });

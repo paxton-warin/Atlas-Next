@@ -1,3 +1,4 @@
+import { createOpaquePopupClient } from "./opaque-popups.ts";
 /** Self-boot inside the browser-enforced opaque document. Trusted assets and
  * original-document ports arrive before website scripts; parent DOM injection,
  * native service workers and relay credentials are not used here. The resource
@@ -14,7 +15,11 @@ import {
   installSandboxIndexedDB,
 } from "./sandbox-idb.ts";
 import { createSandboxDocumentCookie } from "./sandbox-document-cookie.ts";
-import { captureOpaqueCacheNatives, createOpaqueCaches } from "./opaque-caches.ts";
+import {
+  captureOpaqueCacheNatives,
+  createOpaqueCaches,
+} from "./opaque-caches.ts";
+import { createOpaqueNestedFrames } from "./opaque-nested-frames.ts";
 import { createOpaqueRendererClient } from "./opaque-renderer-client.ts";
 import { installOpaqueRenderer } from "./opaque-renderer.ts";
 import { createOpaqueResourceGraph } from "./opaque-resource-graph.ts";
@@ -23,7 +28,10 @@ import { createOpaqueXMLHttpRequest } from "./opaque-xhr.ts";
 import { createOpaqueWebSocket } from "./opaque-websocket.ts";
 import { createNativeResourceClient } from "./native-resource-owner.ts";
 import { installDocumentControls } from "./document-controls.ts";
-import { captureOpaqueFormNatives, installOpaqueForms } from "./opaque-forms.ts";
+import {
+  captureOpaqueFormNatives,
+  installOpaqueForms,
+} from "./opaque-forms.ts";
 import {
   createOriginalDocumentPolicy,
   originalExecutionCSP,
@@ -31,7 +39,12 @@ import {
 import { captureOriginalTrustedTypes } from "./original-trusted-types.ts";
 import { createOpaqueWorkerManager } from "./opaque-workers.ts";
 import { createOpaqueWorkerGrants } from "./opaque-worker-grants.ts";
-declare const __OPAQUE_WORKER_BOOTSTRAP__:string;
+import {
+  assertDocumentOrigin,
+  documentContentPolicies,
+  type DocumentOrigin,
+} from "./document-origin.ts";
+declare const __OPAQUE_WORKER_BOOTSTRAP__: string;
 import {
   describeDocumentBootFailure,
   type DocumentBootStage,
@@ -59,22 +72,36 @@ export function installOpaqueDocument(options: {
   global: Window & typeof globalThis;
   core: any;
   wasm: Uint8Array;
+  documentOrigin?: DocumentOrigin;
 }) {
   const owner = options.global;
-  if (owner.origin !== "null")
-    throw new TypeError("Opaque document origin required");
+  const documentOrigin = assertDocumentOrigin(owner, options.documentOrigin);
   const document = owner.document,
-    workerBootstrapSource=typeof __OPAQUE_WORKER_BOOTSTRAP__==="string"?__OPAQUE_WORKER_BOOTSTRAP__:undefined,
-    workerModule=workerBootstrapSource?new owner.WebAssembly.Module(options.wasm as BufferSource):undefined,
+    workerBootstrapSource =
+      typeof __OPAQUE_WORKER_BOOTSTRAP__ === "string"
+        ? __OPAQUE_WORKER_BOOTSTRAP__
+        : undefined,
+    workerModule = workerBootstrapSource
+      ? new owner.WebAssembly.Module(options.wasm as BufferSource)
+      : undefined,
     formNatives = captureOpaqueFormNatives(owner),
     trustedTypes = captureOriginalTrustedTypes(owner),
     activeDocument = captureOpaqueDocumentIdentity(owner),
+    nativeWindowOpen = owner.open.bind(owner),
+    nativePopupOpener = owner.opener as Window | null,
+    nativeActivation = owner.navigator.userActivation,
+    activationGetter = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(owner.navigator.userActivation),
+      "isActive",
+    )!.get!,
     nativeOpen = owner.Document.prototype.open.bind(document),
     nativeWrite = owner.Document.prototype.write.bind(document),
     nativeClose = owner.Document.prototype.close.bind(document),
     nativeAdd = owner.addEventListener.bind(owner),
     nativeRemove = owner.removeEventListener.bind(owner),
     nativeApply = owner.Reflect.apply,
+    nativeDispatch = owner.EventTarget.prototype.dispatchEvent,
+    NativeMessageEvent = owner.MessageEvent,
     nativeMessageData = Object.getOwnPropertyDescriptor(
       owner.MessageEvent.prototype,
       "data",
@@ -100,7 +127,12 @@ export function installOpaqueDocument(options: {
     Response: owner.Response,
     Headers: owner.Headers,
   };
-  const workerNatives={Worker:owner.Worker,Blob:owner.Blob,createObjectURL:owner.URL.createObjectURL.bind(owner.URL),revokeObjectURL:owner.URL.revokeObjectURL.bind(owner.URL)};
+  const workerNatives = {
+    Worker: owner.Worker,
+    Blob: owner.Blob,
+    createObjectURL: owner.URL.createObjectURL.bind(owner.URL),
+    revokeObjectURL: owner.URL.revokeObjectURL.bind(owner.URL),
+  };
   let claimed = false,
     disposed = false;
   const cleanup: (() => void)[] = [];
@@ -143,6 +175,9 @@ export function installOpaqueDocument(options: {
     let initialized = false,
       contentWritten = false;
     let renderer: ReturnType<typeof createOpaqueRendererClient> | undefined;
+    let nested: ReturnType<typeof createOpaqueNestedFrames> | undefined;
+    let popups: ReturnType<typeof createOpaquePopupClient> | undefined;
+    let controllerWindow: Window = owner.top!;
     let pageControls: ReturnType<typeof installDocumentControls> | undefined,
       pageSequence = 0;
     let permitResolve: (() => void) | undefined,
@@ -152,6 +187,51 @@ export function installOpaqueDocument(options: {
       const data = nativeApply(nativeMessageData, event, []);
       if (disposed || data?.protocol !== 2 || data.documentId !== documentId)
         return;
+      if (
+        initialized &&
+        contentWritten &&
+        data.type === "window-message-data"
+      ) {
+        if (typeof data.origin !== "string" || !data.source) return;
+        let source: Window = owner;
+        try {
+          if (
+            Number.isInteger(data.source.ancestorDepth) &&
+            data.source.ancestorDepth >= 1 &&
+            data.source.ancestorDepth <= 8
+          ) {
+            for (let i = 0; i < data.source.ancestorDepth; i++)
+              source = source.parent;
+            if (source === controllerWindow) return;
+          } else if (
+            Array.isArray(data.source.childPath) &&
+            data.source.childPath.length >= 1 &&
+            data.source.childPath.length <= 8
+          ) {
+            for (const slot of data.source.childPath) {
+              if (!Number.isInteger(slot) || slot < 0 || slot >= 32) return;
+              source = source.frames[slot];
+              if (!source) return;
+            }
+          } else if (data.source.popupOpener === true && nativePopupOpener)
+            source = nativePopupOpener;
+          else if (typeof data.source.popupId === "string") {
+            const popup = popups?.sourceWindow(data.source.popupId);
+            if (!popup) return;
+            source = popup;
+          } else return;
+          const delivery = new NativeMessageEvent("message", {
+            data: data.payload,
+            origin: data.origin,
+            source,
+            ports: [...event.ports],
+          });
+          nativeApply(nativeDispatch, owner, [delivery]);
+        } catch {}
+        return;
+      }
+      if (initialized && popups?.receive(data)) return;
+      if (initialized && nested?.receive(data)) return;
       if (initialized && renderer?.receive(data)) return;
       if (initialized && data.type === "permit-document-content") {
         permitResolve?.();
@@ -213,6 +293,7 @@ export function installOpaqueDocument(options: {
           endpoint: data.storageEndpoint,
           port: grant.storage,
           window: owner,
+          documentOrigin,
         });
         cleanup.push(storage.dispose);
         bootStage = "cookies";
@@ -234,15 +315,18 @@ export function installOpaqueDocument(options: {
           natives: networkNatives,
         });
         cleanup.push(network.dispose);
-        const caches = grant.caches instanceof owner.MessagePort
-          ? createOpaqueCaches({
-              port: grant.caches, documentId, documentURL: website.href,
-              fetch: network.fetch,
-              describeResponse: network.describeCacheResponse,
-              rememberResponse: network.rememberCacheResponse,
-              natives: captureOpaqueCacheNatives(owner),
-            })
-          : undefined;
+        const caches =
+          grant.caches instanceof owner.MessagePort
+            ? createOpaqueCaches({
+                port: grant.caches,
+                documentId,
+                documentURL: website.href,
+                fetch: network.fetch,
+                describeResponse: network.describeCacheResponse,
+                rememberResponse: network.rememberCacheResponse,
+                natives: captureOpaqueCacheNatives(owner),
+              })
+            : undefined;
         if (caches) cleanup.push(caches.dispose);
         bootStage = "native-enrollment";
         const nativeResources =
@@ -262,7 +346,7 @@ export function installOpaqueDocument(options: {
         const prefix = frontend + "/browse/logical/" + documentId + "/";
         const rewriter = createPinnedOpaqueRewriter({
           ...options,
-          wasmModule:workerModule,
+          wasmModule: workerModule,
           documentURL: website.href,
           prefix,
         });
@@ -270,7 +354,7 @@ export function installOpaqueDocument(options: {
         const originalPolicy = data.source
           ? createOriginalDocumentPolicy({
               documentURL: website.href,
-              contentPolicies: data.source.contentPolicies,
+              contentPolicies: documentContentPolicies(documentOrigin, data.source.contentPolicies),
             })
           : undefined;
         const graph = createOpaqueResourceGraph({
@@ -282,8 +366,12 @@ export function installOpaqueDocument(options: {
           natives,
           nativeResources,
           originalPolicy,
-          executionPolicy: originalPolicy
-            ? originalExecutionCSP(originalPolicy, data.nativeResourceOrigin,!!workerBootstrapSource)
+          executionPolicy: originalPolicy && documentOrigin === "opaque"
+            ? originalExecutionCSP(
+                originalPolicy,
+                data.nativeResourceOrigin,
+                !!workerBootstrapSource,
+              )
             : undefined,
         });
         cleanup.push(graph.dispose);
@@ -335,21 +423,171 @@ export function installOpaqueDocument(options: {
               })
             : undefined;
         if (sockets) cleanup.push(sockets.dispose);
-        const workerGrants=workerBootstrapSource?createOpaqueWorkerGrants({port:control,documentId}):undefined;
-        if(workerGrants)cleanup.push(workerGrants.dispose);
-        const workers=workerBootstrapSource&&workerGrants&&originalPolicy?createOpaqueWorkerManager({global:owner,documentURL:website.href,documentBaseURL:data.source?.baseURL??website.href,network,rewriter,coreSource:"",wasm:options.wasm,wasmModule:workerModule,runtimeModuleURL:"",bootstrapSource:workerBootstrapSource,parentPolicy:originalPolicy,prefix,natives:workerNatives,bindWorker:binding=>workerGrants.bind(binding)}):undefined;
-        if(workers)cleanup.push(workers.dispose);
+        const workerGrants = workerBootstrapSource
+          ? createOpaqueWorkerGrants({ port: control, documentId })
+          : undefined;
+        if (workerGrants) cleanup.push(workerGrants.dispose);
+        const workers =
+          workerBootstrapSource && workerGrants && originalPolicy
+            ? createOpaqueWorkerManager({
+                global: owner,
+                documentOrigin,
+                documentURL: website.href,
+                documentBaseURL: data.source?.baseURL ?? website.href,
+                network,
+                rewriter,
+                coreSource: "",
+                wasm: options.wasm,
+                wasmModule: workerModule,
+                runtimeModuleURL: "",
+                bootstrapSource: workerBootstrapSource,
+                parentPolicy: originalPolicy,
+                prefix,
+                natives: workerNatives,
+                bindWorker: (binding) => workerGrants.bind(binding),
+              })
+            : undefined;
+        if (workers) cleanup.push(workers.dispose);
         bootStage = "runtime";
+        const routes = new Map<
+          Window,
+          {
+            origin: string;
+            ancestorDepth?: number;
+            childRequestId?: number;
+            popupId?: string;
+            popupOpener?: boolean;
+          }
+        >();
+        const ancestorOrigins = data.ancestorOrigins ?? [];
+        if (
+          !Array.isArray(ancestorOrigins) ||
+          ancestorOrigins.length > 8 ||
+          ancestorOrigins.some(
+            (v: unknown) =>
+              typeof v !== "string" ||
+              !/^https?:$/.test(new URL(v).protocol) ||
+              new URL(v).origin !== v,
+          )
+        )
+          throw new TypeError("Invalid logical ancestors");
+        if (data.popupContext === true) {
+          const depth = data.controllerOpenerDepth;
+          if (!Number.isInteger(depth) || depth < 1 || depth > 8)
+            throw new TypeError("Invalid popup controller depth");
+          let controller: Window | undefined = owner.top!;
+          for (let i = 0; i < depth; i++) controller = controller?.opener?.top;
+          if (!controller || controller === owner.top)
+            throw new TypeError("Popup controller is missing");
+          controllerWindow = controller;
+        }
+        let parentWindow: Window = owner,
+          topWindow: Window = owner,
+          ancestor: Window = owner;
+        for (const [index, origin] of ancestorOrigins.entries()) {
+          ancestor = ancestor.parent;
+          if (ancestor === controllerWindow)
+            throw new TypeError("Logical ancestor reached privileged frontend");
+          routes.set(ancestor, { origin, ancestorDepth: index + 1 });
+          if (index === 0) parentWindow = ancestor;
+          topWindow = ancestor;
+        }
+        if (data.openerOrigin) {
+          const origin = new URL(data.openerOrigin);
+          if (
+            !nativePopupOpener ||
+            origin.origin !== data.openerOrigin ||
+            !/^https?:$/.test(origin.protocol)
+          )
+            throw new TypeError("Invalid popup opener");
+          routes.set(nativePopupOpener, {
+            origin: origin.origin,
+            popupOpener: true,
+          });
+        }
+        popups = createOpaquePopupClient({
+          window: owner,
+          documentId,
+          frontend,
+          documentURL: website.href,
+          open: nativeWindowOpen,
+          active: () =>
+            !disposed &&
+            nativeApply(activationGetter, nativeActivation, []) === true,
+          send,
+          registerWindow: (target, origin, popupId) => {
+            if (origin) routes.set(target, { origin, popupId });
+            else routes.delete(target);
+          },
+          navigate: (url) =>
+            send({ protocol: 2, documentId, type: "navigate", url }),
+        });
+        popups.receive({
+          type: "popup-pool",
+          entries: data.popupEntries ?? [],
+        });
+        cleanup.push(popups.dispose);
         const boot = bootOpaqueRuntimeClient({
           ...options,
+          documentOrigin,
           documentURL: website.href,
           prefix,
           network,
+          parentWindow,
+          topWindow,
+          open: popups.open,
+          messageWindow: (target) => {
+            const destination = routes.get(target);
+            if (!destination) return undefined;
+            return {
+              postMessage(
+                message: any,
+                targetOriginOrOptions: any = "/",
+                transfer?: Transferable[],
+              ) {
+                const targetOrigin =
+                  typeof targetOriginOrOptions === "string"
+                    ? targetOriginOrOptions
+                    : (targetOriginOrOptions?.targetOrigin ?? "/");
+                const allowed =
+                  targetOrigin === "*"
+                    ? "*"
+                    : targetOrigin === "/"
+                      ? website.origin
+                      : new URL(targetOrigin).origin;
+                if (allowed !== "*" && allowed !== destination.origin) return;
+                const ports =
+                  transfer ??
+                  (typeof targetOriginOrOptions === "object"
+                    ? targetOriginOrOptions?.transfer
+                    : undefined);
+                send(
+                  {
+                    protocol: 2,
+                    documentId,
+                    type: "window-message",
+                    targetOrigin: allowed,
+                    payload: message,
+                    ...(destination.ancestorDepth
+                      ? { ancestorDepth: destination.ancestorDepth }
+                      : destination.popupId
+                        ? { popupId: destination.popupId }
+                        : destination.popupOpener
+                          ? { popupOpener: true }
+                          : { childRequestId: destination.childRequestId }),
+                  },
+                  ports ?? [],
+                );
+              },
+            };
+          },
           localStorage: storage.localStorage,
           sessionStorage: storage.sessionStorage,
           cookies,
           trustedTypes,
-          installCaches: caches ? (_client, global) => caches.install(global) : undefined,
+          installCaches: caches
+            ? (_client, global) => caches.install(global)
+            : undefined,
           installIndexedDB: (_client, global) =>
             installSandboxIndexedDB(global, indexedDB),
           installXHR: (_client, global) =>
@@ -359,7 +597,14 @@ export function installOpaqueDocument(options: {
               value: xhr.XMLHttpRequest,
             }),
           installWebSocket: sockets ? () => sockets.install() : undefined,
-          installWorkers:workers?(_client,global)=>Object.defineProperty(global,"Worker",{configurable:true,writable:true,value:workers.Worker}):undefined,
+          installWorkers: workers
+            ? (_client, global) =>
+                Object.defineProperty(global, "Worker", {
+                  configurable: true,
+                  writable: true,
+                  value: workers.Worker,
+                })
+            : undefined,
           onNavigate: (url) =>
             send({ protocol: 2, documentId, type: "navigate", url }),
           sendSetCookie: async () => {
@@ -418,12 +663,60 @@ export function installOpaqueDocument(options: {
         if (disposed) return;
         bootStage = "write";
         nativeOpen();
-        if(data.rendererEnabled === true) {
-          renderer=createOpaqueRendererClient({window:owner,documentId,frontend,live:()=>!disposed&&activeDocument(),send});
+        if (data.rendererEnabled === true) {
+          renderer = createOpaqueRendererClient({
+            window: owner,
+            documentId,
+            frontend,
+            live: () => !disposed && activeDocument(),
+            send,
+          });
           cleanup.push(renderer.dispose);
-          const removeRenderer=installOpaqueRenderer(owner,boot.client,{fetchResource:async()=>{throw Error("RENDERER_TRUSTED_BROKER_REQUIRED")},reserveNavigation:(url,element)=>renderer!.reserve(url,element),report:()=>{}});
-          if(removeRenderer)cleanup.push(removeRenderer);
+          const removeRenderer = installOpaqueRenderer(owner, boot.client, {
+            fetchResource: async () => {
+              throw Error("RENDERER_TRUSTED_BROKER_REQUIRED");
+            },
+            reserveNavigation: (url, element) =>
+              renderer!.reserve(url, element),
+            report: () => {},
+          });
+          if (removeRenderer) cleanup.push(removeRenderer);
         }
+        if (data.nestedEnabled === true) {
+          nested = createOpaqueNestedFrames({
+            window: owner,
+            documentOrigin,
+            client: boot.client,
+            documentId,
+            frontend,
+            live: () => !disposed && activeDocument(),
+            send,
+            registerWindow: (target, origin, childRequestId) => {
+              if (origin) routes.set(target, { origin, childRequestId });
+              else routes.delete(target);
+            },
+          });
+          cleanup.push(nested.dispose);
+        }
+        if (data.nestedDocument === true)
+          nativeAdd(
+            "load",
+            (event: Event) => {
+              if (
+                event.isTrusted &&
+                contentWritten &&
+                !disposed &&
+                activeDocument()
+              )
+                send({
+                  protocol: 2,
+                  documentId,
+                  type: "document-content",
+                  phase: "loaded",
+                });
+            },
+            { once: true },
+          );
         pageControls = installDocumentControls({
           window: owner,
           documentId,
@@ -434,12 +727,28 @@ export function installOpaqueDocument(options: {
         });
         cleanup.push(pageControls.dispose);
         const forms = installOpaqueForms({
-          window: owner, documentURL:website.href, baseURL:data.source?.baseURL ?? website.href,
-          natives:formNatives, policy:originalPolicy,
-          forbiddenOrigins:[frontend,...(data.nativeResourceOrigin?[data.nativeResourceOrigin]:[])],
-          restoreURL:value=>value.startsWith(prefix)||value.startsWith(new URL(prefix).pathname)?rewriter.restoreURL(value):value,
-          liveDocument:()=>!disposed&&activeDocument(),
-          navigate:navigation=>send({protocol:2,documentId,type:"form-navigation",navigation}),
+          window: owner,
+          documentURL: website.href,
+          baseURL: data.source?.baseURL ?? website.href,
+          natives: formNatives,
+          policy: originalPolicy,
+          forbiddenOrigins: [
+            frontend,
+            ...(data.nativeResourceOrigin ? [data.nativeResourceOrigin] : []),
+          ],
+          restoreURL: (value) =>
+            value.startsWith(prefix) ||
+            value.startsWith(new URL(prefix).pathname)
+              ? rewriter.restoreURL(value)
+              : value,
+          liveDocument: () => !disposed && activeDocument(),
+          navigate: (navigation) =>
+            send({
+              protocol: 2,
+              documentId,
+              type: "form-navigation",
+              navigation,
+            }),
         });
         cleanup.push(forms.dispose);
         trustedTypes.write(document, html);
