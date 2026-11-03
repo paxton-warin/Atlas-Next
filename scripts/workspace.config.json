@@ -1,0 +1,21 @@
+{
+  "schema": "atlas-monorepo-v1",
+  "description": "One Git repository and root command interface. Dependency graphs intentionally remain isolated to preserve deployed browser and Hub resolutions.",
+  "components": [
+    {
+      "id": "browser",
+      "directory": ".",
+      "packageName": "atlas-next",
+      "lockfile": "pnpm-lock.yaml",
+      "lockfileSha256": "60aa47f1f48f4daacce64bb71aa79b9f55c316f8172e0d8b878daca4148826e7"
+    },
+    {
+      "id": "hub",
+      "directory": "dispenser",
+      "packageName": "atlas-link-dispenser",
+      "lockfile": "dispenser/pnpm-lock.yaml",
+      "lockfileSha256": "42136a7f331cf79702fdc1b0be20e0078133ca499bf525c1c87a1346791f1c1a"
+    }
+  ],
+  "lockfilePolicy": "The consolidation changes no dependency versions. Update these checksums only with a deliberate dependency-update change; install/build/run do not rewrite them."
+}

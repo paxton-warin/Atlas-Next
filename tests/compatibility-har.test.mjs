@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { summarizeHar } from "../scripts/analyze-compatibility-har.mjs";
+import { summarizeHar } from "../tools/diagnostics/analyze-compatibility-har.mjs";
 test("HAR summaries contain counts only, never authenticated URL/body/header values", () => {
   const marker = "PRIVATE-FIXTURE-CONTENT";
   const report = summarizeHar({

@@ -1,0 +1,79 @@
+[
+  {
+    "family": "Inter",
+    "file": "inter-latin.woff2",
+    "source": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf",
+    "sourceRevision": "47d54ca1ebb14fd864695f1d39dc734f39017c33",
+    "sourceSha256": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031",
+    "sha256": "d16965a1d36e3ac183d208b79ce607beacef26204a787a05054e86a4221d245b",
+    "bytes": 66388,
+    "license": "inter-OFL.txt",
+    "subset": "Latin + punctuation, arrows and common UI symbols; other scripts fall back to system fonts",
+    "axes": {
+      "opsz": [
+        14.0,
+        14.0,
+        32.0
+      ],
+      "wght": [
+        100.0,
+        400.0,
+        900.0
+      ]
+    }
+  },
+  {
+    "family": "Inter Tight",
+    "file": "intertight-latin.woff2",
+    "source": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/intertight/InterTight%5Bwght%5D.ttf",
+    "sourceRevision": "47d54ca1ebb14fd864695f1d39dc734f39017c33",
+    "sourceSha256": "b81b73dcb64df3c230cabade7df6c5773bf863233f24c9ee51087519f1f88b6f",
+    "sha256": "e9f9bdf2c37d5b6034977a775ecf95a68bd4e3c44dbbd546138ce5e471c106c5",
+    "bytes": 41704,
+    "license": "intertight-OFL.txt",
+    "subset": "Latin + punctuation, arrows and common UI symbols; other scripts fall back to system fonts",
+    "axes": {
+      "wght": [
+        100.0,
+        400.0,
+        900.0
+      ]
+    }
+  },
+  {
+    "family": "Lora",
+    "file": "lora-latin.woff2",
+    "source": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/lora/Lora%5Bwght%5D.ttf",
+    "sourceRevision": "47d54ca1ebb14fd864695f1d39dc734f39017c33",
+    "sourceSha256": "822a6621ccbe8d97d20ac88c1c41f5615c9c2c202eaa75f272cd452aac6475a7",
+    "sha256": "e982e7121aa0056be078fac9bc83a27643a06724a7c27ef4b1db9ceb855797bc",
+    "bytes": 34548,
+    "license": "lora-OFL.txt",
+    "subset": "Latin + punctuation, arrows and common UI symbols; other scripts fall back to system fonts",
+    "axes": {
+      "wght": [
+        400.0,
+        400.0,
+        700.0
+      ]
+    }
+  },
+  {
+    "family": "JetBrains Mono",
+    "file": "jetbrainsmono-latin.woff2",
+    "source": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf",
+    "sourceRevision": "47d54ca1ebb14fd864695f1d39dc734f39017c33",
+    "sourceSha256": "48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda",
+    "sha256": "cb4335b45bdaad1c9434b8db0ebb99e6c93868177d0e5bef78ccf37499e3cd99",
+    "bytes": 37960,
+    "license": "jetbrainsmono-OFL.txt",
+    "subset": "Latin + punctuation, arrows and common UI symbols; other scripts fall back to system fonts",
+    "axes": {
+      "wght": [
+        100.0,
+        400.0,
+        800.0
+      ]
+    }
+  }
+]

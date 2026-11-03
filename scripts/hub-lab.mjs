@@ -17,7 +17,7 @@ import { tmpdir, userInfo } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const hub = resolve(root, "../Atlas-Link-Dispenser");
+const hub = resolve(root, "dispenser");
 export const ports = {
   hub: 4300,
   hubInternal: 4301,

@@ -7,9 +7,9 @@ import { spawnSync } from "node:child_process";
 function run(t, entry) {
   const dir = mkdtempSync(join(tmpdir(), "atlas-browser-summary-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  mkdirSync(join(dir, "evidence"));
+  mkdirSync(join(dir, "test-results"));
   writeFileSync(
-    join(dir, "evidence/browser-results.json"),
+    join(dir, "test-results/browser-results.json"),
     JSON.stringify({ specs: [{ title: "Fixture", tests: [entry] }] }),
   );
   return spawnSync(

@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+/** Compatibility guard for an already-running original supervisor. No HTTP timeout restarts. */
+import {readFileSync,writeFileSync,renameSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {join,dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {forwardingState,ownsSsh} from './relay-identity.mjs';
+const file=process.argv[2],first=JSON.parse(readFileSync(file));if(first.kind!=='atlas-performance-staging-v1'||!first.publicEdge)throw Error('Marked isolated edge required');const signalled=new Set();
+function tick(){try{const s=JSON.parse(readFileSync(file));if(s.id!==first.id||s.stoppedAt)return;const r=s.relay;if(!r?.sshPid||!Number.isInteger(r.attempt))return;const identity=r.sshPid+':'+r.attempt;if(signalled.has(identity))return;const text=readFileSync(join(s.directory,'relay-session-'+r.attempt+'.log'),'utf8'),observed=forwardingState(text);if(!observed?.expired)return;const ps=field=>execFileSync('ps',['-p',String(r.sshPid),'-o',field+'='],{encoding:'utf8'});const identityProof={ppid:ps('ppid'),comm:ps('comm'),args:ps('args'),parentArgs:execFileSync('ps',['-p',String(r.supervisorPid),'-o','args='],{encoding:'utf8'})};if(!ownsSsh(identityProof,s,r,join(dirname(fileURLToPath(import.meta.url)),'relay.mjs')))throw Error('Owned SSH identity mismatch');signalled.add(identity);console.log('CONFIRMED_OWN_FORWARD_EXPIRED pid='+r.sshPid+' attempt='+r.attempt);process.kill(r.sshPid,'SIGTERM');const current=JSON.parse(readFileSync(file));current.lastExpiryGuard={at:new Date().toISOString(),sshPid:r.sshPid,attempt:r.attempt,authoritative:true};const tmp=file+'.guard-'+process.pid;writeFileSync(tmp,JSON.stringify(current,null,2)+'\n',{mode:0o600});renameSync(tmp,file)}catch(error){if(!['ENOENT','ESRCH'].includes(error.code))console.error('GUARD_OBSERVATION '+error.message)}}
+tick();const timer=setInterval(tick,500);for(const sig of['SIGTERM','SIGINT'])process.once(sig,()=>{clearInterval(timer);process.exit(0)});

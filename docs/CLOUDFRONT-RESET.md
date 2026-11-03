@@ -25,7 +25,7 @@ aws --version
 aws sts get-caller-identity
 
 export ATLAS="$HOME/Repositories/Atlas-Next"
-export DISPENSER="$HOME/Repositories/Atlas-Link-Dispenser"
+export DISPENSER="$ATLAS/dispenser"
 export CFDIR="$HOME/atlas-cloudfront-20260925"
 export SSH_USER=root
 umask 077

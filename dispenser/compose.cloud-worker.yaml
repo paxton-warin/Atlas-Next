@@ -1,0 +1,34 @@
+# Standalone addition to the existing Hub stack; does not recreate the app/database/edge.
+services:
+  cloud-worker:
+    image: atlas-hub-cloud-worker:${ATLAS_RELEASE_ID:?Set the verified immutable release ID}
+    env_file:
+      - ${ATLAS_HUB_ENV_FILE:?Set the existing private Hub environment file}
+    environment:
+      NODE_ENV: production
+      HUB_CLOUD_AWS_EXECUTABLE: /usr/local/bin/aws
+      HUB_CLOUD_ORIGIN_KEYS_FILE: /run/secrets/origin-keys.json
+      HUB_CLOUD_FAKE: "0"
+      HUB_CLOUD_SIMULATION_AUTO_ACTIVATE: "0"
+    volumes:
+      - ${ATLAS_CLOUD_ORIGIN_KEYS_FILE:?Set the owner-only private origin key map}:/run/secrets/origin-keys.json:ro
+    networks:
+      - hub
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+networks:
+  hub:
+    external: true
+    name: ${ATLAS_HUB_NETWORK:?Set the existing app/PostgreSQL network}

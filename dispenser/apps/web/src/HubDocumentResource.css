@@ -1,0 +1,10 @@
+.hub-v21 .hub-document-resources{display:grid;gap:6px;min-width:0}
+.hub-v21 .hub-document-resources h2{margin:0;padding:0 12px;font-family:var(--font-sans);font-size:11px;font-weight:600;line-height:18px;letter-spacing:.04em;color:var(--text-muted)}
+.hub-v21 .hub-document-resource{display:flex;align-items:center;gap:12px;min-height:44px;width:100%;padding:10px 12px;border:0;border-radius:8px;background:transparent;color:var(--text-muted);font-size:13px;font-weight:500;line-height:20px;text-decoration:none}
+.hub-v21 .hub-document-resource:hover{background:var(--surface-hover);color:var(--text)}
+.hub-v21 .hub-document-resource>svg{flex:none}
+.hub-v21 .hub-document-resource>span{min-width:0;flex:1}
+.hub-v21 .hub-document-resource .hub-document-resource__external{width:12px;height:12px;opacity:.8}
+.hub-v21 .is-condensed .hub-document-resources h2,.hub-v21 .is-condensed .hub-document-resource>span,.hub-v21 .is-condensed .hub-document-resource__external{display:none}
+.hub-v21 .is-condensed .hub-document-resource{justify-content:center;justify-self:center;width:44px;min-width:44px;padding:10px 8px}
+@media(min-width:600px) and (max-width:899px){.hub-v21 .hub-document-resources h2,.hub-v21 .hub-document-resource>span,.hub-v21 .hub-document-resource__external{display:none}.hub-v21 .hub-document-resource{justify-content:center;justify-self:center;width:44px;min-width:44px;padding:10px 8px}}

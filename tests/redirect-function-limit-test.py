@@ -1,6 +1,6 @@
 import importlib.util,json,pathlib,sys,tempfile,unittest,copy
 from unittest.mock import patch
-path=pathlib.Path(sys.argv.pop(1)) if len(sys.argv)>1 else pathlib.Path('scripts/redirect-old-cloudfront.py')
+path=pathlib.Path(sys.argv.pop(1)) if len(sys.argv)>1 else pathlib.Path('tools/legacy/redirect-old-cloudfront.py')
 spec=importlib.util.spec_from_file_location('redirect',path)
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class ResumeTest(unittest.TestCase):

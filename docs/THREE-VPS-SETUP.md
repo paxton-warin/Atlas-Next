@@ -86,15 +86,15 @@ On your Mac, replace `deploy` with your actual SSH user:
 
 ```sh
 SSH_USER=deploy
-rsync -az --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target \
+rsync -az --exclude='/dispenser/' --exclude='/local-retained/' --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target \
   /Users/paxton/Repositories/Atlas-Next/ "$SSH_USER@vps-1.internals.paxton.co:/opt/atlas/"
-rsync -az --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target \
+rsync -az --exclude='/dispenser/' --exclude='/local-retained/' --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target \
   /Users/paxton/Repositories/Atlas-Next/ "$SSH_USER@vps-2.internals.paxton.co:/opt/atlas/"
-rsync -az --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target \
+rsync -az --exclude='/dispenser/' --exclude='/local-retained/' --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target \
   /Users/paxton/Repositories/Atlas-Next/ "$SSH_USER@vps-3.internals.paxton.co:/opt/atlas/"
 ```
 
-The build's source-archive script also expects the non-secret example env files and three historical source-evidence files. Copy those explicitly after the main upload (commands provided in the next block). No database, master key, live `.env`, admin credentials or paired-node data is transferred.
+The build's source-archive script also expects the non-secret example env files and three historical source-evidence files. Copy those explicitly after the main upload (commands provided in the next block). No database, master key, live `.env`, admin credentials or paired-node data is transferred. The contained `dispenser/` application and `local-retained/` archive are excluded from Main/node uploads; the Hub remains independently deployed.
 
 ```sh
 export SSH_USER

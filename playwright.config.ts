@@ -12,7 +12,7 @@ export default defineConfig({
   retries: 0,
   reporter: [
     ["list"],
-    ["json", { outputFile: "evidence/browser-results.json" }],
+    ["json", { outputFile: "test-results/browser-results.json" }],
   ],
   use: {
     baseURL: "http://localhost:4180",

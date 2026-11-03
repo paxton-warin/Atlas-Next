@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { writeFileSync, mkdirSync } from "node:fs";
-import { auditSurfaces } from "../scripts/fingerprint-audit.mjs";
+import { auditSurfaces } from "../tools/diagnostics/fingerprint-audit.mjs";
 async function capture(page: Page, phase: string) {
   const surfaces: any[] = [];
   let index = 0;

@@ -1,114 +1,116 @@
 # Atlas
 
-An account-free browser portal. This project does not modify or depend on either existing Atlas application.
+One Git repository for the **browser/Main and browsing nodes** and the **Hub/link
+dispenser**. The components keep their existing runtime interfaces, configuration,
+database schemas, container contexts and deployment lifecycle.
 
-## Included
+## Repository layout
 
-- Compact browser shell with sidebar/top tabs, a focus mode, and stable website frames.
-- Lightly framed new-tab page with a large serif greeting, theme-colored glow, central search and shortcuts. The tab sidebar defaults to a 44px icon rail; expanding it is remembered on this device.
-- Website favicons in both tab layouts, loaded through the selected proxy engine with dynamic updates and a globe fallback.
-- Built-in AI chat with streaming, Markdown, local history and server-side provider configuration. See [AI setup](docs/AI.md).
-- Four-step visitor wizard; six coordinated themes, light/dark/system, custom accents, backgrounds, wallpaper, density, motion, search preferences, shortcuts, favorites, history and settings import/export.
-- Scramjet-LS-Bypass bootstrap/controller/helpers/WASM/HTTP transport copied unchanged from pinned commit `4f452fee`. Scramjet is the only browsing engine.
-- Direct browsing nodes with point-and-attach pairing, weighted sticky assignments, owner controls and arbitrary frontend CloudFront aliases. See [node setup](docs/NODES.md).
-- Searchable game catalog with built-in 2048, Snake and Tic Tac Toe, plus editable external entries.
-- Anonymous, token-access support tickets, replies and status; no public user accounts.
-- One administrator, Argon2id password, TOTP, one-use recovery codes, expiring HttpOnly sessions, CSRF checks, login limits and audit events.
-- SQLite persistence; separate application and browsing hostnames in one Node process.
+| Path | Responsibility |
+| --- | --- |
+| `web/`, `runtime/`, `server/` | Browser UI, isolated website runtime, Main API and node server |
+| `dispenser/apps/` | Hub API and Hub web UI |
+| `dispenser/packages/` | Hub shared contracts, PostgreSQL data layer and migrations |
+| `scripts/` | Maintained build, development, workspace and release entrypoints |
+| `tools/` | Optional diagnostics, experiments, local laboratories and historical operators |
+| `tests/` | Browser/Main automated tests; Hub tests remain beside their source |
+| `maintenance/history/` | Tracked historical source fixtures, independent of audit output |
+| `docs/` | Current documentation index and explicitly historical reports |
 
-## Run locally
+Start with [repository/development rules](docs/REPOSITORY.md), the
+[documentation index](docs/README.md), or [local file cleanup](docs/LOCAL-FILES.md).
 
-Node 24.12+ and pnpm 11 are required. Fetch the pinned upstream runtime after cloning; dependencies, runtime downloads, builds, and local data are not committed.
+## Install and verify both components
+
+Use Node **24.12+** and the pinned **pnpm 11.15.0**.
 
 ```sh
 git clone https://github.com/paxton-warin/Atlas-Next.git
 cd Atlas-Next
-pnpm install --frozen-lockfile
-pnpm runtime:fetch # needed on a fresh checkout
-pnpm build
-pnpm start
+pnpm install:all
+pnpm runtime:fetch                 # Fetch/verify the pinned runtime on a fresh clone
+pnpm workspace:check              # Component paths and dependency-lock identity
+pnpm typecheck:all
+pnpm test:all
+pnpm build:all
 ```
 
-Open **http://localhost:4180**. The browsing runtime uses **http://127.0.0.1:4181**. Keep those hostnames distinct; differing ports alone do not isolate cookies.
+`pnpm check:all` runs both components' typechecks, default tests and builds. It
+does **not** deploy, start services or run database migrations. Hub database tests
+remain gated on an explicitly supplied dedicated test database; skipped database
+cases are not counted as passing coverage.
 
-Administrator setup:
+There is one repository and one root command interface, with **two intentionally
+isolated dependency graphs**. Both existing lockfiles remain unchanged. Combining
+the locks would change nine shared transitive resolutions, so that is deliberately
+not part of a behavior-preserving repository cleanup.
+
+## Run a component
+
+Existing browser commands keep their meaning:
 
 ```sh
+pnpm build
+pnpm start                        # Main: http://localhost:4180
+pnpm node:start                   # Node process, with its existing configuration
 pnpm admin:token
 ```
 
-Open `http://localhost:4180/_control/atlas-owner`, enter the generated token and a password of at least 12 characters, enroll an authenticator, and save the displayed recovery codes. A token expires after 15 minutes. The path is configurable with `ADMIN_PATH`; the path is not the authentication mechanism.
+The browser runtime's default local origin is `http://127.0.0.1:4181`. Keep the
+application/runtime hostname distinction required by its isolation model. Copy
+`.env.example` to `.env` for local configuration; keep local data and secrets out
+of Git. `pnpm dev` builds and starts Main; it is not a hot-reload server.
 
-Copy `.env.example` to `.env` for custom settings. `pnpm dev` currently builds and starts the app; it is not a hot-reload development server.
-
-## Runtime fork and official comparison
-
-```sh
-pnpm runtime:fetch
-pnpm build
-# Optional: build the unchanged official demo used by comparison tests.
-./scripts/build-upstream.sh
-```
-
-The optional official-baseline script checks out `e9ff92d1ec98ba140cb4bca840fb40c2b9b52ebf` and keeps its source unchanged. Upstream's own rewriter requires Rust nightly with rust-src, wasm32-unknown-unknown support, wasm-bindgen **0.2.105**, Binaryen wasm-opt and the r58playz wasm-snip fork. The initial local build used rustc 1.100.0-nightly (2026-08-19). Its normal development rewriter build is retained; no rewriter patch was made. The upstream declaration-generation plugin printed diagnostics even though browser bundles built; browser/runtime tests, rather than that plugin's log message, are the executable evidence.
-
-The original demo is served at http://127.0.0.1:4182 only during tests. It is not the public Atlas interface.
-
-The production runtime uses the fork's eight committed vendor artifacts, not a rebuild with new global replacements. `scripts/runtime-fork.json` pins their SHA-256 hashes and the corresponding source archive; a mismatch stops the build. The official demo remains only as a comparison fixture.
-
-## Verification
+Hub commands are available from this same root:
 
 ```sh
-pnpm typecheck
-pnpm test
-pnpm test:browser
+pnpm hub:dev
+pnpm hub:build
+pnpm hub:typecheck
+pnpm hub:test
 ```
 
-Playwright uses installed Google Chrome. On another OS, set `CHROME_PATH` to the Chrome executable. Tests start disposable servers/database and a local networking fixture. No website credentials are used. The fixture allows only its exact loopback destination. Production never enables that allowance.
+Hub configuration remains in `dispenser/.env`; it requires PostgreSQL and Redis
+for its normal server operation. See [Hub setup](dispenser/README.md). Existing
+Hub-local `pnpm`/Compose commands still work from `dispenser/`.
 
-Read [the compatibility register](docs/COMPATIBILITY.md). A passing desktop fixture is **not** a claim that Google authentication, ChatGPT authentication, Spotify playback, or Chromebook behavior has been verified.
+## Additional verification
 
-Current local result: **47 backend passes; 71 browser journey passes; 2 tracked upstream download failures; no unexpected failures**. The frontend-relay fixture verifies Main transport through the current frontend origin while the frame stays isolated on a paired node. Local Caddy routing and AI LaTeX rendering are covered. Authentication, playback, production throughput and physical Chromebook testing remain outstanding.
-
-## Deployment
-
-For your multi-CloudFront/direct-node setup, use [the node deployment guide](docs/NODES.md), `Dockerfile.node`, and `compose.node.yaml` from this same `main` branch. Main can use the current frontend URL for website transport while a paired node hosts its isolated frame; see [three-VPS setup](docs/THREE-VPS-SETUP.md) and [existing-server update commands](docs/UPDATE-FRONTEND-RELAY.md). The legacy two-host direct deployment below remains available.
-
-The Docker/Caddy configuration is provided but has not been run against a public deployment; the local Docker daemon was not running during verification.
-
-Fetch and build the pinned fork first, then configure `.env` with public HTTPS origins on two distinct hostnames:
-
-```dotenv
-APP_HOST=atlas.example.com
-RUNTIME_HOST=browse.example.com
-APP_ORIGIN=https://atlas.example.com
-RUNTIME_ORIGIN=https://browse.example.com
-ADMIN_PATH=/_control/choose-a-long-random-slug
-```
-
-Point both DNS names at the server, then:
+See [test coverage and known database-suite failures](docs/TESTING.md) for what
+the default checks do and do not establish.
 
 ```sh
-docker compose up -d --build
-docker compose exec app node scripts/admin-token.mjs
+pnpm test:browser                  # Disposable local fixtures and installed Chrome
+node scripts/sync-hub-contracts.mjs --check
+pnpm test:backup-restore           # More extensive local browser/storage fixtures
 ```
 
-Caddy terminates HTTPS and forwards WebSocket upgrades. Only Caddy publishes ports. Application and runtime secrets/session APIs stay off the browsing origin. Keep application and runtime on the same parent site for cross-origin frame storage compatibility; use separate hostnames, not ports. The host-local `data` folder and Docker `atlas-data` volume are different installations.
+Playwright's normal output is under `test-results/`, not a source directory. Set
+`CHROME_PATH` when Chrome is not in the harness's default location. DB-specific
+Hub tests and `pnpm test:hub-tools` require a dedicated `_test` database; never
+point them at a live database. A desktop test pass is not physical Chromebook,
+real-account site compatibility, production capacity or deployment qualification.
 
-`data/master.key` encrypts the administrator TOTP secret. Back it up with the SQLite database. For a simple consistent backup, stop the app and copy the entire data directory/volume including WAL/SHM if present, then restart it. Restore to a stopped instance; preserve file permissions. Recovery codes work with the password. Losing both password and recovery materials needs operator recovery tooling, which is not included yet.
+## Deployments remain component-specific
 
-Proxy assets are bundled during build; there are no production startup downloads. Deploy by image tag and retain the prior image/data backup for rollback. Do not expose the test runner, baseline demo, or test fixture publicly.
+- Browser/Main: root `Dockerfile`, `compose.yaml` / `compose.cloudfront.yaml`.
+- Browsing node: root `Dockerfile.node`, `compose.node.yaml`.
+- Hub and its workers: `dispenser/` Docker/Compose files.
 
-## Source and licenses
+The repository cleanup does not activate images, recreate services, rotate URLs,
+change authentication or replace database volumes. Existing server-owned Caddy,
+Compose, environment files and origin keys must remain server-owned. Procedures
+and their historical context are indexed in [deployment documentation](docs/README.md).
 
-Scramjet and the included Mercury Workshop components have their respective upstream license/source requirements. `THIRD_PARTY.md` links the exact source trees and licenses. Retain those notices and provide the corresponding source when distributing this application. Builds include `/source/atlas-source.tar.gz` and `/source/scramjet-source.tar.gz`, plus license and third-party notices. The archive script uses a fixed source allowlist and excludes databases, environment secrets, sessions and dependency folders.
+## Runtime source and licensing
 
-## Development handoff
+`LICENSE` and `THIRD_PARTY.md` describe the source/licensing material. The runtime
+pin and asset/source hashes live in `scripts/runtime-fork.json`; preparation
+rejects mismatched bytes. The tracked delta bundle allows the fork to be restored
+without depending on an uncommitted sibling checkout.
 
-The repository is [paxton-warin/Atlas-Next](https://github.com/paxton-warin/Atlas-Next). Existing Atlas and Atlas-Link-Dispenser applications are separate projects. Commit source and example configuration only; keep live environment files, database volumes, origin keys, and local test artifacts out of Git.
-
-`ROLLBACK.sh` is a narrowly scoped rehearsal tool for the startup entrypoint, not a whole-application downgrade. The previous worker-wrapper evidence is retained under `evidence/ui-refinement/`. `VERIFICATION.txt` records the original and modified SHA-256, exact probe commands, and a successful rollback on another copy. The active entrypoint remains fixed.
-
-## Browsing startup correction
-
-The earlier launcher spread the frontend configuration into `createRuntime`, inadvertently passing `staticDir=dist/web`. The runtime port therefore served the frontend again and tabs never received a ready message. The launcher now passes only the application/runtime origins, allowing `dist/runtime` to be served. Browser tests start **server/index.mjs itself**, not independently constructed app/runtime servers. The original failure and corrected HTTP results are reproduced by `scripts/entrypoint-probe.mjs` in disposable copies.
+Builds retain `/source/atlas-source.tar.gz` and
+`/source/scramjet-source.tar.gz`. Source packaging includes maintained tooling,
+permanent history and available Hub source, while excluding environment secrets,
+private retention, dependencies, generated output and audit reports. Component-only
+browser build contexts remain supported and do not silently incorporate Hub services.

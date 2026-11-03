@@ -10,7 +10,7 @@ validateLabDatabase(process.env.DATABASE_URL);
 validateLabRedis(process.env.REDIS_URL);
 const state = JSON.parse(readFileSync(process.env.ATLAS_LAB_STATE, "utf8"));
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const hub = resolve(root, "../Atlas-Link-Dispenser");
+const hub = resolve(root, "dispenser");
 const require = createRequire(join(hub, "apps/server/package.json"));
 const Redis = require("ioredis");
 const redis = new Redis(process.env.REDIS_URL, {

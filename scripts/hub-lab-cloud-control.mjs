@@ -16,7 +16,7 @@ export async function createCloudLabControl(state) {
   const require = createRequire(
     resolve(
       dirname(fileURLToPath(import.meta.url)),
-      "../../Atlas-Link-Dispenser/apps/server/package.json",
+      "../dispenser/apps/server/package.json",
     ),
   );
   const { Pool } = require("pg");

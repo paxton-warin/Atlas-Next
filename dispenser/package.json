@@ -1,0 +1,19 @@
+{
+  "name": "atlas-link-dispenser",
+  "private": true,
+  "packageManager": "pnpm@11.15.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @atlas-link-dispenser/server --filter @atlas-link-dispenser/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm --filter @atlas-link-dispenser/shared build && pnpm --filter @atlas-link-dispenser/database build && pnpm --filter @atlas-link-dispenser/shared typecheck && pnpm --filter @atlas-link-dispenser/database typecheck && pnpm --filter @atlas-link-dispenser/server typecheck && pnpm --filter @atlas-link-dispenser/web typecheck",
+    "test": "pnpm -r test",
+    "db:migrate": "pnpm --filter @atlas-link-dispenser/database migrate",
+    "lint": "pnpm -r lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6",
+    "typescript": "^5.8.3"
+  }
+}

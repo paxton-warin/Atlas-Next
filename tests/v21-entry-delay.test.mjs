@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const require = createRequire(import.meta.url);
 const atlas = new URL("../web/", import.meta.url);
-const hub = new URL("../../Atlas-Link-Dispenser/apps/web/", import.meta.url);
+const hub = new URL("../dispenser/apps/web/", import.meta.url);
 const apps = [
   { name: "Atlas", root: atlas, file: "AtlasEntryFrame", pending: "pending", message: "message", copy: "hub-gate-copy" },
   { name: "Hub", root: hub, file: "HubEntry", pending: "busy", message: "stage", copy: "hub-entry-copy" },

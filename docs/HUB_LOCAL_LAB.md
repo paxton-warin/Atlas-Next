@@ -6,11 +6,11 @@ Start the isolated application and the local AWS simulator:
 node scripts/hub-lab.mjs start
 ```
 
-The command builds both sibling repositories, initializes **only** the marked
+The command builds both components in this repository, initializes **only** the marked
 local `atlas_hub_lab_test` PostgreSQL database, then starts the real Hub app,
 fake AWS worker, account-gated opaque Atlas runtime, Main runtime, Nodes 2–4, local
 website fixtures, and loopback HTTPS/WSS proxies. Node and dependencies must be
-installed in both repositories. PostgreSQL and Redis must already be running
+installed in both components. PostgreSQL and Redis must already be running
 locally; it does not install or reconfigure system services.
 
 Default connections:
@@ -100,16 +100,16 @@ It is a targeted walkthrough, not the complete final release screenshot matrix.
 
 ## Targeted operation and UI evidence
 
-- `node scripts/hub-cloud-walkthrough.mjs`: administrator panel fault/recovery
+- `node tools/diagnostics/hub-cloud-walkthrough.mjs`: administrator panel fault/recovery
   walkthrough using only the local fake provider. `--capture-only` does not
   provision another batch.
-- `node scripts/hub-ui-review.mjs`: task-led ordinary-user sign-in, browsing,
+- `node tools/diagnostics/hub-ui-review.mjs`: task-led ordinary-user sign-in, browsing,
   tabs, Support, Your saves, sign-out and responsive captures. Findings and
   recaptures are under `evidence/hub-ui-review`.
-- `node scripts/hub-session-transfer-walkthrough.mjs`: ordinary old-Hub sign-in,
+- `node tools/diagnostics/hub-session-transfer-walkthrough.mjs`: ordinary old-Hub sign-in,
   automatic replacement-Hub carryover, then explicit sign-out/reload. Results and
   opened screenshot review are under `evidence/hub-session-transfer`.
-- `node scripts/hub-account-simulation.mjs --long-outage --features`: normal
+- `node tools/diagnostics/hub-account-simulation.mjs --long-outage --features`: normal
   A→B→A sign-in, isolated saves, a 95-second profile-sync API outage, acknowledged recovery,
   history clearing, nested frames, workers, IndexedDB, media and an opaque popup.
   Identity and frontend/native-owner APIs remain reachable in that probe. It
@@ -120,7 +120,7 @@ It is a targeted walkthrough, not the complete final release screenshot matrix.
   raise that limit. The optional-popup429 regression separately proves a rejected
   spare reservation does not strand an ordinary document. Real shared-IP load
   and request-budget sizing remain production acceptance work.
-- `node scripts/hub-support-sse-walkthrough.mjs`: public reply/unread state,
+- `node tools/diagnostics/hub-support-sse-walkthrough.mjs`: public reply/unread state,
   live notifications, visible conversation reads and reconnect/poll recovery.
 - `hub-cloud-replacement-walkthrough.mjs --execute-local-replacements` is an
   explicit, state-changing local three-endpoint replacement. Its original
@@ -161,9 +161,9 @@ frontend reload after acknowledged localStorage/cookie saves. Both have no page
 JavaScript errors. The real cancellation regressions additionally cover sixty
 in-flight cancellations while an independent request continues normally.
 
-Use `node scripts/hub-account-simulation.mjs --integrated-probe` for the shorter
+Use `node tools/diagnostics/hub-account-simulation.mjs --integrated-probe` for the shorter
 normal-sign-in rich browsing/reload journey. The complete account journey remains
-`node scripts/hub-account-simulation.mjs --features`; `--long-outage` adds the
+`node tools/diagnostics/hub-account-simulation.mjs --features`; `--long-outage` adds the
 95-second profile-sync API fault. These scripts use synthetic accounts and only
 the marked disposable lab. Intermediate failures remain in evidence rather than
 being approved as new successful baselines.

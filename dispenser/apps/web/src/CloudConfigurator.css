@@ -1,0 +1,244 @@
+.cloud-config {
+  min-width: 0;
+}
+.cloud-config h2 {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+.cloud-config__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.cloud-config__heading h3 {
+  margin: 0;
+}
+.cloud-config__form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  align-items: end;
+}
+.cloud-config__account {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: center;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--border, #344239);
+}
+.cloud-config__account > div:first-child {
+  margin-right: auto;
+}
+.cloud-config small {
+  display: block;
+  overflow-wrap: anywhere;
+  opacity: 0.75;
+}
+.cloud-config__login {
+  width: 100%;
+  display: grid;
+  gap: 0.8rem;
+}
+.cloud-config__login a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.cloud-config__login form {
+  display: flex;
+  gap: 0.75rem;
+  align-items: end;
+}
+.cloud-config__login .field {
+  flex: 1;
+}
+.cloud-config__endpoints {
+  max-height: 320px;
+  overflow: auto;
+}
+.cloud-config__endpoint {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 64px;
+  padding: 12px 0;
+  cursor: pointer;
+}
+.cloud-config__endpoint > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.cloud-config__endpoint input {
+  width: 20px;
+  height: 20px;
+  accent-color: #bce094;
+  justify-self: center;
+}
+.cloud-config__endpoint-tools {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr);
+  align-items: end;
+  gap: 20px;
+}
+.cloud-config__endpoint-types {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.cloud-config__filter-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted, var(--muted));
+}
+.cloud-config__role-filters {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border, var(--line-strong));
+  border-radius: 12px;
+  background: var(--surface-sunken, var(--input));
+}
+.cloud-config .cloud-config__role-filters .button {
+  min-height: 44px;
+  min-width: 44px;
+  justify-content: center;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  white-space: nowrap;
+}
+.cloud-config .cloud-config__role-filters .button[aria-pressed="true"] {
+  background: var(--surface-active, var(--nav-soft));
+  border-color: var(--border, var(--line-strong));
+  color: var(--accent-text, var(--accent));
+}
+.cloud-config__endpoint-search {
+  position: relative;
+  min-width: 0;
+}
+.cloud-config__endpoint-search > svg {
+  position: absolute;
+  left: 12px;
+  bottom: 19px;
+  color: var(--text-muted, var(--muted));
+  pointer-events: none;
+}
+.cloud-config .cloud-config__endpoint-search .input {
+  min-height: 54px;
+  padding-left: 38px;
+}
+.cloud-config__endpoint-search > .field {
+  min-width: 0;
+  margin: 0;
+}
+.cloud-config__endpoint-summary {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 13px;
+  color: var(--text-muted, var(--muted));
+  font-variant-numeric: tabular-nums;
+}
+.cloud-config .cloud-config__endpoint-role {
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 1;
+  color: var(--text-muted, var(--muted));
+  margin: 3px 0;
+}
+.cloud-config__no-matches {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  padding: 24px 0;
+}
+.cloud-config__no-matches p {
+  margin: 0;
+  color: var(--text-muted, var(--muted));
+}
+.cloud-config .cloud-config__no-matches .button {
+  min-height: 44px;
+}
+.cloud-config .cloud-config__heading:has(> .button:first-child) > .button {
+  min-height: 44px;
+}
+.cloud-config__remove {
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  color: inherit;
+  cursor: pointer;
+  min-height: 32px;
+}
+.cloud-config li {
+  overflow-wrap: anywhere;
+  margin: 0.5rem 0;
+}
+@media (max-width: 500px) {
+  .cloud-config__heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .cloud-config__form {
+    grid-template-columns: 1fr;
+  }
+  .cloud-config__login form {
+    display: grid;
+  }
+  .cloud-config__endpoint {
+    align-items: flex-start;
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .cloud-config__endpoint .badge {
+    grid-column: 2;
+    justify-self: start;
+    margin-left: 0;
+  }
+}
+@media (max-width: 760px) {
+  .cloud-config__endpoint-tools {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .cloud-config__role-filters {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@media (max-width: 420px) {
+  .cloud-config__role-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .cloud-config__endpoint-summary {
+    flex-direction: column;
+  }
+  .cloud-config__heading:has(> .button:first-child) {
+    align-items: stretch;
+    gap: 8px;
+  }
+  .cloud-config__heading:has(> .button:first-child) > .button {
+    flex: 1 1 100%;
+  }
+}
+@media (max-width: 500px) {
+  .cloud-config__account {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .cloud-config__account > div:first-child {
+    margin-right: 0;
+    min-width: 0;
+  }
+  .cloud-config__account > .button {
+    grid-column: 1 / -1;
+  }
+  .cloud-config__login {
+    grid-column: 1 / -1;
+  }
+}

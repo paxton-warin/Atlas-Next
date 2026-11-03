@@ -1,0 +1,13 @@
+/** Small dependency-injected two-route transition machine; never replays HTTP. */
+export class OverlapPool {
+ constructor(deps,initial,{warmAfterMs=240000,retryMs=5000}={}){this.d=deps;this.routes=new Map(initial?[[initial.id,initial]]:[]);this.active=initial||null;this.pending=null;this.busy=false;this.warmAfterMs=warmAfterMs;this.retryMs=retryMs;this.retryAt=0;this.lastError=null}
+ state(){return {active:this.active?.id||null,pending:this.pending?.id||null,busy:this.busy,routes:[...this.routes.values()].map(r=>({id:r.id,pid:r.pid,bornAt:r.bornAt,alive:r.alive,qualified:r.qualified||false,retiring:r.retiring||false})),lastError:this.lastError}}
+ async pump(force=false){if(this.busy||this.d.now()<this.retryAt)return;this.busy=true;try{
+  for(const route of [...this.routes.values()])if(route.retiring){await this.d.retire(route);this.routes.delete(route.id)}
+  if(!this.pending){if(this.routes.size>=2||(!force&&this.active&&this.d.now()-this.active.bornAt<this.warmAfterMs))return;const candidate=await this.d.start();if(this.routes.has(candidate.id))throw Error('DUPLICATE_ROUTE_ID');this.routes.set(candidate.id,candidate);this.pending=candidate;try{await this.d.qualify(candidate);if(!candidate.alive)throw Error('CANDIDATE_CLOSED_DURING_QUALIFICATION');candidate.qualified=true}catch(error){candidate.retiring=true;this.pending=null;await this.d.retire(candidate);this.routes.delete(candidate.id);throw error}}
+  const candidate=this.pending;if(!candidate.alive)throw Error('PENDING_ROUTE_CLOSED');await this.d.promote(candidate,this.active);if(!candidate.alive)throw Error('CANDIDATE_CLOSED_DURING_PROMOTION');const old=this.active;this.active=candidate;this.pending=null;this.lastError=null;this.retryAt=0;if(old&&old.id!==candidate.id){old.retiring=true;await this.d.retire(old);this.routes.delete(old.id)}
+ }catch(error){this.lastError=String(error.message||error);this.retryAt=this.d.now()+this.retryMs;await this.d.failed?.(error,this.state())}finally{this.busy=false;await this.d.changed?.(this.state())}}
+ closed(id){const route=this.routes.get(id);if(!route)return;route.alive=false;this.routes.delete(id);if(this.active?.id===id)this.active=null;if(this.pending?.id===id)this.pending=null;this.retryAt=0;this.d.changed?.(this.state())}
+}
+/** A failed stop retains route ownership/capacity; caller must retry, not exit. */
+export async function drainForStop(pool,retire){const errors=[];for(const route of [...(pool?.routes.values()||[])]){if(route.adopted)continue;try{await retire(route);pool.routes.delete(route.id)}catch(error){errors.push(String(error.message||error))}}return{complete:errors.length===0,errors}}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {localOrigin,reviewOptions,reviewMode,SOURCE,TARGET,FIXTURE,COOKIE_CLICKER} from '../scripts/hub-continuity-review.mjs';
+import {localOrigin,reviewOptions,reviewMode,SOURCE,TARGET,FIXTURE,COOKIE_CLICKER} from '../tools/diagnostics/hub-continuity-review.mjs';
 test('review uses distinct existing local aliases and the deterministic website fixture',()=>{
  assert.notEqual(SOURCE,TARGET);assert.equal(localOrigin(SOURCE),SOURCE);assert.equal(localOrigin(TARGET),TARGET);assert.equal(FIXTURE,'http://fixture.localhost:4299/storage');
  for(const value of ['https://example.com:4280','http://localhost:4280','https://user@localhost:4280','https://localhost:4280/path','https://localhost:4280/?x=1','https://localhost:4280/#x','https://localhost:4300'])assert.throws(()=>localOrigin(value));

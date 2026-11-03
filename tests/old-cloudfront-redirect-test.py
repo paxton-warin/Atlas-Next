@@ -1,5 +1,5 @@
 import copy, importlib.util, json, pathlib, subprocess, unittest
-spec=importlib.util.spec_from_file_location('redirect',pathlib.Path(__file__).resolve().parents[1]/'scripts/redirect-old-cloudfront.py')
+spec=importlib.util.spec_from_file_location('redirect',pathlib.Path(__file__).resolve().parents[1]/'tools/legacy/redirect-old-cloudfront.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class Tests(unittest.TestCase):
  def test_account(self):

@@ -1,0 +1,30 @@
+# Private worker only: no ports, browser assets, Docker socket, or ambient AWS profile.
+FROM node:22-bookworm-slim AS build
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY apps/server/package.json apps/server/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/database/package.json packages/database/package.json
+COPY packages/shared/package.json packages/shared/package.json
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm --filter @atlas-link-dispenser/shared build && pnpm --filter @atlas-link-dispenser/database build && pnpm --filter @atlas-link-dispenser/server build
+
+FROM node:22-bookworm-slim AS awscli
+ARG AWS_CLI_VERSION=2.37.3
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip gnupg
+COPY deployment/aws-cli-team.asc /tmp/aws-cli-team.asc
+WORKDIR /tmp/aws-install
+RUN gpg --batch --import /tmp/aws-cli-team.asc && test "$(gpg --batch --with-colons --fingerprint A6310ACC4672475C | awk -F: '$1=="fpr" {print $10;exit}')" = FB5DB77FD5C118B80511ADA8A6310ACC4672475C
+RUN curl --fail --location --retry 3 --max-time 180 "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip" -o awscliv2.zip && curl --fail --location --retry 3 --max-time 60 "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip.sig" -o awscliv2.sig && gpg --batch --verify awscliv2.sig awscliv2.zip && unzip -q awscliv2.zip && ./aws/install --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin
+
+FROM node:22-bookworm-slim
+WORKDIR /app
+ENV NODE_ENV=production HUB_CLOUD_AWS_EXECUTABLE=/usr/local/bin/aws HUB_CLOUD_FAKE=0 HUB_CLOUD_SIMULATION_AUTO_ACTIVATE=0
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
+COPY --from=build --chown=node:node /app /app
+COPY --from=awscli /usr/local/aws-cli /usr/local/aws-cli
+RUN ln -s /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws && aws --version
+USER node
+CMD ["node", "apps/server/dist/hubCloudWorkerMain.js"]

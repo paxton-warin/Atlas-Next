@@ -19,7 +19,20 @@
     "format": "prettier --write web/src web/public runtime/host.ts runtime/index.html server tests scripts *.json *.ts *.yaml *.md docs",
     "runtime:fetch": "node scripts/fetch-runtime.mjs",
     "node:start": "node --env-file-if-exists=.env server/node.mjs",
-    "test:backup-restore": "node --test tests/backup-latest-response.test.mjs tests/restore-progress.test.mjs tests/restore-actor-progress.test.mjs tests/restore-proxy-compression.test.mjs tests/backup-restore-transport.test.mjs && node tests/restore-measurement-browser.mjs && node tests/restore-multipart-browser.mjs && node tests/restore-cross-link-browser.mjs && node tests/restore-progress-ui-browser.mjs"
+    "test:backup-restore": "node --test tests/backup-latest-response.test.mjs tests/restore-progress.test.mjs tests/restore-actor-progress.test.mjs tests/restore-proxy-compression.test.mjs tests/backup-restore-transport.test.mjs && node tests/restore-measurement-browser.mjs && node tests/restore-multipart-browser.mjs && node tests/restore-cross-link-browser.mjs && node tests/restore-progress-ui-browser.mjs",
+    "install:all": "node scripts/workspace.mjs install",
+    "build:all": "node scripts/workspace.mjs build",
+    "typecheck:all": "node scripts/workspace.mjs typecheck",
+    "test:all": "node scripts/workspace.mjs test",
+    "check:all": "node scripts/workspace.mjs check",
+    "hub:install": "node scripts/workspace.mjs install --component hub",
+    "hub:dev": "node scripts/workspace.mjs dev --component hub",
+    "hub:build": "node scripts/workspace.mjs build --component hub",
+    "hub:typecheck": "node scripts/workspace.mjs typecheck --component hub",
+    "hub:test": "node scripts/workspace.mjs test --component hub",
+    "hub:check": "node scripts/workspace.mjs check --component hub",
+    "workspace:check": "node scripts/workspace.mjs verify",
+    "test:hub-tools": "node --test dispenser/scripts/production-bootstrap.test.mjs"
   },
   "dependencies": {
     "@fastify/proxy-addr": "5.1.0",

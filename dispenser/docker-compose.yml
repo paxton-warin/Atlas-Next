@@ -1,0 +1,57 @@
+services:
+  app:
+    build: .
+    env_file: ${ATLAS_ENV_FILE:-.env}
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports: ["${APP_BIND:-127.0.0.1}:${APP_PORT:-3000}:3000"]
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      {
+        test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health/ready"],
+        interval: 15s,
+        timeout: 5s,
+        retries: 10,
+        start_period: 20s,
+      }
+    stop_grace_period: 20s
+    restart: unless-stopped
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: atlas_dispenser
+      POSTGRES_USER: atlas_dispenser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-before-production}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      {
+        test: ["CMD-SHELL", "pg_isready -U atlas_dispenser -d atlas_dispenser"],
+        interval: 5s,
+        timeout: 3s,
+        retries: 20,
+      }
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redis-data:/data]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      {
+        test: ["CMD", "redis-cli", "ping"],
+        interval: 5s,
+        timeout: 3s,
+        retries: 20,
+      }
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  redis-data:

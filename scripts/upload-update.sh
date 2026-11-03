@@ -26,15 +26,14 @@ for host in "$@"; do
     mkdir -p deployment-templates
     printf "Deployment backup: /opt/atlas/%s\n" "$backup"
   '
-  rsync -az --exclude='/Caddyfile*' --exclude='/compose*.yaml' --exclude='/compose*.yml' --exclude='/docker-compose*.yaml' --exclude='/docker-compose*.yml' --exclude='/caddy/' --exclude='/caddy.d/' --exclude='/deployment-templates/' --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude='__pycache__/' --exclude='*.pyc' --exclude='.DS_Store' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target --exclude=backups --exclude='*.sqlite*' --exclude='*.db*' --exclude='*.pem' --exclude='*.key' --exclude=.aws --exclude=.ssh --exclude=.npmrc --exclude='*.log' \
+  rsync -az --exclude='/dispenser/' --exclude='/local-retained/' --exclude='/Caddyfile*' --exclude='/compose*.yaml' --exclude='/compose*.yml' --exclude='/docker-compose*.yaml' --exclude='/docker-compose*.yml' --exclude='/caddy/' --exclude='/caddy.d/' --exclude='/deployment-templates/' --exclude=.git --exclude=node_modules --exclude=.env --exclude=.origin-key --exclude='.env.*' --exclude='__pycache__/' --exclude='*.pyc' --exclude='.DS_Store' --exclude=data --exclude=node-data --exclude=evidence --exclude=test-results --exclude=playwright-report --exclude=upstream/scramjet --exclude=upstream/demo-original --exclude=target --exclude=backups --exclude='*.sqlite*' --exclude='*.db*' --exclude='*.pem' --exclude='*.key' --exclude=.aws --exclude=.ssh --exclude=.npmrc --exclude='*.log' \
     "$ROOT/" "$SSH_USER@$host:/opt/atlas/"
   # Canonical templates are staged for review/build source archives, never activated.
   rsync -az "$ROOT/Caddyfile" "$ROOT/Caddyfile.cloudfront" "$ROOT/Caddyfile.node" \
     "$ROOT/compose.yaml" "$ROOT/compose.cloudfront.yaml" "$ROOT/compose.node.yaml" \
     "$SSH_USER@$host:/opt/atlas/deployment-templates/"
-  ssh "$SSH_USER@$host" 'mkdir -p /opt/atlas/evidence/ui-refinement/original/server'
+  ssh "$SSH_USER@$host" 'mkdir -p /opt/atlas/maintenance/history'
   rsync -az "$ROOT/.env.example" "$ROOT/.env.node.example" "$SSH_USER@$host:/opt/atlas/"
-  rsync -az "$ROOT/evidence/ORIGINAL-sw.js" "$ROOT/evidence/DIFF.patch" "$SSH_USER@$host:/opt/atlas/evidence/"
-  rsync -az "$ROOT/evidence/ui-refinement/original/server/index.mjs" "$SSH_USER@$host:/opt/atlas/evidence/ui-refinement/original/server/"
+  rsync -az "$ROOT/maintenance/history/original-sw.js" "$ROOT/maintenance/history/DIFF.patch" "$ROOT/maintenance/history/original-server-index.mjs" "$SSH_USER@$host:/opt/atlas/maintenance/history/"
 done
 printf '%s\n' 'Upload complete. Live Caddy/Compose files preserved. Review deployment-templates before routing changes; update application services only. For routine updates see docs/UPDATE-BROWSING-CONTROLS.md; use docs/UPDATE-FRONTEND-RELAY.md only for the initial relay migration.'

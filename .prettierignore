@@ -7,3 +7,11 @@ runtime/public/source
 runtime/public/sw.js
 runtime/public/manifest.json
 web/public/source
+
+# Component-specific formatting and private/generated local state.
+dispenser
+local-retained
+test-results
+playwright-report
+maintenance/history/DIFF.patch
+maintenance/history/VERIFICATION-20260910.txt

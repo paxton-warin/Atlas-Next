@@ -64,15 +64,17 @@ export function probeUpload(scriptFile, { failBackup = false } = {}) {
     "scripts/__pycache__/local.pyc",
     "scripts/local.pyc",
     ".DS_Store",
+    "local-retained/dispenser.git/config",
+    "dispenser/apps/server/src/local-only.ts",
   ])
     put(join(source, file), "local secret\n");
   for (const file of [
     "web/src/main.tsx",
     ".env.example",
     ".env.node.example",
-    "evidence/ORIGINAL-sw.js",
-    "evidence/DIFF.patch",
-    "evidence/ui-refinement/original/server/index.mjs",
+    "maintenance/history/original-sw.js",
+    "maintenance/history/DIFF.patch",
+    "maintenance/history/original-server-index.mjs",
   ])
     put(join(source, file), "fixture\n");
   put(join(source, "server/updated.mjs"), "application update\n");
@@ -153,6 +155,8 @@ else { const dest=target(args.at(-1)); for(const file of args.slice(0,-1))cpSync
         "application update\n",
       );
       assert.equal(existsSync(join(target, ".origin-key")), false);
+      assert.equal(existsSync(join(target, "local-retained")), false, "Local-only archives must never be uploaded to a VPS");
+      assert.equal(existsSync(join(target, "dispenser")), false, "Hub source must not be included in Main/node upload");
       assert.equal(
         existsSync(join(target, "scripts/__pycache__/local.pyc")),
         false,

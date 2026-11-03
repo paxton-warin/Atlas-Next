@@ -1,0 +1,461 @@
+{
+  "schema": "atlas-tooling-layout-v1",
+  "moves": [
+    {
+      "from": "dispenser/scripts/replace-links.browser.js",
+      "to": "tools/legacy/hub/replace-links.browser.cjs"
+    },
+    {
+      "from": "dispenser/scripts/replace-links.browser.test.mjs",
+      "to": "tools/legacy/hub/replace-links.browser.test.mjs"
+    },
+    {
+      "from": "scripts/analyze-compatibility-har.mjs",
+      "to": "tools/diagnostics/analyze-compatibility-har.mjs"
+    },
+    {
+      "from": "scripts/browsing-controls-probe.mjs",
+      "to": "tools/diagnostics/browsing-controls-probe.mjs"
+    },
+    {
+      "from": "scripts/catalog-overlay-probe.mjs",
+      "to": "tools/diagnostics/catalog-overlay-probe.mjs"
+    },
+    {
+      "from": "scripts/chatgpt-device-probe.mjs",
+      "to": "tools/diagnostics/chatgpt-device-probe.mjs"
+    },
+    {
+      "from": "scripts/chatgpt-halt-probe.mjs",
+      "to": "tools/diagnostics/chatgpt-halt-probe.mjs"
+    },
+    {
+      "from": "scripts/chatgpt-native-device-probe.mjs",
+      "to": "tools/diagnostics/chatgpt-native-device-probe.mjs"
+    },
+    {
+      "from": "scripts/chatgpt-performance-probe.mjs",
+      "to": "tools/diagnostics/chatgpt-performance-probe.mjs"
+    },
+    {
+      "from": "scripts/chromebook-sidebar-interactions.mjs",
+      "to": "tools/diagnostics/chromebook-sidebar-interactions.mjs"
+    },
+    {
+      "from": "scripts/chromebook-sidebar-production-review.mjs",
+      "to": "tools/diagnostics/chromebook-sidebar-production-review.mjs"
+    },
+    {
+      "from": "scripts/chromebook-sidebar-review.mjs",
+      "to": "tools/diagnostics/chromebook-sidebar-review.mjs"
+    },
+    {
+      "from": "scripts/chromebook-sidebar-rollback-review.mjs",
+      "to": "tools/diagnostics/chromebook-sidebar-rollback-review.mjs"
+    },
+    {
+      "from": "scripts/client-device-opening-diagnostic.mjs",
+      "to": "tools/diagnostics/client-device-opening-diagnostic.mjs"
+    },
+    {
+      "from": "scripts/client-device-profile.mjs",
+      "to": "tools/diagnostics/client-device-profile.mjs"
+    },
+    {
+      "from": "scripts/client-google-profile.mjs",
+      "to": "tools/diagnostics/client-google-profile.mjs"
+    },
+    {
+      "from": "scripts/client-hotpath-chatgpt.mjs",
+      "to": "tools/diagnostics/client-hotpath-chatgpt.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-conversation.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-conversation.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-dom-probe.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-dom-probe.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-final-r6.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-final-r6.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-long-r6.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-long-r6.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-mutation-probe.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-mutation-probe.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-native-runtime.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-native-runtime.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-qualified-r6.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-qualified-r6.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-qualified6-r6.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-qualified6-r6.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-r5-control.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-r5-control.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-sameobject-r6.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-sameobject-r6.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-send-probe.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-send-probe.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-warning-r6.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-warning-r6.mjs"
+    },
+    {
+      "from": "scripts/client-lag-chatgpt-worker-bindings.mjs",
+      "to": "tools/diagnostics/client-lag-chatgpt-worker-bindings.mjs"
+    },
+    {
+      "from": "scripts/client-lag-continuity-debug.mjs",
+      "to": "tools/diagnostics/client-lag-continuity-debug.mjs"
+    },
+    {
+      "from": "scripts/client-lag-continuity.mjs",
+      "to": "tools/diagnostics/client-lag-continuity.mjs"
+    },
+    {
+      "from": "scripts/client-lag-cookie-benchmark.mjs",
+      "to": "tools/diagnostics/client-lag-cookie-benchmark.mjs"
+    },
+    {
+      "from": "scripts/client-lag-direct-chatgpt-reply.mjs",
+      "to": "tools/diagnostics/client-lag-direct-chatgpt-reply.mjs"
+    },
+    {
+      "from": "scripts/client-lag-direct-chatgpt.mjs",
+      "to": "tools/diagnostics/client-lag-direct-chatgpt.mjs"
+    },
+    {
+      "from": "scripts/client-lag-direct-long-timing.mjs",
+      "to": "tools/diagnostics/client-lag-direct-long-timing.mjs"
+    },
+    {
+      "from": "scripts/client-lag-direct-unprofiled.mjs",
+      "to": "tools/diagnostics/client-lag-direct-unprofiled.mjs"
+    },
+    {
+      "from": "scripts/client-lag-multitab.mjs",
+      "to": "tools/diagnostics/client-lag-multitab.mjs"
+    },
+    {
+      "from": "scripts/client-lag-public-sites.mjs",
+      "to": "tools/diagnostics/client-lag-public-sites.mjs"
+    },
+    {
+      "from": "scripts/client-lag-r6-continuity.mjs",
+      "to": "tools/diagnostics/client-lag-r6-continuity.mjs"
+    },
+    {
+      "from": "scripts/client-lag-r6-multitab.mjs",
+      "to": "tools/diagnostics/client-lag-r6-multitab.mjs"
+    },
+    {
+      "from": "scripts/client-lag-r6-remote-video.mjs",
+      "to": "tools/diagnostics/client-lag-r6-remote-video.mjs"
+    },
+    {
+      "from": "scripts/client-lag-remote-video.mjs",
+      "to": "tools/diagnostics/client-lag-remote-video.mjs"
+    },
+    {
+      "from": "scripts/client-lag-source-probe.mjs",
+      "to": "tools/diagnostics/client-lag-source-probe.mjs"
+    },
+    {
+      "from": "scripts/client-lag-visible-sites.mjs",
+      "to": "tools/diagnostics/client-lag-visible-sites.mjs"
+    },
+    {
+      "from": "scripts/client-lag-worker-activity.mjs",
+      "to": "tools/diagnostics/client-lag-worker-activity.mjs"
+    },
+    {
+      "from": "scripts/cloudfront-routing-probe.mjs",
+      "to": "tools/diagnostics/cloudfront-routing-probe.mjs"
+    },
+    {
+      "from": "scripts/compatibility-live-probe.mjs",
+      "to": "tools/diagnostics/compatibility-live-probe.mjs"
+    },
+    {
+      "from": "scripts/cookie-cadence-continuity-diagnostic.mjs",
+      "to": "tools/diagnostics/cookie-cadence-continuity-diagnostic.mjs"
+    },
+    {
+      "from": "scripts/cookie-cadence-continuity.mjs",
+      "to": "tools/diagnostics/cookie-cadence-continuity.mjs"
+    },
+    {
+      "from": "scripts/cookie-cadence-lab-refresh.mjs",
+      "to": "tools/diagnostics/cookie-cadence-lab-refresh.mjs"
+    },
+    {
+      "from": "scripts/cookie-cadence-live.mjs",
+      "to": "tools/diagnostics/cookie-cadence-live.mjs"
+    },
+    {
+      "from": "scripts/favicon-probe.mjs",
+      "to": "tools/diagnostics/favicon-probe.mjs"
+    },
+    {
+      "from": "scripts/fingerprint-audit.mjs",
+      "to": "tools/diagnostics/fingerprint-audit.mjs"
+    },
+    {
+      "from": "scripts/fingerprint-scan-worker.mjs",
+      "to": "tools/diagnostics/fingerprint-scan-worker.mjs"
+    },
+    {
+      "from": "scripts/http-cache-probe.mjs",
+      "to": "tools/diagnostics/http-cache-probe.mjs"
+    },
+    {
+      "from": "scripts/hub-account-simulation.mjs",
+      "to": "tools/diagnostics/hub-account-simulation.mjs"
+    },
+    {
+      "from": "scripts/hub-cloud-replacement-walkthrough.mjs",
+      "to": "tools/diagnostics/hub-cloud-replacement-walkthrough.mjs"
+    },
+    {
+      "from": "scripts/hub-cloud-walkthrough.mjs",
+      "to": "tools/diagnostics/hub-cloud-walkthrough.mjs"
+    },
+    {
+      "from": "scripts/hub-continuity-review.mjs",
+      "to": "tools/diagnostics/hub-continuity-review.mjs"
+    },
+    {
+      "from": "scripts/hub-local-review.mjs",
+      "to": "tools/diagnostics/hub-local-review.mjs"
+    },
+    {
+      "from": "scripts/hub-nested-gate-diagnostic.mjs",
+      "to": "tools/diagnostics/hub-nested-gate-diagnostic.mjs"
+    },
+    {
+      "from": "scripts/hub-profile-crosshost.mjs",
+      "to": "tools/diagnostics/hub-profile-crosshost.mjs"
+    },
+    {
+      "from": "scripts/hub-profile-debug.mjs",
+      "to": "tools/diagnostics/hub-profile-debug.mjs"
+    },
+    {
+      "from": "scripts/hub-profile-replacement-restore.mjs",
+      "to": "tools/diagnostics/hub-profile-replacement-restore.mjs"
+    },
+    {
+      "from": "scripts/hub-profile-walkthrough.mjs",
+      "to": "tools/diagnostics/hub-profile-walkthrough.mjs"
+    },
+    {
+      "from": "scripts/hub-session-transfer-walkthrough.mjs",
+      "to": "tools/diagnostics/hub-session-transfer-walkthrough.mjs"
+    },
+    {
+      "from": "scripts/hub-support-sse-walkthrough.mjs",
+      "to": "tools/diagnostics/hub-support-sse-walkthrough.mjs"
+    },
+    {
+      "from": "scripts/hub-ui-review.mjs",
+      "to": "tools/diagnostics/hub-ui-review.mjs"
+    },
+    {
+      "from": "scripts/hub-unified-screenshot-review.mjs",
+      "to": "tools/diagnostics/hub-unified-screenshot-review.mjs"
+    },
+    {
+      "from": "scripts/hub-unified-walkthrough.mjs",
+      "to": "tools/diagnostics/hub-unified-walkthrough.mjs"
+    },
+    {
+      "from": "scripts/navigation-probe.mjs",
+      "to": "tools/diagnostics/navigation-probe.mjs"
+    },
+    {
+      "from": "scripts/network-navigation-diagnostic.mjs",
+      "to": "tools/diagnostics/network-navigation-diagnostic.mjs"
+    },
+    {
+      "from": "scripts/network-traffic-observe.mjs",
+      "to": "tools/diagnostics/network-traffic-observe.mjs"
+    },
+    {
+      "from": "scripts/newtab-probe.mjs",
+      "to": "tools/diagnostics/newtab-probe.mjs"
+    },
+    {
+      "from": "scripts/node-entry-probe.mjs",
+      "to": "tools/diagnostics/node-entry-probe.mjs"
+    },
+    {
+      "from": "scripts/opaque-sync-storage-feasibility.mjs",
+      "to": "tools/experiments/opaque-sync-storage-feasibility.mjs"
+    },
+    {
+      "from": "scripts/opaque-sync-storage-marker.mjs",
+      "to": "tools/experiments/opaque-sync-storage-marker.mjs"
+    },
+    {
+      "from": "scripts/opaque-sync-storage-rendezvous.mjs",
+      "to": "tools/experiments/opaque-sync-storage-rendezvous.mjs"
+    },
+    {
+      "from": "scripts/panic-probe.mjs",
+      "to": "tools/diagnostics/panic-probe.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/edge.mjs",
+      "to": "tools/lab/perf-staging/edge.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/fixture.mjs",
+      "to": "tools/lab/perf-staging/fixture.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/gateway.mjs",
+      "to": "tools/lab/perf-staging/gateway.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/observe-overlap.mjs",
+      "to": "tools/lab/perf-staging/observe-overlap.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/relay-expiry-guard.mjs",
+      "to": "tools/lab/perf-staging/relay-expiry-guard.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/relay-expiry.test.mjs",
+      "to": "tools/lab/perf-staging/relay-expiry.test.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/relay-identity.mjs",
+      "to": "tools/lab/perf-staging/relay-identity.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/relay-identity.test.mjs",
+      "to": "tools/lab/perf-staging/relay-identity.test.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/relay-overlap-pool.mjs",
+      "to": "tools/lab/perf-staging/relay-overlap-pool.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/relay-overlap-pool.test.mjs",
+      "to": "tools/lab/perf-staging/relay-overlap-pool.test.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/relay-overlap.mjs",
+      "to": "tools/lab/perf-staging/relay-overlap.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/relay.mjs",
+      "to": "tools/lab/perf-staging/relay.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/services.mjs",
+      "to": "tools/lab/perf-staging/services.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/snapshot-update.mjs",
+      "to": "tools/lab/perf-staging/snapshot-update.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/snapshot-update.test.mjs",
+      "to": "tools/lab/perf-staging/snapshot-update.test.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/stack.mjs",
+      "to": "tools/lab/perf-staging/stack.mjs"
+    },
+    {
+      "from": "scripts/perf-staging/verify.mjs",
+      "to": "tools/lab/perf-staging/verify.mjs"
+    },
+    {
+      "from": "scripts/perf-worker-metrics.mjs",
+      "to": "tools/diagnostics/perf-worker-metrics.mjs"
+    },
+    {
+      "from": "scripts/preview-browse-check.mjs",
+      "to": "tools/diagnostics/preview-browse-check.mjs"
+    },
+    {
+      "from": "scripts/production-gartic-registration-20261021.mjs",
+      "to": "tools/legacy/production-gartic-registration-20261021.mjs"
+    },
+    {
+      "from": "scripts/production-hub-transfer-20261021.mjs",
+      "to": "tools/legacy/production-hub-transfer-20261021.mjs"
+    },
+    {
+      "from": "scripts/production-legacy-import-20261021.mjs",
+      "to": "tools/legacy/production-legacy-import-20261021.mjs"
+    },
+    {
+      "from": "scripts/production-mobile-review-20261021.mjs",
+      "to": "tools/legacy/production-mobile-review-20261021.mjs"
+    },
+    {
+      "from": "scripts/production-smoke-20261021.mjs",
+      "to": "tools/legacy/production-smoke-20261021.mjs"
+    },
+    {
+      "from": "scripts/production-sync-ui-smoke-20261021.mjs",
+      "to": "tools/legacy/production-sync-ui-smoke-20261021.mjs"
+    },
+    {
+      "from": "scripts/record-verification.mjs",
+      "to": "tools/legacy/record-verification-20260910.mjs"
+    },
+    {
+      "from": "scripts/redirect-old-cloudfront.py",
+      "to": "tools/legacy/redirect-old-cloudfront.py"
+    },
+    {
+      "from": "scripts/runtime-probe.mjs",
+      "to": "tools/diagnostics/runtime-probe.mjs"
+    },
+    {
+      "from": "scripts/shell-render-performance-review.mjs",
+      "to": "tools/diagnostics/shell-render-performance-review.mjs"
+    },
+    {
+      "from": "scripts/sidebar-hover-refinement-review.mjs",
+      "to": "tools/diagnostics/sidebar-hover-refinement-review.mjs"
+    },
+    {
+      "from": "scripts/topbar-probe.mjs",
+      "to": "tools/diagnostics/topbar-probe.mjs"
+    },
+    {
+      "from": "scripts/ui-polish-review.mjs",
+      "to": "tools/diagnostics/ui-polish-review.mjs"
+    },
+    {
+      "from": "scripts/wizard-probe.mjs",
+      "to": "tools/diagnostics/wizard-probe.mjs"
+    },
+    {
+      "from": "scripts/worker-probe.mjs",
+      "to": "tools/diagnostics/worker-probe.mjs"
+    }
+  ]
+}

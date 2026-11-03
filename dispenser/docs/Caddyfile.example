@@ -1,0 +1,15 @@
+# If CloudFront fronts this site, configure the global `servers` block with
+# AWS's current CLOUDFRONT_ORIGIN_FACING CIDRs (never trust arbitrary clients):
+# {
+#     servers {
+#         trusted_proxies static <CloudFront-origin-facing-CIDRs>
+#         trusted_proxies_strict
+#         client_ip_headers X-Forwarded-For
+#     }
+# }
+links.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3000 {
+        header_up X-Forwarded-For {client_ip}
+    }
+}

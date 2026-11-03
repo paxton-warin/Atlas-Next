@@ -1,0 +1,3 @@
+# Preserve imported third-party font license text byte-for-byte; it contains
+# upstream trailing spaces. Normal source retains Git's whitespace checks.
+dispenser/apps/web/public/fonts/v21/*-OFL.txt whitespace=-blank-at-eol

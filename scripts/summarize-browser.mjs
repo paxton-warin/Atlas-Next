@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 const report = JSON.parse(
-  readFileSync("evidence/browser-results.json", "utf8"),
+  readFileSync("test-results/browser-results.json", "utf8"),
 );
 const tests = [];
 function walk(s) {
@@ -37,6 +37,6 @@ const unexpected = tests.filter(
     ),
 ).length;
 const output = `BROWSER_PASS=${passed}; KNOWN_UPSTREAM_FAILURE=${known}; UNEXPECTED_FAILURE=${unexpected}${skipped ? "; EXPECTED_SKIP=" + skipped : ""}`;
-writeFileSync("evidence/browser-summary.txt", output + "\n");
+writeFileSync("test-results/browser-summary.txt", output + "\n");
 console.log(output);
 if (unexpected) process.exitCode = 1;

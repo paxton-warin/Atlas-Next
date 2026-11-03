@@ -55,10 +55,9 @@ function fixture(t) {
     "LICENSE",
     "THIRD_PARTY.md",
     "README.md",
-    "ROLLBACK.sh",
-    "evidence/ORIGINAL-sw.js",
-    "evidence/ui-refinement/original/server/index.mjs",
-    "evidence/DIFF.patch",
+    "maintenance/history/original-sw.js",
+    "maintenance/history/original-server-index.mjs",
+    "maintenance/history/DIFF.patch",
   ]) {
     mkdirSync(dirname(join(root, name)), { recursive: true });
     writeFileSync(join(root, name), `original ${name}\n`);
@@ -167,4 +166,60 @@ test("deployment templates reject symlinks rather than falling back to live file
     result.stderr,
     /Missing regular deployment template: deployment-templates\/Caddyfile\.node/,
   );
+});
+
+test("combined source archive includes Hub and tooling source without private/generated files or evidence", (t) => {
+  const f = fixture(t);
+  const source = [
+    "dispenser/package.json", "dispenser/pnpm-lock.yaml", "dispenser/pnpm-workspace.yaml",
+    "dispenser/apps/server/src/app.ts", "dispenser/packages/database/migrations/0026_catalog.sql",
+    "dispenser/scripts/production-bootstrap.mjs", "dispenser/.env.example",
+    "tools/diagnostics/probe.mjs", "scripts/workspace.config.json", "CONTRIBUTING.md", ".gitattributes",
+  ];
+  const secret = `PRIVATE_LOCAL_ONLY_${randomUUID()}`;
+  const privateFiles = [
+    ".env", "dispenser/.env", "dispenser/apps/server/.env.secret", "dispenser/.git/config",
+    "dispenser/.codex/old.txt", "dispenser/evidence/report.txt", "dispenser/backups/snapshot.txt",
+    "dispenser/apps/server/node_modules/private.txt", "dispenser/apps/server/dist/built.js",
+    "dispenser/apps/server/private.key", "dispenser/packages/database/state.sqlite",
+    "tools/diagnostics/__pycache__/probe.pyc", "local-retained/dispenser.git/config",
+    "evidence/private.txt", "scripts/.aws/config", "server/.ssh/identity",
+    "tools/.pnpm-store/state.txt", "tools/._finder-metadata",
+  ];
+  for (const name of source) {
+    mkdirSync(dirname(join(f.root, name)), { recursive: true });
+    writeFileSync(join(f.root, name), `source ${name}\n`);
+  }
+  for (const name of privateFiles) {
+    mkdirSync(dirname(join(f.root, name)), { recursive: true });
+    writeFileSync(join(f.root, name), secret);
+  }
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  const names = execFileSync("tar", ["-tzf", f.archive], { encoding: "utf8" }).split("\n");
+  for (const name of source) assert.ok(names.includes(name), `Missing source: ${name}`);
+  for (const name of privateFiles) assert.ok(!names.includes(name), `Private source leak: ${name}`);
+  assert.ok(!gunzipSync(readFileSync(f.archive)).includes(Buffer.from(secret)));
+});
+
+test("source symlinks fail before replacing the last complete archive", (t) => {
+  const f = fixture(t);
+  writeFileSync(f.archive, "previous verified archive\n");
+  symlinkSync("../README.md", join(f.root, "server/external.mjs"));
+  const result = f.run();
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Source symlink is not packaged/);
+  assert.equal(readFileSync(f.archive, "utf8"), "previous verified archive\n");
+});
+
+test("macOS extended metadata is not copied into the public source archive", { skip: process.platform !== "darwin" }, (t) => {
+  const f = fixture(t);
+  const marker = `PRIVATE_FINDER_METADATA_${randomUUID()}`;
+  const tagged = spawnSync("xattr", ["-w", "com.atlas.source-archive-fixture", marker, join(f.root, "README.md")], { encoding: "utf8" });
+  assert.equal(tagged.status, 0, tagged.stderr);
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  const names = execFileSync("tar", ["-tzf", f.archive], { encoding: "utf8" }).split("\n");
+  assert.ok(!names.some((name) => name.split("/").some((part) => part.startsWith("._"))));
+  assert.ok(!gunzipSync(readFileSync(f.archive)).includes(Buffer.from(marker)));
 });

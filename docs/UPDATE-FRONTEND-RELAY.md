@@ -1,7 +1,7 @@
 # Update existing three-VPS installations
 
 **Legacy update guide:** the unreleased
-[combined frontend-frame update](COMBINED-UPDATE-20261016.md) has its own single
+[combined frontend-frame update](archive/COMBINED-UPDATE-20261016.md) has its own single
 release gate. The commands below do not activate or qualify that held candidate.
 
 **Only updating focus mode, fullscreen Escape, popout, or YouTube filtering?** Use [the routine browsing-controls update](UPDATE-BROWSING-CONTROLS.md). The migration below changes relay environment/routing and is not needed for those controls.
@@ -159,7 +159,7 @@ For the main database, this update adds a lease column. **An older image must be
 ```sh
 pnpm check
 # Optional: installed Caddy 2 binary, or set CADDY_BIN to its path.
-node scripts/cloudfront-routing-probe.mjs
+node tools/diagnostics/cloudfront-routing-probe.mjs
 ```
 
 The tests exercise real local Scramjet HTTP/WebSocket transport, cookies, sticky assignment, wrong-purpose ticket rejection, Caddy routing, frontend anti-framing headers, and LaTeX. They do not establish live Google/Spotify authentication, production bandwidth or physical Chromebook compatibility.

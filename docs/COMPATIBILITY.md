@@ -1,6 +1,6 @@
 # Compatibility acceptance register
 
-The [held combined frontend-frame candidate](COMBINED-UPDATE-20261016.md) has a
+The [held combined frontend-frame candidate](archive/COMBINED-UPDATE-20261016.md) has a
 separate current evidence register. Historical runtime/site results below do not
 automatically qualify its new opaque-frame implementation.
 

@@ -5,7 +5,7 @@ import {
   csvRows,
   compileLiteral,
   category,
-} from "../scripts/fingerprint-audit.mjs";
+} from "../tools/diagnostics/fingerprint-audit.mjs";
 import {
   ruleFor,
   sanitizeSiteModes,

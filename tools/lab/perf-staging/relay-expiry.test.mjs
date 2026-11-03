@@ -1,0 +1,11 @@
+#!/usr/bin/env node
+/** Deterministic terminal-forwarding fixture. No external SSH, AWS or HTTP calls. */
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,chmodSync} from 'node:fs';
+import {join,resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {spawn} from 'node:child_process';
+import assert from 'node:assert/strict';
+const [source=fileURLToPath(new URL('./relay.mjs',import.meta.url)),expected='reconnected']=process.argv.slice(2),dir=mkdtempSync('/tmp/atlas-relay-expiry-test-'),bin=join(dir,'bin');mkdirSync(bin);let supervisor;
+try{
+ const counter=join(dir,'counter');writeFileSync(join(bin,'ssh'),`#!/usr/bin/env node\nconst fs=require('fs'),f=${JSON.stringify(counter)};let n=0;try{n=Number(fs.readFileSync(f))}catch{};fs.writeFileSync(f,String(++n));console.log('Forwarding HTTP traffic from https://fixture.serveousercontent.com');if(n===1)setTimeout(()=>console.log('Port forwarding for fixture.serveousercontent.com expired'),100);setInterval(()=>{},1000);\n`);chmodSync(join(bin,'ssh'),0o700);const state=join(dir,'state.json');writeFileSync(state,JSON.stringify({kind:'atlas-performance-staging-v1',publicEdge:true,directory:dir,tunnelOrigin:'https://fixture.serveousercontent.com',ports:{gateway:1},id:'expiry-test'}));let logs='';supervisor=spawn(process.execPath,[resolve(source),state],{env:{...process.env,PATH:bin+':'+process.env.PATH},stdio:['ignore','pipe','pipe']});supervisor.stdout.on('data',b=>logs+=b);supervisor.stderr.on('data',b=>logs+=b);await new Promise(r=>setTimeout(r,3000));const s=JSON.parse(readFileSync(state)),n=Number(readFileSync(counter)),reconnected=n>=2;assert.equal(reconnected,expected==='reconnected');assert.ok(s.relay.sshPid);process.kill(s.relay.sshPid,0);if(reconnected){assert.ok(logs.includes('RELAY_FORWARDING_EXPIRED_NOTICE'));assert.ok(logs.includes('RELAY_ACTUAL_EXIT'));console.log('PASS: explicit forwarding-expired notice terminated owned child; actual close reconnected; attempts='+n)}else console.log('REPRODUCED: expired forwarding retained live SSH; no reconnect; attempts='+n);
+}finally{try{const s=JSON.parse(readFileSync(join(dir,'state.json')));process.kill(s.relay.sshPid,'SIGTERM')}catch{}supervisor?.kill('SIGTERM');await new Promise(r=>setTimeout(r,700));rmSync(dir,{recursive:true,force:true})}

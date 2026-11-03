@@ -45,7 +45,7 @@ export async function runCutoverRuntimeProbe(options) {
   const fixture=new URL(options.fixture);if(fixture.protocol!=='https:'||fixture.pathname!=='/atlas-runtime-probe-v1/'||fixture.search||fixture.hash||fixture.username||fixture.password)stop('CONTROLLED_PUBLIC_FIXTURE_REQUIRED');
   const started=new Date(), observationTime=started.toISOString(), output=resolve(options.out);await mkdir(output,{recursive:false});
   const key=await privateFile(options.key), operator=JSON.parse(await privateFile(options.operatorState));
-  const root=resolve(dirname(fileURLToPath(import.meta.url)),'..'), require=createRequire(join(root,'../Atlas-Link-Dispenser/apps/server/package.json')),{Pool}=require('pg');
+  const root=resolve(dirname(fileURLToPath(import.meta.url)),'..'), require=createRequire(join(root,'dispenser/apps/server/package.json')),{Pool}=require('pg');
   if(!process.env.ATLAS_PROBE_DATABASE_URL||!process.env.ATLAS_PROBE_COORDINATOR_TOKEN)stop('PRIVATE_PROBE_DATABASE_AND_CONTROL_CONFIGURATION_REQUIRED');
   const pool=new Pool({connectionString:process.env.ATLAS_PROBE_DATABASE_URL,max:1,connectionTimeoutMillis:5000});
   async function query(sql,values=[]){const c=await pool.connect();try{await c.query('BEGIN READ ONLY');await c.query("SET LOCAL statement_timeout='10s'");const r=await c.query(sql,values);await c.query('COMMIT');return r.rows;}catch(e){await c.query('ROLLBACK').catch(()=>{});throw e;}finally{c.release();}}

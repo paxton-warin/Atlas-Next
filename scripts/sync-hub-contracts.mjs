@@ -3,7 +3,7 @@
  * package. Runtime imports must never depend on a sibling checkout on a VPS. */
 import { readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-const source = new URL("../../Atlas-Link-Dispenser/packages/shared/src/hub.ts", import.meta.url);
+const source = new URL("../dispenser/packages/shared/src/hub.ts", import.meta.url);
 const target = new URL("../runtime/hub-contracts.ts", import.meta.url);
 const value = await readFile(source, "utf8");
 const hash = createHash("sha256").update(value).digest("hex");

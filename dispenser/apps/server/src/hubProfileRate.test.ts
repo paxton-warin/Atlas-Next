@@ -1,0 +1,33 @@
+import { describe, it, expect } from "vitest";
+import { randomUUID } from "node:crypto";
+import type { Pool } from "pg";
+import { registerHubIdentityRoutes } from "./hubIdentity.js";
+import { AppError } from "./errors.js";
+import { hashSecret } from "./security.js";
+function fixture() {
+  const sessionSecret = "isolated-profile-rate-authority-secret-0123456789", branchId = randomUUID(), secret = "b".repeat(43);
+  const accounts = new Map<string, any>();
+  let assigned = true, eligible = true, seenWrites = 0;
+  const pool = { query: async (sql: string, values: any[] = []) => {
+    if (sql.startsWith("SELECT b.*")) return { rows: [{id:branchId, secret_hash:hashSecret(secret,sessionSecret)}], rowCount:1 };
+    if (sql.startsWith("SELECT bs.*")) { const row = accounts.get(values[0]); return {rows:row?[row]:[],rowCount:row?1:0}; }
+    if (sql.includes("SELECT 1 FROM hub_branches")) return {rows:assigned?[{}]:[],rowCount:assigned?1:0};
+    if (sql.startsWith("UPDATE hub_branch_sessions")) {seenWrites++;return {rows:[],rowCount:1};}
+    throw Error("Unexpected fixture query: "+sql);
+  }} as unknown as Pool;
+  const app = {get(){},post(){},put(){},delete(){}} as any;
+  const identity=registerHubIdentityRoutes(app,{pool,sessionSecret,encryptionKey:"unused",requireUser:async()=>{throw Error("unused")},requireEligibleUser:async()=>{throw Error("unused")},requireAdmin:async()=>{throw Error("unused")},csrf(){},assertEligible:async()=>{if(!eligible)throw new AppError("FORBIDDEN","Suspended fixture",403)}});
+  function request(index=1,profile=true){const token=String(index).padStart(43,"t"),key=hashSecret(token,sessionSecret);if(!accounts.has(key))accounts.set(key,{id:randomUUID(),user_id:randomUUID(),profile_id:randomUUID(),context_id:randomUUID(),branch_id:branchId,email:"synthetic@example.com",role:"user",status:"active",parent_session_id:randomUUID(),expires_at:new Date(Date.now()+3600000),parent_expires:new Date(Date.now()+3600000)});return{url:profile?"/api/hub/branch/profile/receipts/fixture-0123456789":"/api/hub/branch/session",headers:{"x-atlas-branch-id":branchId,authorization:"Bearer "+secret,"x-atlas-branch-session":token},ip:"192.0.2.10"} as any;}
+  return{identity,request,validation:(index=1)=>Object.assign(request(index,false),{method:"POST"}),accounts,denyAssignment:()=>assigned=false,suspend:()=>eligible=false,seen:()=>seenWrites};
+}
+describe("authenticated profile and branch-control rate separation",()=>{
+ it("500 ordinary accounts validate four times each on one branch without consuming general control allowance",async()=>{const f=fixture();for(let account=1;account<=500;account++)for(let poll=0;poll<4;poll++)await f.identity.authenticate(f.validation(account));expect(f.seen()).toBe(2000);for(let i=0;i<600;i++)await f.identity.authenticate(f.request(1,false));await expect(f.identity.authenticate(f.request(1,false))).rejects.toMatchObject({code:"HUB_RATE_LIMITED",status:429});});
+ it("validation has60 per verified account/profile and6000 aggregate per branch, separate from profile traffic",async()=>{const f=fixture();for(let account=1;account<=100;account++){for(let poll=0;poll<60;poll++)await f.identity.authenticate(f.validation(account));}expect(f.seen()).toBe(6000);await expect(f.identity.authenticate(f.validation(101))).rejects.toMatchObject({code:"HUB_RATE_LIMITED",status:429});await expect(f.identity.authenticate(f.request(101))).resolves.toHaveProperty("profileId");const g=fixture();for(let i=0;i<60;i++)await g.identity.authenticate(g.validation());await expect(g.identity.authenticate(g.validation())).rejects.toMatchObject({code:"HUB_RATE_LIMITED",status:429});await expect(g.identity.authenticate(g.validation(2))).resolves.toHaveProperty("profileId");});
+ it("invalid session validation retains600 general failures and no activity/verified allowance",async()=>{const f=fixture(),r=f.validation();r.headers['x-atlas-branch-session']='x'.repeat(43);for(let i=0;i<600;i++)await expect(f.identity.authenticate(r)).rejects.toMatchObject({code:"HUB_SESSION_EXPIRED",status:401});await expect(f.identity.authenticate(r)).rejects.toMatchObject({code:"HUB_RATE_LIMITED",status:429});expect(f.seen()).toBe(0);});
+
+ it("allows6000 real authenticated profile calls, rejects6001, keeps ordinarycontrol600 and otheraccounts separate",async()=>{const f=fixture(),a=f.request();for(let i=0;i<6000;i++)await f.identity.authenticate(a);expect(f.seen()).toBe(6000);await expect(f.identity.authenticate(a)).rejects.toMatchObject({code:"HUB_RATE_LIMITED",status:429});expect(f.seen()).toBe(6000);await expect(f.identity.authenticate(f.request(2))).resolves.toHaveProperty("profileId");for(let i=0;i<600;i++)await f.identity.authenticate(f.request(1,false));await expect(f.identity.authenticate(f.request(1,false))).rejects.toMatchObject({code:"HUB_RATE_LIMITED",status:429});await expect(f.identity.authenticate(f.request(2))).resolves.toHaveProperty("profileId");});
+ it("aggregate60000 profile calls stay bounded across valid independent accounts on one branch",async()=>{const f=fixture();for(let account=1;account<=12;account++){const r=f.request(account);for(let i=0;i<5000;i++)await f.identity.authenticate(r)}expect(f.seen()).toBe(60000);await expect(f.identity.authenticate(f.request(13))).rejects.toMatchObject({code:"HUB_RATE_LIMITED",status:429});expect(f.seen()).toBe(60000);await expect(f.identity.authenticate(f.request(1,false))).resolves.toHaveProperty("profileId");},60000);
+ it("a branch secret without a validsession gets no perprofile allowance and retains600failure cap",async()=>{const f=fixture(),r=f.request();r.headers['x-atlas-branch-session']='x'.repeat(43);for(let i=0;i<600;i++)await expect(f.identity.authenticate(r)).rejects.toMatchObject({code:"HUB_SESSION_EXPIRED",status:401});await expect(f.identity.authenticate(r)).rejects.toMatchObject({code:"HUB_RATE_LIMITED",status:429});expect(f.seen()).toBe(0)});
+ it("unassigned or suspended accounts never reach authenticatedprofile budget or activity writes",async()=>{for(const failure of['assignment','suspension']){const f=fixture(),r=f.request();if(failure==='assignment')f.denyAssignment();else f.suspend();for(let i=0;i<600;i++)await expect(f.identity.authenticate(r)).rejects.toMatchObject({status:403});await expect(f.identity.authenticate(r)).rejects.toMatchObject({code:"HUB_RATE_LIMITED",status:429});expect(f.seen()).toBe(0)}});
+ it("wrong branch credentials stillfail before profile classification",async()=>{const f=fixture(),r=f.request();r.headers.authorization='Bearer '+'x'.repeat(43);await expect(f.identity.authenticate(r)).rejects.toMatchObject({code:"HUB_BRANCH_UNAUTHORIZED",status:401});expect(f.seen()).toBe(0)});
+});
