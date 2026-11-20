@@ -48,6 +48,8 @@ function fixture(t) {
     "runtime-toggle-attribute.mjs",
     "runtime-literal-eval.mjs",
     "runtime-pure-literal-eval.ts",
+    "runtime-module-identity.mjs",
+    "runtime-gfn-ima.mjs",
   ]) {
     copyFileSync(new URL(`../scripts/${file}`, import.meta.url), join(root, "scripts", file));
   }

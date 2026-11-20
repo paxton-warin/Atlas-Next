@@ -12,6 +12,8 @@ import { adaptControllerDecode } from "./runtime-controller-decode.mjs";
 import { adaptToggleAttribute } from "./runtime-toggle-attribute.mjs";
 import { adaptLiteralEval } from "./runtime-literal-eval.mjs";
 import { adaptRequestCancellationArtifact, adaptRequestCancellationCore } from "./runtime-request-cancellation.mjs";
+import { adaptModuleIdentity } from "./runtime-module-identity.mjs";
+import { adaptGfnIma } from "./runtime-gfn-ima.mjs";
 const fork = JSON.parse(
   await readFile(new URL("./runtime-fork.json", import.meta.url)),
 );
@@ -44,7 +46,7 @@ for (const [file, asset] of Object.entries(fork.assets)) {
     bytes = adaptHttpEngineLifecycle(adaptRelayCredentialRotation(bytes));
     await writeFile(target, bytes);
   }
-  if (file === "runtimekit.js") bytes = adaptRequestCancellationCore(adaptLiteralEval(adaptToggleAttribute(bytes)));
+  if (file === "runtimekit.js") bytes = adaptGfnIma(adaptModuleIdentity(adaptRequestCancellationCore(adaptLiteralEval(adaptToggleAttribute(bytes)))));
   if (file === "controller.inject.js") bytes = adaptControllerDecode(bytes);
   if (["controller.api.js", "controller.worker.js", "controller.inject.js"].includes(file))
     bytes = adaptRequestCancellationArtifact(file, bytes);
@@ -68,7 +70,7 @@ for (const [file, asset] of Object.entries(fork.assets)) {
 // and worker variants retain their qualified fixes plus the cancellation bridge.
 if (fork.assets["runtimekit.js"]) {
  for (const [path, adapt] of [["runtime/runtimekit-normal.js", adaptNormalRuntimeCore], ["runtime/runtimekit-worker.js", adaptRuntimeWorkerGlobals]]) {
-  const bytes = adaptRequestCancellationCore(adaptLiteralEval(adaptToggleAttribute(adapt(await readFile(join(fork.directory, "app/vendor/runtimekit.js"))))));
+  const bytes = adaptGfnIma(adaptModuleIdentity(adaptRequestCancellationCore(adaptLiteralEval(adaptToggleAttribute(adapt(await readFile(join(fork.directory, "app/vendor/runtimekit.js"))))))));
   const target = join(root, path);
   await writeFile(target, bytes);
   hashes[path] = hash(bytes);
@@ -94,7 +96,7 @@ await writeFile(
       source: fork.source,
       commit: fork.commit,
       packaging: "pinned app/vendor artifacts with qualified relay rotation, request lifecycle and cancellation protocol",
-      adaptations: ["scripts/runtime-relay-rotation.mjs", "scripts/runtime-httpengine-lifecycle.mjs", "scripts/runtime-request-cancellation.mjs", "scripts/runtime-request-cancellation-source.mjs", "scripts/runtime-normal-core.mjs", "scripts/runtime-worker-globals.mjs", "scripts/runtime-toggle-attribute.mjs", "scripts/runtime-controller-decode.mjs", "scripts/runtime-literal-eval.mjs", "scripts/runtime-pure-literal-eval.ts"],
+      adaptations: ["scripts/runtime-relay-rotation.mjs", "scripts/runtime-httpengine-lifecycle.mjs", "scripts/runtime-request-cancellation.mjs", "scripts/runtime-request-cancellation-source.mjs", "scripts/runtime-normal-core.mjs", "scripts/runtime-worker-globals.mjs", "scripts/runtime-toggle-attribute.mjs", "scripts/runtime-controller-decode.mjs", "scripts/runtime-literal-eval.mjs", "scripts/runtime-pure-literal-eval.ts", "scripts/runtime-module-identity.mjs", "scripts/runtime-gfn-ima.mjs"],
       core: "2.0.67-alpha.2",
       controller: "0.0.14",
       hashes,

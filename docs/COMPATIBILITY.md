@@ -6,6 +6,51 @@ automatically qualify its new opaque-frame implementation.
 
 Target: Chrome on an actual Chromebook. Desktop Chrome is the development harness, not Chromebook certification.
 
+## GeForce NOW advertisement measurement iframe — 2026-11-09
+
+The supplied capture contains a successful NVIDIA queue response, followed by a
+measurement SDK request hitting Atlas's 66-byte uncontrolled-worker HTTP 503
+fallback. Google IMA creates an initial, unsandboxed `about:blank` helper frame;
+Chrome does not give that initial document the parent's service-worker control.
+An already-rewritten script adopted into that document consequently misses the
+proxy worker. The same direct script works in native Chrome.
+
+The qualified IMA source adapter gives only the known measurement factory an
+explicit empty `srcdoc` before its existing append/load sequence. It uses IMA's
+own SafeHTML/Trusted Types conversion. Only the exact classic SDK URL and pinned
+ASCII source identities qualify; unknown source remains unchanged. Adaptation
+runs before the original WASM rewriter, retaining valid reconstruction maps for
+the intentionally adapted factory. It does not modify every blank iframe,
+sandbox attributes, ad state, queue position or provider completion events.
+
+`node tests/gfn-ima-iframe.browser.mjs --baseline --profile` reproduces four
+measurement requests failing with HTTP 503. The command without `--baseline`
+verifies HTTP 200, SDK execution and inherited profile preparation. `--legacy`
+qualifies the separately preserved pre-cancellation node generation. Native
+Trusted Types, script CSP, bad-SRI and opaque-sandbox controls are included.
+These owned fixtures do not certify authenticated NVIDIA queue progress or an
+actual game launch; the supplied HAR contains only one session poll.
+
+## Cross-domain JavaScript module identity — 2026-11-09
+
+The pinned static-import writer used the importing asset's origin as `$io`.
+An application and a renderer on different CDNs could consequently evaluate the
+same React URL twice and fail hook calls. The qualified build adapter now keeps
+the executing document/worker's logical origin stable across that module graph.
+It preserves the actual source URL, relative resolution, query/fragment identity,
+request-policy fields and the original WASM source-reconstruction machinery.
+Only the private synchronous WASM origin import is scoped; browser globals and
+already-rewritten JavaScript are not patched.
+
+Reproduce the old defect with
+`node tests/runtime-module-identity-browser.mjs --baseline`; verify the fix with
+`node tests/runtime-module-identity-browser.mjs`. Both use disposable loopback
+fixtures and fresh Chrome contexts. The native controls and rewritten controls
+exercise real React hooks, effects and shared-module identity. Worker and
+source-reconstruction checks supplement that matrix. These results do not
+establish the cause of every Epic login failure, qualify authenticated GeForce
+NOW account reconnection, or identify an Atlas startup-capacity error.
+
 ## Fullscreen games and minimized mode — 2026-09-14
 
 Minimized/focus mode hides both horizontal and sidebar tabs while keeping the URL bar and **Exit focus mode** button. Escape dismisses Atlas menus/dialogs, but no longer exits focus mode.
